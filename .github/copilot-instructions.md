@@ -16,6 +16,15 @@ This repository (`scqat`) processes superconducting qubit experimental data. It 
 
 ## Implementation Guide:
 - **Adding a new data format:** Create a new script in `parsers/`. Write a function that takes a file path or API payload and returns an `xarray.Dataset`.
-- **Adding a new protocol:** Create a new class in `protocols/` that inherits from `BaseAnalyzer` (found in `scqat/core/base_analyzer.py`). Implement the `analyze()` method to accept an `xr.Dataset` and return a tuple of `(Dict[str, Any], matplotlib.figure.Figure)`.
+- **Adding a new protocol:** Create a new class in `protocols/` that inherits from `BaseAnalyzer` (found in `scqat/core/base_analyzer.py`). Implement `extract_parameters(dataset, **kwargs) -> Dict[str, Any]` for computation and `generate_figures(dataset, results, **kwargs) -> Dict[str, plt.Figure]` for visualization. The inherited `analyze()` method orchestrates both steps.
+  - **Simple protocol** (no dedicated visualization): a single file, e.g. `protocols/t1_inversion_recovery.py`.
+  - **Complex protocol** (with its own visualization helpers): a subpackage, e.g.:
+    ```
+    protocols/state_discrimination/
+        __init__.py      # re-exports the analyzer class
+        analyzer.py      # the BaseAnalyzer subclass
+        visualization.py # protocol-specific plotting helpers
+    ```
+    The `__init__.py` MUST re-export the analyzer so that external code can use `from scqat.protocols.<name> import <Analyzer>` regardless of whether it is a flat module or a subpackage.
 - **Configuration:** Use `scqat/config.py` for all hardcoded physical constants and standard plotting formats. Do not hardcode magic numbers in the protocols.
 - **Testing:** Write `pytest` functions in the `tests/` directory whenever adding a new algorithm to `math_tools/`.

@@ -9,6 +9,8 @@ Requires-Dist: numpy>=1.24.0
 Requires-Dist: scipy>=1.13.0
 Requires-Dist: matplotlib>=3.9
 Requires-Dist: xarray>=2024.6.0
+Requires-Dist: lmfit>=1.2.0
+Requires-Dist: scikit-learn>=1.3.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0.0; extra == "dev"
 Requires-Dist: jupyter>=1.0.0; extra == "dev"

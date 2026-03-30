@@ -11,10 +11,13 @@ scqat/core/__init__.py
 scqat/core/base_analyzer.py
 scqat/core/exporters.py
 scqat/math_tools/__init__.py
-scqat/math_tools/fitting.py
+scqat/math_tools/fit_gaussian2d.py
+scqat/math_tools/function_fitting.py
 scqat/parsers/__init__.py
-scqat/parsers/labber_parser.py
+scqat/parsers/qualibrate_parser.py
+scqat/parsers/xarray_h5_parser.py
 scqat/protocols/__init__.py
-scqat/protocols/state_discrimination.py
-scqat/protocols/t1_inversion_recovery.py
+scqat/protocols/state_discrimination/__init__.py
+scqat/protocols/state_discrimination/analyzer.py
+scqat/protocols/state_discrimination/visualization.py
 tests/test_fitting.py
