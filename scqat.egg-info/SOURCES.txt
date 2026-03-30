@@ -15,5 +15,6 @@ scqat/math_tools/fitting.py
 scqat/parsers/__init__.py
 scqat/parsers/labber_parser.py
 scqat/protocols/__init__.py
+scqat/protocols/state_discrimination.py
 scqat/protocols/t1_inversion_recovery.py
 tests/test_fitting.py

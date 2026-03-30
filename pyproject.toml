@@ -16,6 +16,8 @@ dependencies = [
     "scipy>=1.13.0",
     "matplotlib>=3.9",
     "xarray>=2024.6.0",
+    "lmfit>=1.2.0",
+    "scikit-learn>=1.3.0",
     # "juliacall>=0.9.0"  # Uncomment later if you drop in Julia for heavy MIST simulations
 ]
 
