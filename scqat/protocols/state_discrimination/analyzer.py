@@ -21,6 +21,8 @@ class StateDiscriminationAnalyzer(BaseAnalyzer):
     using 2D Multi-Gaussian Mixture Models.
     """
 
+    protocol_name = "state_discrimination"
+
     def _check_data(self, dataset: xr.Dataset) -> None:
         """Ensures the dataset has the required coordinates for this protocol."""
         for coords_name in ["shot_idx", "prepared_state"]:
