@@ -53,16 +53,23 @@ class RamseyAnalyzer(BaseAnalyzer):
         fft_freq, fft_amp = self._compute_fft(dataset)
 
         # Auto-detect or use forced model
+        detected_type, peak_freqs = self._detect_model_type(fit_data)
         if force_model == 'single':
             model_type = 'single'
         elif force_model == 'beat':
             model_type = 'beat'
         else:
-            model_type = self._detect_model_type(fit_data)
+            model_type = detected_type
 
         # Fit
         if model_type == 'beat':
             fitter = FitDampingBeat(fit_data)
+            fitter.guess()
+            if len(peak_freqs) >= 2:
+                fitter.params['f_1'].set(value=peak_freqs[0])
+                fitter.params['f_2'].set(value=peak_freqs[1])
+            elif len(peak_freqs) == 1:
+                fitter.params['f_1'].set(value=peak_freqs[0])
             fit_result = fitter.fit()
             params = {k: v.value for k, v in fit_result.params.items()}
 
@@ -82,6 +89,9 @@ class RamseyAnalyzer(BaseAnalyzer):
             }
         else:
             fitter = FitDampedOscillation(fit_data)
+            fitter.guess()
+            if len(peak_freqs) >= 1:
+                fitter.params['f'].set(value=peak_freqs[0])
             fit_result = fitter.fit()
             params = {k: v.value for k, v in fit_result.params.items()}
 
@@ -128,7 +138,13 @@ class RamseyAnalyzer(BaseAnalyzer):
 
     @staticmethod
     def _detect_model_type(fit_data):
-        """Auto-detect single vs beat by checking FFT for a second dominant peak."""
+        """Auto-detect single vs beat by checking FFT for a second dominant peak.
+
+        Returns:
+            (model_type, peak_freqs): model_type is 'single' or 'beat';
+                peak_freqs is a list of detected frequencies sorted by power
+                (descending), used as initial guesses for the fitter.
+        """
         y = fit_data.values
         x = fit_data.coords['x'].values
         dt = float(x[1] - x[0])
@@ -140,12 +156,25 @@ class RamseyAnalyzer(BaseAnalyzer):
 
         # Find local maxima in the power spectrum
         local_peak_indices, _ = find_peaks(power, height=float(power.max()) * 0.1)
-        if len(local_peak_indices) < 2:
-            return 'single'
+        if len(local_peak_indices) == 0:
+            # Fallback: use global max
+            peak_freqs = [float(np.abs(freq[np.argmax(power)]))]
+            return 'single', peak_freqs
 
         # Sort local peaks by power (descending)
         sorted_local = local_peak_indices[power[local_peak_indices].argsort()[::-1]]
+        peak_freqs = [float(np.abs(freq[idx])) for idx in sorted_local]
+
+        if len(sorted_local) < 2:
+            return 'single', peak_freqs
+
+        # Estimate noise floor as median of the power spectrum
+        noise_floor = float(np.median(power[power > 0]))
+
         for idx in sorted_local[1:]:
-            if power[idx] / power[sorted_local[0]] > 0.3:
-                return 'beat'
-        return 'single'
+            is_strong_relative = power[idx] / power[sorted_local[0]] > 0.5
+            is_above_noise = power[idx] > 2 * noise_floor
+            is_separated = abs(int(idx) - int(sorted_local[0])) > 2
+            if is_strong_relative and is_above_noise and is_separated:
+                return 'beat', peak_freqs
+        return 'single', peak_freqs

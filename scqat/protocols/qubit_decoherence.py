@@ -81,6 +81,8 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
     non-Markovian amplitude-damping model parameterised by Gamma and Lambda.
     """
 
+    protocol_name = "qubit_decoherence"
+
     # ------------------------------------------------------------------
     # Data validation
     # ------------------------------------------------------------------

@@ -74,6 +74,7 @@ class FitMultiGaussian2D(FunctionFitting):
         return result
 
 
+@register_fitter('gaussian2d')
 class FitGaussian2D(FunctionFitting):
     def __init__(self, data, x, y):
         self.data = data

@@ -27,6 +27,8 @@ class HankelAnalyzer(BaseAnalyzer):
     extracting frequencies, decay rates, and amplitudes via MPM or HSVD.
     """
 
+    protocol_name = "hankel_analysis"
+
     # ------------------------------------------------------------------
     # Data validation
     # ------------------------------------------------------------------

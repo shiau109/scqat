@@ -132,7 +132,7 @@ def Readout_cal_amp_phase_correction(para):
     return dict(t=t, n_g=np.abs(a_g)**2, n_e=np.abs(a_e)**2, pulse_timeamp_g=pulse_timeamp_g, pulse_timeamp_e=pulse_timeamp_e, ti=ti, tf=tf)
 
 
-para_test={'ki':0,'ke':0.0004,'fc':3.078602573,'frf':3.078602573, 'X_eff':0.000075,
+para_test={'ki':0,'ke':0.0004,'fc':5.113100000,'frf':5.113100000, 'X_eff':0.00008,
            'pulse_shape':'Three_step', 
            'phase_correction':False,
            'P_in':-120,
