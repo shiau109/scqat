@@ -70,10 +70,13 @@ class HankelAnalyzer(BaseAnalyzer):
         Parameters
         ----------
         s : 1-D array of singular values (descending).
-        method : {'relative', 'absolute', 'energy'}
+        method : {'relative', 'absolute', 'energy', 'gap', 'aic', 'mdl', 'fixed'}
         kwargs :
             threshold (float) – for 'relative' (default 2e-3) and 'absolute' (0.1).
             energy_target (float) – for 'energy' (default 0.95).
+            n_modes (int) – for 'fixed', the exact number of modes to use.
+            n_samples (int) – rows of Hankel matrix, needed for 'aic'/'mdl'.
+            n_features (int) – columns of Hankel matrix, needed for 'aic'/'mdl'.
         """
         if method == "relative":
             threshold = kwargs.get("threshold", 2e-3)
@@ -85,6 +88,45 @@ class HankelAnalyzer(BaseAnalyzer):
             energy_target = kwargs.get("energy_target", 0.95)
             cumulative = np.cumsum(s ** 2) / np.sum(s ** 2)
             n_modes = int(np.argmax(cumulative >= energy_target)) + 1
+        elif method == "gap":
+            # Largest ratio drop between consecutive singular values
+            ratios = s[:-1] / np.maximum(s[1:], np.finfo(float).tiny)
+            n_modes = int(np.argmax(ratios)) + 1
+        elif method in ("aic", "mdl"):
+            # Wax–Kailath information-theoretic model-order selection.
+            n_samples = kwargs.get("n_samples")
+            n_features = kwargs.get("n_features")
+            if n_samples is None or n_features is None:
+                raise ValueError(
+                    f"'{method}' mode selection requires 'n_samples' and "
+                    "'n_features' (Hankel matrix dimensions) in kwargs."
+                )
+            n = max(n_samples, n_features)
+            p = len(s)
+            eigenvalues = s ** 2
+            best_k, best_criterion = 0, np.inf
+            for k in range(p - 1):
+                noise_eigs = eigenvalues[k + 1:]
+                m = len(noise_eigs)
+                arith_mean = np.mean(noise_eigs)
+                if arith_mean <= 0:
+                    continue
+                log_geo = np.mean(np.log(np.maximum(noise_eigs, np.finfo(float).tiny)))
+                log_likelihood = -n * m * (log_geo - np.log(arith_mean))
+                free_params = k * (2 * p - k)
+                if method == "aic":
+                    criterion = 2 * log_likelihood + 2 * free_params
+                else:  # mdl
+                    criterion = 2 * log_likelihood + free_params * np.log(n)
+                if criterion < best_criterion:
+                    best_criterion = criterion
+                    best_k = k + 1
+            n_modes = best_k
+        elif method == "fixed":
+            n_modes = kwargs.get("n_modes")
+            if n_modes is None:
+                raise ValueError("'fixed' mode selection requires 'n_modes' in kwargs.")
+            n_modes = int(n_modes)
         else:
             raise ValueError(f"Unknown mode-selection method: '{method}'")
         return max(1, n_modes)
@@ -136,13 +178,16 @@ class HankelAnalyzer(BaseAnalyzer):
         Kwargs
         ------
         mode_method : str
-            Mode-selection strategy ('relative', 'absolute', 'energy').
+            Mode-selection strategy ('relative', 'absolute', 'energy',
+            'gap', 'aic', 'mdl', 'fixed').
         recon_method : str
             Eigenvalue extraction algorithm ('mpm' or 'hsvd').
         threshold : float
             Passed to `_select_n_modes` for 'relative' / 'absolute'.
         energy_target : float
             Passed to `_select_n_modes` for 'energy'.
+        n_modes : int
+            Exact number of modes for 'fixed' mode selection.
         eigval_threshold : float
             Minimum eigenvalue magnitude to keep (default 1e-3).
         """
@@ -159,7 +204,12 @@ class HankelAnalyzer(BaseAnalyzer):
         U, s, Vh = self._compute_svd(hankel_matrix)
 
         # Step 3: mode selection
-        n_modes = self._select_n_modes(s, method=mode_method, **kwargs)
+        n_modes = self._select_n_modes(
+            s, method=mode_method,
+            n_samples=hankel_matrix.shape[0],
+            n_features=hankel_matrix.shape[1],
+            **kwargs,
+        )
 
         # Steps 4–6: eigenvalues → exponents → residues
         eigvals = self._compute_eigenvalues(U, Vh, n_modes, method=recon_method)

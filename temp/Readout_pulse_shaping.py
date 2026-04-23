@@ -60,7 +60,7 @@ def Readout_cal_amp_phase_correction(para):
             k_opt_e = np.abs(1 / (1 - np.exp(de * first_step_Du)))
 
         t1 = ti + first_step_Du
-        t2 = t1 + Du
+        t2 = Du
         m1, m2, m3 = (t >= ti) & (t <= t1), (t > t1) & (t <= t2), t > t2
         
         pulse_timeamp_g[m1], pulse_timeamp_g[m2] = amp*k_opt_g, amp
@@ -97,8 +97,8 @@ def Readout_cal_amp_phase_correction(para):
         
   
         t1 = ti + first_step_Du
-        t3 = ti + Du
-        t2 = t3 - third_step_Du
+        t2 = ti + Du
+        t3 = t2 + third_step_Du
         
         m1 = (t >= ti) & (t <= t1)
         m2 = (t > t1) & (t <= t2)
@@ -132,74 +132,85 @@ def Readout_cal_amp_phase_correction(para):
     return dict(t=t, n_g=np.abs(a_g)**2, n_e=np.abs(a_e)**2, pulse_timeamp_g=pulse_timeamp_g, pulse_timeamp_e=pulse_timeamp_e, ti=ti, tf=tf)
 
 
-para_test={'ki':0,'ke':0.0004,'fc':5.113100000,'frf':5.113100000, 'X_eff':0.00008,
-           'pulse_shape':'Three_step', 
-           'phase_correction':False,
-           'P_in':-120,
-           'time':8000, 
-           'ti':0,
-           'Du':4000,    
-           'first_step_Du': 100,
-           'third_step_Du': 100 
-          } 
-# para_test={'ki':0,'ke':0.004,'fc':5.95,'frf':5.95, 'X_eff':0.002,
+# para_test={'ki':0,'ke':0.0004,'fc':5.113100000,'frf':5.113100000, 'X_eff':0.00009,
 #            'pulse_shape':'Three_step', 
 #            'phase_correction':False,
 #            'P_in':-120,
-#            'time':2000+1000, 
+#            'time':8000, 
 #            'ti':0,
-#            'Du':2000,    
+#            'Du':4000,    
 #            'first_step_Du': 100,
 #            'third_step_Du': 100 
 #           } 
-L = Readout_cal_amp_phase_correction(para_test)
-print("max_photon_avg_of_state=", max(L['n_g']),max(L['n_e']))
-print("last_photon_avg_of_state=", L['n_g'][-1], L['n_e'][-1])
+if __name__ == "__main__":
+    para_test={'ki':0,'ke':0.0004,'fc':3.078602573,'frf':3.078602573, 'X_eff':0.000075,
+           'pulse_shape':'Three_step', 
+           'phase_correction':False,
+           'P_in':-120,
+           'time':6000, 
+           'ti':0,
+           'Du':4000,    
+           'first_step_Du': 800,
+           'third_step_Du': 800 
+          }
+    # para_test={'ki':0,'ke':0.004,'fc':5.95,'frf':5.95, 'X_eff':0.002,
+    #            'pulse_shape':'Three_step', 
+    #            'phase_correction':False,
+    #            'P_in':-120,
+    #            'time':2000+1000, 
+    #            'ti':0,
+    #            'Du':2000,    
+    #            'first_step_Du': 100,
+    #            'third_step_Du': 100 
+    #           } 
+    L = Readout_cal_amp_phase_correction(para_test)
+    print("max_photon_avg_of_state=", max(L['n_g']),max(L['n_e']))
+    print("last_photon_avg_of_state=", L['n_g'][-1], L['n_e'][-1])
 
-dt = (L['t'][1] - L['t'][0])
-dn_g_dt = np.gradient(L['n_g'], dt)
-dn_e_dt = np.gradient(L['n_e'], dt)
+    dt = (L['t'][1] - L['t'][0])
+    dn_g_dt = np.gradient(L['n_g'], dt)
+    dn_e_dt = np.gradient(L['n_e'], dt)
 
-fig, ax0 = plt.subplots(nrows=5, figsize=(6,8), dpi=200)  
+    fig, ax0 = plt.subplots(nrows=5, figsize=(6,8), dpi=200)  
 
-ax0[0].plot(L['t']*1e9/1000, np.real(L['pulse_timeamp_g']), label=r'$I$', color="b", alpha=0.5, lw=2)   
-ax0[0].plot(L['t']*1e9/1000, np.imag(L['pulse_timeamp_g']), label=r'$Q$', color="r", alpha=0.5, lw=2)   
-ax0[0].set_ylabel(r"$V_g(t)$", size='12') 
-ax0[0].set_xlim(0, max(L['t']*1e9/1000))
-ax0[0].legend(fontsize=10, loc='lower right')
-ax0[0].tick_params('both', labelsize='8', labelbottom=True)
+    ax0[0].plot(L['t']*1e9/1000, np.real(L['pulse_timeamp_g']), label=r'$I$', color="b", alpha=0.5, lw=2)   
+    ax0[0].plot(L['t']*1e9/1000, np.imag(L['pulse_timeamp_g']), label=r'$Q$', color="r", alpha=0.5, lw=2)   
+    ax0[0].set_ylabel(r"$V_g(t)$", size='12') 
+    ax0[0].set_xlim(0, max(L['t']*1e9/1000))
+    ax0[0].legend(fontsize=10, loc='lower right')
+    ax0[0].tick_params('both', labelsize='8', labelbottom=True)
 
-ax0[1].plot(L['t']*1e9/1000, np.real(L['pulse_timeamp_e']), label=r'$I$', color="b", alpha=0.5, lw=2)   
-ax0[1].plot(L['t']*1e9/1000, np.imag(L['pulse_timeamp_e']), label=r'$Q$', color="r", alpha=0.5, lw=2)   
-ax0[1].set_ylabel(r"$V_e(t)$", size='12') 
-ax0[1].set_xlim(0, max(L['t']*1e9/1000))
-ax0[1].legend(fontsize=10, loc='lower right')
-ax0[1].tick_params('both', labelsize='8', labelbottom=True)
+    ax0[1].plot(L['t']*1e9/1000, np.real(L['pulse_timeamp_e']), label=r'$I$', color="b", alpha=0.5, lw=2)   
+    ax0[1].plot(L['t']*1e9/1000, np.imag(L['pulse_timeamp_e']), label=r'$Q$', color="r", alpha=0.5, lw=2)   
+    ax0[1].set_ylabel(r"$V_e(t)$", size='12') 
+    ax0[1].set_xlim(0, max(L['t']*1e9/1000))
+    ax0[1].legend(fontsize=10, loc='lower right')
+    ax0[1].tick_params('both', labelsize='8', labelbottom=True)
 
 
-ax0[2].plot(L['t']*1e9/1000, L['n_g'], color="b", label=r'$|g\rangle$', alpha=0.5, lw=2)   
-ax0[2].plot(L['t']*1e9/1000, L['n_e'], color="r", label=r'$|e\rangle$', alpha=0.5, lw=2)
-ax0[2].axvline(x=L['ti']*1e9/1000, ymin=0, ymax=1, color='k', linestyle='dashed', lw=1) 
-ax0[2].axvline(x=L['tf']*1e9/1000, ymin=0, ymax=1, color='k', linestyle='dashed', lw=1) 
-ax0[2].set_ylabel(r"$n$", size='15')
-ax0[2].set_xlim(0, max(L['t']*1e9/1000))
-ax0[2].tick_params('both', labelsize='8', labelbottom=True)
+    ax0[2].plot(L['t']*1e9/1000, L['n_g'], color="b", label=r'$|g\rangle$', alpha=0.5, lw=2)   
+    ax0[2].plot(L['t']*1e9/1000, L['n_e'], color="r", label=r'$|e\rangle$', alpha=0.5, lw=2)
+    ax0[2].axvline(x=L['ti']*1e9/1000, ymin=0, ymax=1, color='k', linestyle='dashed', lw=1) 
+    ax0[2].axvline(x=L['tf']*1e9/1000, ymin=0, ymax=1, color='k', linestyle='dashed', lw=1) 
+    ax0[2].set_ylabel(r"$n$", size='15')
+    ax0[2].set_xlim(0, max(L['t']*1e9/1000))
+    ax0[2].tick_params('both', labelsize='8', labelbottom=True)
 
-ax0[3].plot(L['t']*1e9/1000, dn_g_dt/1e9, color="b", alpha=0.5, lw=2, label=r'$|g\rangle$')  
-ax0[3].plot(L['t']*1e9/1000, dn_e_dt/1e9, color="r", alpha=0.5, lw=2, label=r'$|e\rangle$')  
-ax0[3].set_xlabel(r'$ t\ (\mu$s)', size='15')
-ax0[3].set_ylabel(r'$\Gamma_{r}\ (n/\mathrm{ns})$', size='12')
-ax0[3].axhline(y=0, color='k', linestyle='dashed', lw=1) 
-ax0[3].legend(fontsize=10, loc='lower right')
+    ax0[3].plot(L['t']*1e9/1000, dn_g_dt/1e9, color="b", alpha=0.5, lw=2, label=r'$|g\rangle$')  
+    ax0[3].plot(L['t']*1e9/1000, dn_e_dt/1e9, color="r", alpha=0.5, lw=2, label=r'$|e\rangle$')  
+    ax0[3].set_xlabel(r'$ t\ (\mu$s)', size='15')
+    ax0[3].set_ylabel(r'$\Gamma_{r}\ (n/\mathrm{ns})$', size='12')
+    ax0[3].axhline(y=0, color='k', linestyle='dashed', lw=1) 
+    ax0[3].legend(fontsize=10, loc='lower right')
 
-ax0[4].plot(L['n_g'], dn_g_dt/1e9, color="b", alpha=0.5, lw=2, label=r'$|g\rangle$')  
-ax0[4].plot(L['n_g'], dn_e_dt/1e9, color="r", alpha=0.5, lw=2, label=r'$|e\rangle$')  
-ax0[4].set_xlabel(r'$n$', size='15')
-ax0[4].set_ylabel(r'$\Gamma_{r}\ (n/\mathrm{ns})$', size='12')
-ax0[4].axhline(y=0, color='k', linestyle='dashed', lw=1) 
+    ax0[4].plot(L['n_g'], dn_g_dt/1e9, color="b", alpha=0.5, lw=2, label=r'$|g\rangle$')  
+    ax0[4].plot(L['n_g'], dn_e_dt/1e9, color="r", alpha=0.5, lw=2, label=r'$|e\rangle$')  
+    ax0[4].set_xlabel(r'$n$', size='15')
+    ax0[4].set_ylabel(r'$\Gamma_{r}\ (n/\mathrm{ns})$', size='12')
+    ax0[4].axhline(y=0, color='k', linestyle='dashed', lw=1) 
 
-fig.tight_layout()
-plt.show()
+    fig.tight_layout()
+    plt.show()
 
-print("max_photon_avg_of_state=", (max(L['n_g'])+max(L['n_e']))/2)
-print("steady_photon_avg_of_state=", ((L['n_g'])[-1]+(L['n_e'])[-1])/2)
+    print("max_photon_avg_of_state=", (max(L['n_g'])+max(L['n_e']))/2)
+    print("steady_photon_avg_of_state=", ((L['n_g'])[-1]+(L['n_e'])[-1])/2)

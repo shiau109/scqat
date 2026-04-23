@@ -121,9 +121,20 @@ class SingleStateOutlierAnalyzer(BaseAnalyzer):
         I_vals = dataset["I"].values.ravel()
         Q_vals = dataset["Q"].values.ravel()
 
+        # Filter out NaN/Inf values
+        valid = np.isfinite(I_vals) & np.isfinite(Q_vals)
+        I_vals = I_vals[valid]
+        Q_vals = Q_vals[valid]
+        if len(I_vals) == 0:
+            raise ValueError("No finite I/Q data remaining after filtering NaN/Inf.")
+
         std_I = np.std(I_vals)
         std_Q = np.std(Q_vals)
         std_init = min(std_I, std_Q)
+        if std_init == 0:
+            std_init = max(std_I, std_Q)
+        if std_init == 0:
+            std_init = 1.0  # fallback for completely degenerate data
 
         step = (user_std if user_std else std_init) / 3
 

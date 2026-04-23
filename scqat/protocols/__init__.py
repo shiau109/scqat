@@ -4,3 +4,4 @@ from scqat.protocols.state_discrimination import StateDiscriminationAnalyzer
 from scqat.protocols.ramsey import RamseyAnalyzer
 from scqat.protocols.charge_gate_ramsey import ChargeGateRamseyAnalyzer
 from scqat.protocols.single_state_outlier import SingleStateOutlierAnalyzer
+from scqat.protocols.qubit_spectroscopy import QubitSpectroscopyAnalyzer

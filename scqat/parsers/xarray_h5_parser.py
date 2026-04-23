@@ -41,19 +41,19 @@ def load_xarray_h5(
     last_exc = None
     for eng in engines:
         try:
-            ds = xr.open_dataset(file_path, engine=eng)
-            if load_into_memory:
-                ds = ds.load()
-            return ds
+            with xr.open_dataset(file_path, engine=eng) as ds:
+                if load_into_memory:
+                    ds = ds.load()
+                return ds
         except Exception as exc:
             last_exc = exc
 
     # Final fallback: let xarray choose the engine
     try:
-        ds = xr.open_dataset(file_path)
-        if load_into_memory:
-            ds = ds.load()
-        return ds
+        with xr.open_dataset(file_path) as ds:
+            if load_into_memory:
+                ds = ds.load()
+            return ds
     except Exception as exc:
         raise RuntimeError(
             f"Failed to open '{file_path}' as an xarray Dataset. "

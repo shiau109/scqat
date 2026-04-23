@@ -85,3 +85,65 @@ class TestHankelAnalyzer:
 
         assert len(results["modes"]) >= 1
         assert results["modes"][0]["freq_hz"] == pytest.approx(2.0, abs=0.2)
+
+    # ------------------------------------------------------------------
+    # Tests for additional mode-selection strategies
+    # ------------------------------------------------------------------
+    def test_gap_mode_selection(self):
+        """Gap method should pick up the dominant mode for a clean signal."""
+        t = np.linspace(0, 10, 300)
+        signal = np.exp(-0.3 * t) * np.cos(2 * np.pi * 2.0 * t)
+
+        ds = _make_dataset(t, signal)
+        analyzer = HankelAnalyzer()
+        results, _ = analyzer.analyze(ds, mode_method="gap")
+
+        assert results["n_modes"] >= 1
+        assert results["modes"][0]["freq_hz"] == pytest.approx(2.0, abs=0.2)
+
+    def test_aic_mode_selection(self):
+        """AIC method should extract a valid dominant mode."""
+        t = np.linspace(0, 10, 300)
+        signal = np.exp(-0.3 * t) * np.cos(2 * np.pi * 2.0 * t)
+
+        ds = _make_dataset(t, signal)
+        analyzer = HankelAnalyzer()
+        results, _ = analyzer.analyze(ds, mode_method="aic")
+
+        assert results["n_modes"] >= 1
+        assert results["modes"][0]["freq_hz"] == pytest.approx(2.0, abs=0.2)
+
+    def test_mdl_mode_selection(self):
+        """MDL method should extract a valid dominant mode."""
+        t = np.linspace(0, 10, 300)
+        signal = np.exp(-0.3 * t) * np.cos(2 * np.pi * 2.0 * t)
+
+        ds = _make_dataset(t, signal)
+        analyzer = HankelAnalyzer()
+        results, _ = analyzer.analyze(ds, mode_method="mdl")
+
+        assert results["n_modes"] >= 1
+        assert results["modes"][0]["freq_hz"] == pytest.approx(2.0, abs=0.2)
+
+    def test_fixed_mode_selection(self):
+        """Fixed method should use the exact number of modes requested."""
+        t = np.linspace(0, 10, 300)
+        signal = np.exp(-0.3 * t) * np.cos(2 * np.pi * 2.0 * t)
+
+        ds = _make_dataset(t, signal)
+        analyzer = HankelAnalyzer()
+        results, _ = analyzer.analyze(ds, mode_method="fixed", n_modes=3)
+
+        assert results["n_modes"] == 3
+
+    def test_fixed_mode_missing_n_modes_raises(self):
+        """Fixed mode selection without n_modes kwarg should raise ValueError."""
+        s = np.array([10.0, 5.0, 1.0, 0.1])
+        with pytest.raises(ValueError, match="n_modes"):
+            HankelAnalyzer._select_n_modes(s, method="fixed")
+
+    def test_unknown_mode_method_raises(self):
+        """Unknown mode selection method should raise ValueError."""
+        s = np.array([10.0, 5.0, 1.0])
+        with pytest.raises(ValueError, match="Unknown"):
+            HankelAnalyzer._select_n_modes(s, method="bogus")

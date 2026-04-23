@@ -1,0 +1,336 @@
+"""
+Qubit Spectroscopy Protocol
+============================
+Peak-finding and Lorentzian fitting for qubit spectroscopy data.
+
+The analyser computes the distance of each IQ point from a reference
+point in the complex plane, subtracts a polynomial baseline, detects
+peaks with ``scipy.signal.find_peaks``, and fits a Lorentzian to each peak.
+
+When a complex ``ref`` is provided, the signal is ``|IQdata - ref|``.
+Otherwise the reference is auto-estimated as the median of the complex
+IQ data (robust for spectroscopy sweeps where most points are off-resonance).
+
+Expected xarray.Dataset contract
+---------------------------------
+Coordinates:
+    - detuning : 1-D float array – drive-frequency detuning from the LO (Hz).
+    - full_freq: (detuning,) absolute drive frequency (Hz). Optional;
+                 if present, peak positions are also reported in absolute freq.
+Data variables:
+    - IQdata   : (detuning,) – complex demodulated signal (I + iQ).
+
+The dataset should have the ``qubit`` dimension already removed (e.g. via
+``repetition_data`` from ``scqat.parsers.qualibrate_parser``).
+"""
+
+from typing import Any, Dict, List
+
+import numpy as np
+from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
+import matplotlib.pyplot as plt
+import xarray as xr
+
+from scqat.core.base_analyzer import BaseAnalyzer
+
+
+# ------------------------------------------------------------------
+# Lorentzian model
+# ------------------------------------------------------------------
+
+def lorentzian(x, x0, amplitude, gamma, offset):
+    """
+    Lorentzian peak (can be negative amplitude for dips).
+
+    Parameters
+    ----------
+    x : array-like
+        Frequency axis.
+    x0 : float
+        Centre frequency.
+    amplitude : float
+        Peak height (signed; negative = dip).
+    gamma : float
+        Half-width at half-maximum (HWHM).
+    offset : float
+        Constant background.
+    """
+    return offset + amplitude / (1 + ((x - x0) / gamma) ** 2)
+
+
+# ------------------------------------------------------------------
+# Helper: baseline estimation
+# ------------------------------------------------------------------
+
+def _estimate_baseline(x: np.ndarray, y: np.ndarray, order: int = 1,
+                       quantile: float = 0.25):
+    """
+    Fit a polynomial baseline through the *quietest* portion of the
+    spectrum (bottom ``quantile`` fraction sorted by absolute deviation
+    from the median).
+    """
+    med = np.median(y)
+    dev = np.abs(y - med)
+    threshold = np.quantile(dev, quantile)
+    mask = dev <= threshold
+    coeffs = np.polyfit(x[mask], y[mask], deg=order)
+    return np.polyval(coeffs, x)
+
+
+# ------------------------------------------------------------------
+# Analyzer
+# ------------------------------------------------------------------
+
+class QubitSpectroscopyAnalyzer(BaseAnalyzer):
+    """
+    Detect and fit peaks in qubit spectroscopy data.
+
+    Results are returned per-qubit.  Each qubit entry contains a list of
+    peak dictionaries with keys: ``detuning``, ``full_freq`` (if available),
+    ``amplitude``, ``fwhm``, ``offset``, and the best-fit arrays.
+    """
+
+    protocol_name = "qubit_spectroscopy"
+
+    # ------------------------------------------------------------------
+    # Data validation
+    # ------------------------------------------------------------------
+    def _check_data(self, dataset: xr.Dataset) -> None:
+        if "detuning" not in dataset.coords:
+            raise ValueError(
+                "QubitSpectroscopyAnalyzer requires a 'detuning' coordinate."
+            )
+        if "IQdata" not in dataset.data_vars:
+            raise ValueError(
+                "Dataset must contain an 'IQdata' (complex) data variable."
+            )
+
+    # ------------------------------------------------------------------
+    # Core extraction
+    # ------------------------------------------------------------------
+    def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
+        """
+        Detect peaks and fit Lorentzians in a single-qubit dataset.
+
+        The dataset is expected to have the ``qubit`` dimension already
+        removed (e.g. via ``repetition_data``).  The 1-D ``detuning``
+        coordinate is the only required dimension.
+
+        Keyword arguments
+        -----------------
+        ref : complex, optional
+            Reference point in the IQ plane.  When provided, the signal
+            for peak detection is ``|IQdata - ref|``.  When omitted, the
+            reference is auto-estimated as the median of the complex IQ
+            data (works well when most sweep points are off-resonance).
+        prominence : float, optional
+            Minimum prominence for ``find_peaks`` relative to the baseline-
+            subtracted signal span.  Default 0.1 (10 %).
+        max_peaks : int or None, optional
+            Maximum number of peaks to return.  When set, the *max_peaks*
+            most prominent peaks are kept (sorted by amplitude) and the
+            rest are discarded.  Default ``None`` (keep all).
+        fit_window_factor : float, optional
+            Each peak is fitted inside a window of
+            ``fit_window_factor * estimated_width`` around the peak centre.
+            Default 5.
+        signal_var : str, optional
+            Force using a specific data variable instead of IQdata.
+            Default: use IQdata.
+
+        Returns
+        -------
+        dict
+            ``{signal, baseline, signal_corrected, ref_iq,
+            inverted, peaks: [...]}``
+        """
+        ref = kwargs.get("ref", None)
+        prominence_rel = kwargs.get("prominence", 0.1)
+        max_peaks = kwargs.get("max_peaks", None)
+        fit_window_factor = kwargs.get("fit_window_factor", 5.0)
+        signal_var = kwargs.get("signal_var", None)
+
+        detuning = dataset.coords["detuning"].values.astype(float)
+
+        # --- Choose / build the 1-D signal ---
+        if signal_var is not None:
+            signal = dataset[signal_var].values.astype(float).ravel()
+            ref_iq = None
+        else:
+            iq_complex = dataset["IQdata"].values.ravel()
+            if ref is not None:
+                ref_iq = complex(ref)
+            else:
+                # Auto-estimate: median of the complex IQ cloud
+                ref_iq = complex(np.median(iq_complex.real),
+                                 np.median(iq_complex.imag))
+            signal = np.abs(iq_complex - ref_iq)
+
+        # --- Baseline subtraction ---
+        baseline = _estimate_baseline(detuning, signal)
+        signal_corrected = signal - baseline
+
+        # --- Peak detection ---
+        # Try both polarities; keep the one whose most prominent
+        # peak is larger (handles both absorption dips and emission peaks).
+        span = signal_corrected.max() - signal_corrected.min()
+        abs_prom = prominence_rel * span
+
+        idx_pos, props_pos = find_peaks(
+            signal_corrected, prominence=abs_prom, width=1,
+        )
+        idx_neg, props_neg = find_peaks(
+            -signal_corrected, prominence=abs_prom, width=1,
+        )
+
+        best_pos = props_pos["prominences"].max() if len(idx_pos) else 0
+        best_neg = props_neg["prominences"].max() if len(idx_neg) else 0
+
+        if best_neg > best_pos:
+            peak_indices, properties = idx_neg, props_neg
+            signal_corrected = -signal_corrected
+            inverted = True
+        else:
+            peak_indices, properties = idx_pos, props_pos
+            inverted = False
+
+        # --- Keep only the most prominent peaks if max_peaks is set ---
+        if max_peaks is not None and len(peak_indices) > max_peaks:
+            top_idx = np.argsort(properties["prominences"])[::-1][:max_peaks]
+            top_idx = np.sort(top_idx)  # preserve original order
+            peak_indices = peak_indices[top_idx]
+            for key in properties:
+                properties[key] = properties[key][top_idx]
+
+        # --- Fit Lorentzians to each peak ---
+        peaks_info: List[Dict[str, Any]] = []
+        for i, idx in enumerate(peak_indices):
+            est_width_pts = properties["widths"][i] if "widths" in properties else 10
+            hw = int(fit_window_factor * max(est_width_pts, 3))
+            lo = max(idx - hw, 0)
+            hi = min(idx + hw + 1, len(detuning))
+
+            x_win = detuning[lo:hi]
+            y_win = signal_corrected[lo:hi]
+
+            center_guess = detuning[idx]
+            amp_guess = signal_corrected[idx] if not inverted else -signal_corrected[idx]
+            gamma_guess = abs(detuning[min(idx + max(int(est_width_pts // 2), 1), len(detuning) - 1)]
+                              - detuning[idx])
+            if gamma_guess == 0:
+                gamma_guess = abs(detuning[1] - detuning[0]) * 5
+
+            p0 = [center_guess, amp_guess, gamma_guess, 0.0]
+            bounds_lo = [detuning[lo], -np.inf, 0, -np.inf]
+            bounds_hi = [detuning[hi - 1], np.inf, (detuning[-1] - detuning[0]), np.inf]
+
+            try:
+                popt, pcov = curve_fit(
+                    lorentzian, x_win, y_win, p0=p0,
+                    bounds=(bounds_lo, bounds_hi), maxfev=10000,
+                )
+                perr = np.sqrt(np.diag(pcov))
+            except RuntimeError:
+                # Fall back to initial guess
+                popt = np.array(p0)
+                perr = np.full(4, np.nan)
+
+            det_fit = popt[0]
+            fwhm = 2 * abs(popt[2])
+
+            peak_entry: Dict[str, Any] = {
+                "detuning": float(det_fit),
+                "amplitude": float(popt[1]),
+                "fwhm": float(fwhm),
+                "offset": float(popt[3]),
+                "detuning_err": float(perr[0]),
+                "amplitude_err": float(perr[1]),
+                "fwhm_err": float(2 * perr[2]),
+                "fit_x": x_win,
+                "fit_y": lorentzian(x_win, *popt),
+            }
+
+            # Report absolute frequency if available
+            if "full_freq" in dataset.coords:
+                freq_vals = dataset.coords["full_freq"].values.ravel().astype(float)
+                # Interpolate to find absolute frequency at this detuning
+                peak_entry["full_freq"] = float(np.interp(det_fit, detuning, freq_vals))
+
+            peaks_info.append(peak_entry)
+
+        # Sort peaks by detuning
+        peaks_info.sort(key=lambda p: p["detuning"])
+
+        return {
+            "signal": signal,
+            "baseline": baseline,
+            "signal_corrected": signal_corrected,
+            "ref_iq": ref_iq,
+            "inverted": inverted,
+            "peaks": peaks_info,
+        }
+
+    # ------------------------------------------------------------------
+    # Visualization
+    # ------------------------------------------------------------------
+    def generate_figures(
+        self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
+    ) -> Dict[str, plt.Figure]:
+        """
+        Single figure showing the spectrum, baseline, and
+        Lorentzian fits overlaid at each detected peak.
+        """
+        detuning = dataset.coords["detuning"].values.astype(float)
+
+        signal = results["signal"]
+        baseline = results["baseline"]
+        peaks = results["peaks"]
+
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2, 1, sharex=True,
+            gridspec_kw={"height_ratios": [3, 1]},
+            figsize=(10, 6), dpi=120,
+        )
+
+        # -- Top: raw signal + baseline + Lorentzian fits --
+        det_mhz = detuning / 1e6
+        ax_top.plot(det_mhz, signal, "-", lw=0.8, label="|IQdata - ref|")
+        ax_top.plot(det_mhz, baseline, "--", color="gray", lw=1.0, label="baseline")
+
+        for i, pk in enumerate(peaks):
+            ax_top.plot(
+                pk["fit_x"] / 1e6,
+                pk["fit_y"] + baseline[np.searchsorted(detuning, pk["fit_x"][0]):
+                                       np.searchsorted(detuning, pk["fit_x"][0]) + len(pk["fit_x"])],
+                "-", lw=1.5, color=f"C{i + 1}",
+                label=f"peak {i}: {pk['detuning'] / 1e6:.2f} MHz, FWHM={pk['fwhm'] / 1e6:.2f} MHz",
+            )
+            ax_top.axvline(pk["detuning"] / 1e6, color=f"C{i + 1}",
+                           ls=":", lw=0.8, alpha=0.7)
+
+        ax_top.set_ylabel("Signal (arb. u.)")
+        ax_top.legend(fontsize=8)
+        ax_top.set_title("Qubit spectroscopy")
+
+        # Add absolute-frequency twin axis if available
+        if len(peaks) > 0 and "full_freq" in peaks[0]:
+            if "full_freq" in dataset.coords:
+                freq_vals = dataset.coords["full_freq"].values.ravel().astype(float) / 1e9
+                ax_freq = ax_top.twiny()
+                ax_freq.set_xlim(freq_vals[0], freq_vals[-1])
+                ax_freq.set_xlabel("RF frequency (GHz)")
+
+        # -- Bottom: baseline-subtracted + fits --
+        corrected = results["signal_corrected"]
+        ax_bot.plot(det_mhz, corrected, "-", lw=0.8, color="C0")
+        for i, pk in enumerate(peaks):
+            ax_bot.plot(pk["fit_x"] / 1e6, pk["fit_y"],
+                        "-", lw=1.5, color=f"C{i + 1}")
+
+        ax_bot.axhline(0, color="k", lw=0.5)
+        ax_bot.set_xlabel("Detuning (MHz)")
+        ax_bot.set_ylabel("Corrected signal")
+
+        fig.tight_layout()
+        return {"spectrum": fig}

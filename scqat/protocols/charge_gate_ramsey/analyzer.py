@@ -129,6 +129,7 @@ class ChargeGateRamseyAnalyzer(BaseAnalyzer):
             charge_gates, f_1, f_2, f_c,
             frequency_hint=kwargs.get('abscos_frequency_hint', None),
             frequency_fixed=kwargs.get('abscos_frequency_fixed', None),
+            phase_bounds=kwargs.get('abscos_phase_bounds', None),
         )
 
         return {
@@ -181,9 +182,14 @@ class ChargeGateRamseyAnalyzer(BaseAnalyzer):
         )
 
     @staticmethod
-    def _fit_abscos_dispersion(charge_gates, f_1, f_2, f_c, frequency_hint=None, frequency_fixed=None):
+    def _fit_abscos_dispersion(charge_gates, f_1, f_2, f_c, frequency_hint=None, frequency_fixed=None, phase_bounds=None):
         """
         Merge |f_1 − f_c| and |f_2 − f_c| and fit with FitAbsCos.
+
+        Parameters
+        ----------
+        phase_bounds : tuple[float, float] | None
+            (min, max) bounds for the phase parameter.
 
         Returns (ModelResult | None, params dict | None).
         """
@@ -223,6 +229,9 @@ class ChargeGateRamseyAnalyzer(BaseAnalyzer):
             fitter.params['frequency'].set(value=frequency_fixed, vary=False)
         elif frequency_hint is not None:
             fitter.params['frequency'].set(value=frequency_hint)
+
+        if phase_bounds is not None:
+            fitter.params['phase'].set(min=phase_bounds[0], max=phase_bounds[1])
 
         try:
             fit_result = fitter.fit()
