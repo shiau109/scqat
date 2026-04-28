@@ -1,0 +1,15 @@
+"""
+math_tools package — shared mathematical fitters and helpers.
+
+Importing this package eagerly imports each fitter module so that they
+register with the ``get_fitter`` factory. New fitters must be added here
+to remain discoverable.
+"""
+
+from .function_fitting import FunctionFitting, register_fitter, get_fitter
+from . import fit_abscos  # noqa: F401
+from . import fit_damped_oscillation  # noqa: F401
+from . import fit_damping_beat  # noqa: F401
+from . import fit_gaussian2d  # noqa: F401
+from . import fit_lorentzian  # noqa: F401
+from . import fit_qubit_decoherence  # noqa: F401

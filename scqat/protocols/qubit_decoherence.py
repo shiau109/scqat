@@ -22,57 +22,16 @@ Expected xarray.Dataset contract:
 from typing import Any, Dict
 
 import numpy as np
-from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_analyzer import BaseAnalyzer
-
-
-# ------------------------------------------------------------------
-# Model functions (module-level so they can be imported for testing)
-# ------------------------------------------------------------------
-
-def _decoherence_G(t, Gamma, Lambda):
-    """
-    Decoherence function G(t).
-
-    Parameters
-    ----------
-    t : array-like
-        Time values.
-    Gamma : float
-        Qubit relaxation rate (1/T1).
-    Lambda : float
-        Spectral-width parameter of the environment.
-
-    Returns
-    -------
-    G : ndarray (real)
-    """
-    d_sq = Lambda * (Lambda - 2 * Gamma)
-    d = np.sqrt(np.complex128(d_sq))
-    if np.abs(d) < 1e-15:
-        # Critical damping: L'Hopital limit of (Lambda/d)*sinh(d*t/2) -> Lambda*t/2
-        G = np.exp(-Lambda * t / 2) * (1.0 + Lambda * t / 2)
-    else:
-        arg = d * t / 2
-        G = np.exp(-Lambda * t / 2) * (
-            np.cosh(arg) + (Lambda / d) * np.sinh(arg)
-        )
-    return np.real(G).astype(float)
-
-
-def _rho11_model(t, Gamma, Lambda, rho11_0):
-    """Model for rho_11(t) = |G(t)|^2 * rho_11(0)."""
-    G = _decoherence_G(t, Gamma, Lambda)
-    return np.abs(G) ** 2 * rho11_0
-
-
-def _rho10_model(t, Gamma, Lambda, rho10_0):
-    """Model for rho_10(t) = G(t) * rho_10(0)."""
-    G = _decoherence_G(t, Gamma, Lambda)
-    return G * rho10_0
+from scqat.math_tools.fit_qubit_decoherence import (
+    FitQubitDecoherence,
+    decoherence_G as _decoherence_G,
+    rho11_model as _rho11_model,
+    rho10_model as _rho10_model,
+)
 
 
 class QubitDecoherenceAnalyzer(BaseAnalyzer):
@@ -98,38 +57,6 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
             )
 
     # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _initial_guess_Lambda(t, y):
-        """Rough estimate of Lambda from the envelope decay."""
-        y_abs = np.abs(y)
-        mask = y_abs > y_abs.max() * 0.01
-        if mask.sum() < 2:
-            return 1.0
-        t_span = t[mask][-1] - t[mask][0]
-        ratio = y_abs[mask][-1] / y_abs[mask][0]
-        if ratio <= 0 or ratio >= 1 or t_span <= 0:
-            return 1.0 / max(t_span, 1.0)
-        return -np.log(ratio) / t_span
-
-    @staticmethod
-    def _fit_with_retry(model_fn, t, y_data, p0, bounds):
-        """Try curve_fit; on failure, retry with swapped Gamma/Lambda guess."""
-        try:
-            popt, pcov = curve_fit(
-                model_fn, t, y_data, p0=p0, bounds=bounds, maxfev=10000,
-            )
-            return popt, np.sqrt(np.diag(pcov))
-        except RuntimeError:
-            p0_alt = list(p0)
-            p0_alt[0], p0_alt[1] = p0_alt[1], p0_alt[0]
-            popt, pcov = curve_fit(
-                model_fn, t, y_data, p0=p0_alt, bounds=bounds, maxfev=10000,
-            )
-            return popt, np.sqrt(np.diag(pcov))
-
-    # ------------------------------------------------------------------
     # BaseAnalyzer interface
     # ------------------------------------------------------------------
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
@@ -145,24 +72,26 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
         t = dataset.coords["time"].values.astype(float)
         results: Dict[str, Any] = {}
 
-        var_models = [("rho_11", _rho11_model), ("rho_10", _rho10_model)]
-        for var_name, model_fn in var_models:
+        for var_name in ("rho_11", "rho_10"):
             if var_name not in dataset.data_vars:
                 continue
 
             y_data = dataset[var_name].values.astype(float)
+            da = xr.DataArray(y_data, coords={"x": t}, dims="x")
 
-            Lambda_guess = self._initial_guess_Lambda(t, y_data)
-            Gamma_guess = Lambda_guess * 0.5
-            rho0_guess = float(y_data[0])
-            p0 = [Gamma_guess, Lambda_guess, rho0_guess]
-            bounds = ([0, 0, -np.inf], [np.inf, np.inf, np.inf])
+            fitter = FitQubitDecoherence(da, component=var_name)
+            result = fitter.fit()
 
-            popt, perr = self._fit_with_retry(model_fn, t, y_data, p0, bounds)
-            Gamma_fit, Lambda_fit, rho0_fit = popt
-            Gamma_err, Lambda_err, rho0_err = perr
+            p = result.params
+            Gamma_fit = float(p["Gamma"].value)
+            Lambda_fit = float(p["Lambda"].value)
+            rho0_fit = float(p["rho_0"].value)
+            Gamma_err = float(p["Gamma"].stderr) if p["Gamma"].stderr is not None else float("nan")
+            Lambda_err = float(p["Lambda"].stderr) if p["Lambda"].stderr is not None else float("nan")
+            rho0_err = float(p["rho_0"].stderr) if p["rho_0"].stderr is not None else float("nan")
 
-            y_fit = model_fn(t, *popt)
+            model_fn = _rho11_model if var_name == "rho_11" else _rho10_model
+            y_fit = model_fn(t, Gamma_fit, Lambda_fit, rho0_fit)
 
             d_sq = Lambda_fit * (Lambda_fit - 2 * Gamma_fit)
             if d_sq > 1e-20:
@@ -173,13 +102,13 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
                 regime = "critical"
 
             results[var_name] = {
-                "Gamma": float(Gamma_fit),
-                "Gamma_err": float(Gamma_err),
-                "Lambda": float(Lambda_fit),
-                "Lambda_err": float(Lambda_err),
+                "Gamma": Gamma_fit,
+                "Gamma_err": Gamma_err,
+                "Lambda": Lambda_fit,
+                "Lambda_err": Lambda_err,
                 "d": complex(np.sqrt(np.complex128(d_sq))),
-                "rho_0": float(rho0_fit),
-                "rho_0_err": float(rho0_err),
+                "rho_0": rho0_fit,
+                "rho_0_err": rho0_err,
                 "fit_curve": y_fit,
                 "residuals": y_data - y_fit,
                 "regime": regime,

@@ -27,36 +27,12 @@ The dataset should have the ``qubit`` dimension already removed (e.g. via
 from typing import Any, Dict, List
 
 import numpy as np
-from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_analyzer import BaseAnalyzer
-
-
-# ------------------------------------------------------------------
-# Lorentzian model
-# ------------------------------------------------------------------
-
-def lorentzian(x, x0, amplitude, gamma, offset):
-    """
-    Lorentzian peak (can be negative amplitude for dips).
-
-    Parameters
-    ----------
-    x : array-like
-        Frequency axis.
-    x0 : float
-        Centre frequency.
-    amplitude : float
-        Peak height (signed; negative = dip).
-    gamma : float
-        Half-width at half-maximum (HWHM).
-    offset : float
-        Constant background.
-    """
-    return offset + amplitude / (1 + ((x - x0) / gamma) ** 2)
+from scqat.math_tools.fit_lorentzian import FitLorentzian, lorentzian
 
 
 # ------------------------------------------------------------------
@@ -214,26 +190,35 @@ class QubitSpectroscopyAnalyzer(BaseAnalyzer):
             x_win = detuning[lo:hi]
             y_win = signal_corrected[lo:hi]
 
-            center_guess = detuning[idx]
-            amp_guess = signal_corrected[idx] if not inverted else -signal_corrected[idx]
-            gamma_guess = abs(detuning[min(idx + max(int(est_width_pts // 2), 1), len(detuning) - 1)]
-                              - detuning[idx])
-            if gamma_guess == 0:
-                gamma_guess = abs(detuning[1] - detuning[0]) * 5
-
-            p0 = [center_guess, amp_guess, gamma_guess, 0.0]
-            bounds_lo = [detuning[lo], -np.inf, 0, -np.inf]
-            bounds_hi = [detuning[hi - 1], np.inf, (detuning[-1] - detuning[0]), np.inf]
-
+            da_win = xr.DataArray(y_win, coords={'x': x_win}, dims='x')
+            x_lo_b = float(detuning[lo])
+            x_hi_b = float(detuning[hi - 1])
+            gamma_max = float(detuning[-1] - detuning[0])
+            fitter = FitLorentzian(
+                da_win,
+                inverted=inverted,
+                bounds={'x0': (x_lo_b, x_hi_b), 'gamma': (0.0, gamma_max)},
+            )
             try:
-                popt, pcov = curve_fit(
-                    lorentzian, x_win, y_win, p0=p0,
-                    bounds=(bounds_lo, bounds_hi), maxfev=10000,
-                )
-                perr = np.sqrt(np.diag(pcov))
-            except RuntimeError:
+                result = fitter.fit()
+                p = result.params
+                popt = np.array([p['x0'].value, p['amplitude'].value,
+                                 p['gamma'].value, p['offset'].value])
+                perr = np.array([
+                    p['x0'].stderr if p['x0'].stderr is not None else np.nan,
+                    p['amplitude'].stderr if p['amplitude'].stderr is not None else np.nan,
+                    p['gamma'].stderr if p['gamma'].stderr is not None else np.nan,
+                    p['offset'].stderr if p['offset'].stderr is not None else np.nan,
+                ])
+            except Exception:
                 # Fall back to initial guess
-                popt = np.array(p0)
+                center_guess = detuning[idx]
+                amp_guess = signal_corrected[idx] if not inverted else -signal_corrected[idx]
+                gamma_guess = abs(detuning[min(idx + max(int(est_width_pts // 2), 1), len(detuning) - 1)]
+                                  - detuning[idx])
+                if gamma_guess == 0:
+                    gamma_guess = abs(detuning[1] - detuning[0]) * 5
+                popt = np.array([center_guess, amp_guess, gamma_guess, 0.0])
                 perr = np.full(4, np.nan)
 
             det_fit = popt[0]

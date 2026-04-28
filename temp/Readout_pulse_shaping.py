@@ -150,8 +150,8 @@ if __name__ == "__main__":
            'time':6000, 
            'ti':0,
            'Du':4000,    
-           'first_step_Du': 800,
-           'third_step_Du': 800 
+           'first_step_Du': 100,
+           'third_step_Du': 100 
           }
     # para_test={'ki':0,'ke':0.004,'fc':5.95,'frf':5.95, 'X_eff':0.002,
     #            'pulse_shape':'Three_step', 
