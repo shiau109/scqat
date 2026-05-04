@@ -10,7 +10,7 @@ para_base = {
     'X_eff': 0.000075,
     'pulse_shape': 'Three_step',
     'phase_correction': False,
-    'P_in': -120,
+    'P_in': -115,
     'time': 6000,
     'ti': 0,
     'Du': 4000,
@@ -73,12 +73,12 @@ axes[2].axhline(y=0, color='k', linestyle='dashed', lw=1)
 
 # axes[2].legend(fontsize=7, title="pulse_shape", ncol=2)
 axes[2].set_yscale('log')
-axes[2].set_ylim(5e-2, 10)
+axes[2].set_ylim(1e-1, 100)
 
 ax3.set_xlabel(r'$\bar{n}_r$', size=13)
 ax3.set_ylabel(r'$|\Gamma_{r}|\ (\bar{n}_r/\mathrm{ns})$', size=13)
 ax3.set_yscale('log')
-ax3.set_ylim(5e-2, 10)
+ax3.set_ylim(1e-1, 100)
 ax3.legend(fontsize=7, title="pulse shape", ncol=2)
 
 fig.tight_layout()
