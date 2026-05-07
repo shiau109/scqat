@@ -2,15 +2,15 @@
 Qubit Decoherence Protocol
 ==========================
 Fits time-resolved density-matrix elements (rho_11, rho_10) to extract
-the Lindbladian decoherence rates (gamma, lambda_) from the non-Markovian
-amplitude-damping model:
+the Lindbladian decoherence rates (gamma, lambda_, Delta) from the
+non-Markovian amplitude-damping model:
 
     Lambda = gamma / 2
-    d      = sqrt(Lambda**2 - 4 * lambda_**2)
-    G(t)   = exp(-Lambda*t/2) [cosh(d*t/2) + (Lambda/d) sinh(d*t/2)]
+    a      = Lambda - 1j*Delta
+    d      = sqrt(a**2 - 2*Gamma*Lambda) = sqrt(a**2 - 4*lambda_**2)
+    G(t)   = exp(-a*t/2) [cosh(d*t/2) + (a/d) sinh(d*t/2)]
 
     rho_11(t) = |G(t)|^2  rho_11(0)
-    rho_10(t) =  G(t)     rho_10(0)
 
 Relation to the older (Gamma, Lambda) parameterisation:
     gamma   = 2 * Lambda                  (relaxation rate)
@@ -68,13 +68,19 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
         """
         Fit rho_11(t) and/or rho_10(t) to the decoherence model.
 
+        Parameters
+        ----------
+        fix_delta : bool, optional
+            If True, Delta is fixed to 0 during fitting (default False).
+
         Returns
         -------
         dict with a sub-dict for each fitted variable containing:
-            gamma, gamma_err, lambda_, lambda_err, d, rho_0, rho_0_err,
-            fit_curve, residuals, regime
+            gamma, gamma_err, lambda_, lambda_err, Delta, Delta_err,
+            d, rho_0, rho_0_err, fit_curve, residuals, regime
         """
         t = dataset.coords["time"].values.astype(float)
+        fix_delta: bool = bool(kwargs.get("fix_delta", False))
         results: Dict[str, Any] = {}
 
         for var_name in ("rho_11", "rho_10"):
@@ -84,25 +90,29 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
             y_data = dataset[var_name].values.astype(float)
             da = xr.DataArray(y_data, coords={"x": t}, dims="x")
 
-            fitter = FitQubitDecoherence(da, component=var_name)
+            fitter = FitQubitDecoherence(da, component=var_name, fix_delta=fix_delta)
             result = fitter.fit()
 
             p = result.params
             gamma_fit = float(p["gamma"].value)
             lambda_fit = float(p["lambda_"].value)
+            Delta_fit = float(p["Delta"].value)
             rho0_fit = float(p["rho_0"].value)
             gamma_err = float(p["gamma"].stderr) if p["gamma"].stderr is not None else float("nan")
             lambda_err = float(p["lambda_"].stderr) if p["lambda_"].stderr is not None else float("nan")
+            Delta_err = float(p["Delta"].stderr) if p["Delta"].stderr is not None else float("nan")
             rho0_err = float(p["rho_0"].stderr) if p["rho_0"].stderr is not None else float("nan")
 
             model_fn = _rho11_model if var_name == "rho_11" else _rho10_model
-            y_fit = model_fn(t, gamma_fit, lambda_fit, rho0_fit)
+            y_fit = model_fn(t, gamma_fit, lambda_fit, Delta_fit, rho0_fit)
 
-            # d^2 = (gamma/2)^2 - 4*lambda_^2
-            d_sq = (gamma_fit / 2.0) ** 2 - 4.0 * lambda_fit ** 2
-            if d_sq > 1e-20:
+            # d^2 = (Lambda - 1j*Delta)^2 - 4*lambda_^2
+            a = gamma_fit / 2.0 - 1j * Delta_fit
+            d_complex = complex(np.sqrt(np.complex128(a * a - 4.0 * lambda_fit ** 2)))
+            d_sq_real = (gamma_fit / 2.0) ** 2 - 4.0 * lambda_fit ** 2
+            if d_sq_real > 1e-20:
                 regime = "overdamped"
-            elif d_sq < -1e-20:
+            elif d_sq_real < -1e-20:
                 regime = "underdamped"
             else:
                 regime = "critical"
@@ -112,7 +122,9 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
                 "gamma_err": gamma_err,
                 "lambda_": lambda_fit,
                 "lambda_err": lambda_err,
-                "d": complex(np.sqrt(np.complex128(d_sq))),
+                "Delta": Delta_fit,
+                "Delta_err": Delta_err,
+                "d": d_complex,
                 "rho_0": rho0_fit,
                 "rho_0_err": rho0_err,
                 "fit_curve": y_fit,
@@ -148,7 +160,8 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
                 label=(
                     f"fit ("
                     f"\u03b3={res['gamma']:.4g}, "
-                    f"\u03bb={res['lambda_']:.4g})"
+                    f"\u03bb={res['lambda_']:.4g}, "
+                    f"\u0394={res['Delta']:.4g})"
                 ),
             )
             ax_top.set_ylabel(label)

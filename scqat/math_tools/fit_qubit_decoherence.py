@@ -25,45 +25,47 @@ from .function_fitting import FunctionFitting, register_fitter
 # form was derived in those variables -- this keeps the math transparent.
 
 
-def decoherence_G(x, gamma, lambda_):
+def decoherence_G(x, gamma, lambda_, Delta):
     """
-    Non-Markovian amplitude-damping decoherence function G(t):
+    Non-Markovian amplitude-damping decoherence function G(t) with a
+    detuning ``Delta``:
 
         Lambda = gamma / 2
-        d      = sqrt(Lambda**2 - 4*lambda_**2)
-        G(t)   = exp(-Lambda*t/2) [cosh(d*t/2) + (Lambda/d) sinh(d*t/2)]
+        a      = Lambda - 1j*Delta
+        d      = sqrt(a**2 - 2*Gamma*Lambda) = sqrt(a**2 - 4*lambda_**2)
+        G(t)   = exp(-a*t/2) [cosh(d*t/2) + (a/d) sinh(d*t/2)]
 
-    Critical damping occurs at gamma = 4*lambda_ (d = 0).
     The independent variable is named ``x`` (= time) for compatibility with
-    the FunctionFitting/lmfit convention.  Returns the real part (G is real
-    for the standard parameter ranges).
+    the FunctionFitting/lmfit convention.  Returns the complex G(t); callers
+    take |G|^2 or Re(G) as appropriate for the observed component.
     """
     t = np.asarray(x, dtype=float)
     Lambda = gamma / 2.0
-    # d^2 = Lambda^2 - 2*Gamma*Lambda = (gamma/2)^2 - 4*lambda_^2
-    d_sq = Lambda * Lambda - 4.0 * lambda_ * lambda_
+    a = Lambda - 1j * Delta
+    # d^2 = a^2 - 2*Gamma*Lambda = a^2 - 4*lambda_^2
+    d_sq = a * a - 4.0 * lambda_ * lambda_
     d = np.sqrt(np.complex128(d_sq))
     if np.abs(d) < 1e-15:
         # Critical-damping limit
-        G = np.exp(-Lambda * t / 2) * (1.0 + Lambda * t / 2)
+        G = np.exp(-a * t / 2) * (1.0 + a * t / 2)
     else:
         arg = d * t / 2
-        G = np.exp(-Lambda * t / 2) * (
-            np.cosh(arg) + (Lambda / d) * np.sinh(arg)
+        G = np.exp(-a * t / 2) * (
+            np.cosh(arg) + (a / d) * np.sinh(arg)
         )
-    return np.real(G).astype(float)
+    return np.asarray(G, dtype=np.complex128)
 
 
-def rho11_model(x, gamma, lambda_, rho_0):
+def rho11_model(x, gamma, lambda_, Delta, rho_0):
     """rho_11(t) = |G(t)|^2 * rho_11(0)."""
-    G = decoherence_G(x, gamma, lambda_)
-    return np.abs(G) ** 2 * rho_0
+    G = decoherence_G(x, gamma, lambda_, Delta)
+    return (np.abs(G) ** 2 * rho_0).astype(float)
 
 
-def rho10_model(x, gamma, lambda_, rho_0):
-    """rho_10(t) = G(t) * rho_10(0)."""
-    G = decoherence_G(x, gamma, lambda_)
-    return G * rho_0
+def rho10_model(x, gamma, lambda_, Delta, rho_0):
+    """rho_10(t) = Re[G(t)] * rho_10(0)."""
+    G = decoherence_G(x, gamma, lambda_, Delta)
+    return (np.real(G) * rho_0).astype(float)
 
 
 @register_fitter('qubit_decoherence')
@@ -79,10 +81,11 @@ class FitQubitDecoherence(FunctionFitting):
     coordinate named 'x' (time).
     """
 
-    def __init__(self, data: DataArray = None, component: str = "rho_11"):
+    def __init__(self, data: DataArray = None, component: str = "rho_11", fix_delta: bool = False):
         if component not in ("rho_11", "rho_10"):
             raise ValueError("component must be 'rho_11' or 'rho_10'.")
         self.component = component
+        self.fix_delta = fix_delta
         self._data_parser(data)
         self._model_fn = rho11_model if component == "rho_11" else rho10_model
         self.model = Model(self._model_fn)
@@ -94,8 +97,8 @@ class FitQubitDecoherence(FunctionFitting):
         self.y = data.values.astype(float)
         self.x = data.coords["x"].values.astype(float)
 
-    def model_function(self, x, gamma, lambda_, rho_0):
-        return self._model_fn(x, gamma, lambda_, rho_0)
+    def model_function(self, x, gamma, lambda_, Delta, rho_0):
+        return self._model_fn(x, gamma, lambda_, Delta, rho_0)
 
     @staticmethod
     def _envelope_decay_time(t, y):
@@ -140,9 +143,11 @@ class FitQubitDecoherence(FunctionFitting):
         lambda_guess = float(np.sqrt(Gamma_guess * Lambda_guess / 2.0))
         rho0_guess = float(y[0])
 
+        delta_spec = dict(value=0.0, vary=False) if self.fix_delta else dict(value=0.0, min=-0.01, max=0.01)
         self.params = self.model.make_params(
             gamma=dict(value=gamma_guess, min=0.0, max=0.02),
             lambda_=dict(value=lambda_guess, min=0.0, max=0.02),
+            Delta=delta_spec,
             rho_0=dict(value=rho0_guess),
         )
         return self.params
@@ -162,6 +167,7 @@ class FitQubitDecoherence(FunctionFitting):
         # Gamma/Lambda ratios span deep-underdamped -> critical -> overdamped.
         gamma_over_Lambda_ratios = (0.5, 1.0, 1.5, 2)
 
+        delta_spec = dict(value=0.0, vary=False) if self.fix_delta else dict(value=0.0, min=-0.01, max=0.01)
         best_result = None
         best_chi = np.inf
         for r in gamma_over_Lambda_ratios:
@@ -171,6 +177,7 @@ class FitQubitDecoherence(FunctionFitting):
             seed = self.model.make_params(
                 gamma=dict(value=gamma_seed, min=0.0, max=0.01),
                 lambda_=dict(value=lambda_seed, min=0.0, max=0.02),
+                Delta=delta_spec,
                 rho_0=dict(value=rho0, min=-1.2, max=1.2),
             )
             try:

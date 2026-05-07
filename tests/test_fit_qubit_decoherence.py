@@ -28,7 +28,7 @@ class TestFitQubitDecoherence:
         # Old (Gamma=0.3, Lambda=1.0) -> (gamma=2.0, lambda_=sqrt(0.15)).
         gamma, lambda_, rho0 = 2.0, np.sqrt(0.15), 0.95
         t = _time_axis()
-        y = rho11_model(t, gamma, lambda_, rho0)
+        y = rho11_model(t, gamma, lambda_, 0.0, rho0)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         result = FitQubitDecoherence(da, component='rho_11').fit()
         assert result.success
@@ -40,7 +40,7 @@ class TestFitQubitDecoherence:
         # Old (Gamma=0.4, Lambda=1.5) -> (gamma=3.0, lambda_=sqrt(0.3)).
         gamma, lambda_, rho0 = 3.0, np.sqrt(0.3), 0.5
         t = _time_axis()
-        y = rho10_model(t, gamma, lambda_, rho0)
+        y = rho10_model(t, gamma, lambda_, 0.0, rho0)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         result = FitQubitDecoherence(da, component='rho_10').fit()
         assert result.success
@@ -52,7 +52,7 @@ class TestFitQubitDecoherence:
         gamma, lambda_, rho0 = 4.0, np.sqrt(0.5), 1.0
         t = _time_axis(n=200, t_max=6.0)
         rng = np.random.default_rng(0)
-        y = rho11_model(t, gamma, lambda_, rho0) + rng.normal(0, 0.01, size=t.shape)
+        y = rho11_model(t, gamma, lambda_, 0.0, rho0) + rng.normal(0, 0.01, size=t.shape)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         result = FitQubitDecoherence(da, component='rho_11').fit()
         assert result.success
@@ -60,7 +60,7 @@ class TestFitQubitDecoherence:
 
     def test_factory_registration(self):
         t = _time_axis()
-        y = rho11_model(t, 2.0, np.sqrt(0.15), 1.0)
+        y = rho11_model(t, 2.0, np.sqrt(0.15), 0.0, 1.0)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         fitter = get_fitter('qubit_decoherence', data=da, component='rho_11')
         assert isinstance(fitter, FitQubitDecoherence)
@@ -72,15 +72,15 @@ class TestFitQubitDecoherence:
             FitQubitDecoherence(da, component='bad')
 
     def test_decoherence_G_zero_time(self):
-        # G(0) = 1 regardless of (gamma, lambda_).
-        assert decoherence_G(0.0, 2.0, np.sqrt(0.25)) == pytest.approx(1.0)
+        # G(0) = 1 regardless of (gamma, lambda_, Delta).
+        assert decoherence_G(0.0, 2.0, np.sqrt(0.25), 0.0) == pytest.approx(1.0)
 
     def test_rho11_underdamped_recovery(self):
         # Underdamped: gamma < 4*lambda_.
         # Old (Gamma=2.0, Lambda=0.10) -> (gamma=0.20, lambda_=sqrt(0.1)).
         gamma, lambda_, rho0 = 0.20, np.sqrt(0.1), 1.0
         t = np.linspace(0.0, 10.0, 200)
-        y = rho11_model(t, gamma, lambda_, rho0)
+        y = rho11_model(t, gamma, lambda_, 0.0, rho0)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         result = FitQubitDecoherence(da, component='rho_11').fit()
         assert result.success
@@ -92,7 +92,7 @@ class TestFitQubitDecoherence:
         gamma, lambda_, rho0 = 0.20, np.sqrt(0.1), 1.0
         t = np.linspace(0.0, 10.0, 200)
         rng = np.random.default_rng(42)
-        y = rho11_model(t, gamma, lambda_, rho0) + rng.normal(0, 0.02, size=t.shape)
+        y = rho11_model(t, gamma, lambda_, 0.0, rho0) + rng.normal(0, 0.02, size=t.shape)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         result = FitQubitDecoherence(da, component='rho_11').fit()
         assert result.success
@@ -104,7 +104,7 @@ class TestFitQubitDecoherence:
         # Old (Gamma=0.5, Lambda=1.0) -> (gamma=2.0, lambda_=0.5).
         gamma, lambda_, rho0 = 2.0, 0.5, 1.0
         t = np.linspace(0.0, 10.0, 200)
-        y = rho11_model(t, gamma, lambda_, rho0)
+        y = rho11_model(t, gamma, lambda_, 0.0, rho0)
         da = xr.DataArray(y, coords={'x': t}, dims='x')
         result = FitQubitDecoherence(da, component='rho_11').fit()
         assert result.success
