@@ -52,13 +52,18 @@ DEFAULT_RHO11_OFFSET = 0.045     # readout-zero subtraction
 DEFAULT_RHO11_SCALE = 0.78       # readout contrast normalization
 DEFAULT_TAIL_FRAC = 0.1          # fraction of tail used for baseline mean
 DEFAULT_HANKEL_KWARGS: dict[str, Any] = {
-    "mode_method": "relative",
+    "mode_method": "diff_ratio",
     "recon_method": "mpm",
-    "threshold": 3e-2,
+    "threshold": 1.5,
     "eigval_threshold": 1e-3,
 }
 
-
+# DEFAULT_HANKEL_KWARGS: dict[str, Any] = {
+#     "mode_method": "relative",
+#     "recon_method": "mpm",
+#     "threshold": 3e-2,
+#     "eigval_threshold": 1e-3,
+# }
 # ---------------------------------------------------------------------------
 # I/O + tomography
 # ---------------------------------------------------------------------------

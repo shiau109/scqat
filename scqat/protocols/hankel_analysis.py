@@ -70,9 +70,10 @@ class HankelAnalyzer(BaseAnalyzer):
         Parameters
         ----------
         s : 1-D array of singular values (descending).
-        method : {'relative', 'absolute', 'energy', 'gap', 'aic', 'mdl', 'fixed'}
+        method : {'relative', 'absolute', 'energy', 'gap', 'diff_ratio', 'aic', 'mdl', 'fixed'}
         kwargs :
-            threshold (float) – for 'relative' (default 2e-3) and 'absolute' (0.1).
+            threshold (float) – for 'relative' (default 2e-3), 'absolute' (default 0.1),
+                and 'diff_ratio' (default 2.0: ratio s[i]/s[i+1] must exceed this value).
             energy_target (float) – for 'energy' (default 0.95).
             n_modes (int) – for 'fixed', the exact number of modes to use.
             n_samples (int) – rows of Hankel matrix, needed for 'aic'/'mdl'.
@@ -92,6 +93,16 @@ class HankelAnalyzer(BaseAnalyzer):
             # Largest ratio drop between consecutive singular values
             ratios = s[:-1] / np.maximum(s[1:], np.finfo(float).tiny)
             n_modes = int(np.argmax(ratios)) + 1
+        elif method == "diff_ratio":
+            # Threshold on the ratio r[i] = s[i] / s[i+1].
+            # Keep all modes up to (and including) the last index where r[i] > threshold.
+            threshold = kwargs.get("threshold", 1.5)
+            ratios = s[:10] / np.maximum(s[1:11], np.finfo(float).tiny)
+            print(np.where(ratios > threshold))
+            above = np.where(ratios > threshold)[0]
+            n_modes = int(above[-1]) + 1 if len(above) > 0 else 1
+            print(n_modes)
+
         elif method in ("aic", "mdl"):
             # Wax–Kailath information-theoretic model-order selection.
             n_samples = kwargs.get("n_samples")
