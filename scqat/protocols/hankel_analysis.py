@@ -97,7 +97,7 @@ class HankelAnalyzer(BaseAnalyzer):
             # Threshold on the ratio r[i] = s[i] / s[i+1].
             # Keep all modes up to (and including) the last index where r[i] > threshold.
             threshold = kwargs.get("threshold", 1.5)
-            ratios = s[:10] / np.maximum(s[1:11], np.finfo(float).tiny)
+            ratios = s[:6] / s[1:7]
             above = np.where(ratios > threshold)[0]
             n_modes = int(above[-1]) + 1 if len(above) > 0 else 1
 

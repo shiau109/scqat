@@ -53,9 +53,21 @@ DEFAULT_TAIL_FRAC = 0.1          # fraction of tail used for baseline mean
 DEFAULT_HANKEL_KWARGS: dict[str, Any] = {
     "mode_method": "diff_ratio",
     "recon_method": "mpm",
-    "threshold": 1.5,
+    "threshold": 3,
     "eigval_threshold": 1e-3,
 }
+
+# For data
+# DEFAULT_BASIS_INDEX = 2          # Z-basis index used for sq_data preview
+# DEFAULT_RHO11_OFFSET = 0.045     # readout-zero subtraction
+# DEFAULT_RHO11_SCALE = 0.78       # readout contrast normalization
+# DEFAULT_TAIL_FRAC = 0.1          # fraction of tail used for baseline mean
+# DEFAULT_HANKEL_KWARGS: dict[str, Any] = {
+#     "mode_method": "diff_ratio",
+#     "recon_method": "mpm",
+#     "threshold": 1.5,
+#     "eigval_threshold": 1e-3,
+# }
 
 # DEFAULT_HANKEL_KWARGS: dict[str, Any] = {
 #     "mode_method": "relative",
@@ -125,7 +137,7 @@ def _load_sim_rho_dataset(h5_path: str) -> xr.Dataset:
     import h5py
 
     with h5py.File(h5_path, "r") as f:
-        omega_flux_vals = f["omega_flux_vals"][()]
+        omega_flux_vals = f["sweep_vals"][()]/(2.0 * np.pi)*1e9  # convert from rad/s to Hz
         tlist = f["tlist"][()]
         all_expect = f["all_expect"][()]
         sim_attrs = {
@@ -472,6 +484,7 @@ def analyze(
     tail_frac: float = DEFAULT_TAIL_FRAC,
     hankel_kwargs: dict[str, Any] | None = None,
     repetition_dim: str = "qubit",
+    time_stride: int = 1,
     verbose: bool = True,
 ) -> list[dict[str, Any]]:
     """Run the full EP → ρ₁₁ decoherence pipeline on one HDF5 file.
@@ -484,6 +497,12 @@ def analyze(
         ``"exp"`` — experimental tomography file (Qualibrate / xarray HDF5).
         ``"sim"`` — QuTiP simulation file with ``all_expect`` / ``omega_flux_vals``
         / ``tlist`` datasets.
+    time_stride : int, optional
+        Step size along the ``driving_time`` axis used to downsample before
+        analysis.  A value of ``n`` keeps only indices 0, n, 2n, …  This is
+        useful when the simulation time axis has >1000 points that would make
+        the Hankel pre-analysis prohibitively slow.  Default ``1`` (no
+        downsampling).
 
     Returns
     -------
@@ -504,6 +523,13 @@ def analyze(
     entries = _ENTRY_LOADERS[mode](h5_path, **loader_kwargs)
     if verbose:
         print(f"[loading] done — {len(entries)} qubit(s) found")
+
+    if time_stride > 1:
+        for entry in entries:
+            entry["rho_ds"] = entry["rho_ds"].isel(driving_time=slice(None, None, time_stride))
+        if verbose:
+            n_t = entries[0]["rho_ds"].sizes.get("driving_time", "?")
+            print(f"[loading] time_stride={time_stride} → {n_t} driving_time points retained")
 
     return [
         {
