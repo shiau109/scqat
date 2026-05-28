@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict
 
 import numpy as np
@@ -156,6 +157,69 @@ class ChargeGateRamseyAnalyzer(BaseAnalyzer):
         figs['freq_vs_charge_gate'] = plot_1d_frequencies(results)
 
         return figs
+
+    # ------------------------------------------------------------------
+    # Payload export helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_plot_payload(results: Dict[str, Any], n_points: int = 200) -> Dict[str, np.ndarray]:
+        """
+        Extract the minimal numeric arrays needed to reconstruct the
+        2D spectrum-with-fit figure without any re-calculation.
+
+        Returns a dict suitable for ``np.savez_compressed``:
+            spectrum_2d       (n_cg, n_freq)  – FFT amplitude 2-D array
+            charge_gate_axis  (n_cg,)         – charge-gate coordinates
+            frequency_axis    (n_freq,)       – frequency coordinates
+            cg_fine           (n_points,)     – fine charge-gate grid for curves
+            fit_curve_even    (n_points,)     – f_c + |cos| fit
+            fit_curve_odd     (n_points,)     – f_c − |cos| fit
+        """
+        spectrum_ds = results.get('spectrum_dataset')
+        if spectrum_ds is None:
+            raise ValueError("results['spectrum_dataset'] is None; cannot build plot payload.")
+
+        charge_gate_axis = spectrum_ds.coords['charge_gate'].values
+        frequency_axis = spectrum_ds.coords['frequency'].values
+        spectrum_2d = spectrum_ds['spectrum'].values  # (n_cg, n_freq)
+
+        cg_fine = np.linspace(charge_gate_axis.min(), charge_gate_axis.max(), n_points)
+
+        abscos_params = results.get('abscos_params')
+        f_c = float(results['f_c'])
+        if abscos_params is not None and abscos_params.get('success', False):
+            amp = abscos_params['amplitude']
+            fit_freq = abscos_params['frequency']
+            phase = abscos_params['phase']
+            curve = amp * np.cos(2 * np.pi * fit_freq * (cg_fine - phase))
+            fit_curve_even = f_c + curve
+            fit_curve_odd = f_c - curve
+        else:
+            fit_curve_even = np.full(n_points, np.nan)
+            fit_curve_odd = np.full(n_points, np.nan)
+
+        return {
+            'spectrum_2d': spectrum_2d,
+            'charge_gate_axis': charge_gate_axis,
+            'frequency_axis': frequency_axis,
+            'cg_fine': cg_fine,
+            'fit_curve_even': fit_curve_even,
+            'fit_curve_odd': fit_curve_odd,
+        }
+
+    def save_metadata(self, results: Dict[str, Any], output_dir: str) -> None:
+        """Save the full results pickle and the lightweight plot-payload h5."""
+        super().save_metadata(results, output_dir)
+        try:
+            import h5py
+            payload = self.build_plot_payload(results)
+            h5_path = os.path.join(output_dir, f"{self.protocol_name}_plot_payload.h5")
+            with h5py.File(h5_path, 'w') as f:
+                for key, arr in payload.items():
+                    f.create_dataset(key, data=arr)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Private helpers

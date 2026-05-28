@@ -148,9 +148,6 @@ def _load_sim_rho_dataset(h5_path: str) -> xr.Dataset:
     return xr.Dataset(
         {
             "rho_11":     (["driving_frequency", "driving_time"], all_expect[:, :, 0]),
-            "rho_10_re":  (["driving_frequency", "driving_time"], all_expect[:, :, 1] / 2.0),
-            "rho_10_im":  (["driving_frequency", "driving_time"], all_expect[:, :, 2] / 2.0),
-            "photon_num": (["driving_frequency", "driving_time"], all_expect[:, :, 3]),
         },
         coords={
             "driving_frequency": omega_flux_vals,
