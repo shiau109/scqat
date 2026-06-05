@@ -145,6 +145,22 @@ class ChargeGateRamseyAnalyzer(BaseAnalyzer):
             'abscos_params': abscos_params,
         }
 
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Persist only the key parameters. The bulky intermediates kept in
+        ``results`` for plotting/inspection — ``spectrum_dataset`` (an
+        ``xr.Dataset``), ``per_gate_results``, and the lmfit ``abscos_fit_result``
+        — are deliberately excluded from the metadata file.
+        """
+        return {
+            'charge_gates': results['charge_gates'],
+            'f_1': results['f_1'],
+            'f_2': results['f_2'],
+            'model_types': results['model_types'],
+            'f_c': results['f_c'],
+            'abscos_params': results['abscos_params'],
+        }
+
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> xr.Dataset:

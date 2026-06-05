@@ -3,14 +3,14 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
 
-def plot_2d_histogram_single(hist_dataset, analysis_result=None):
+def plot_2d_histogram_single(plot_data):
     """
-    Plot a single-panel 2D histogram (density) from hist_dataset.
-    Optionally overlay Gaussian mean and std circles.
+    Plot a single-panel 2D histogram (density) from the plot_data Dataset,
+    overlaying the fitted Gaussian mean and std circles.
 
     Args:
-        hist_dataset (xr.Dataset): Dataset with variable 'density' and coords 'x', 'y'.
-        analysis_result (dict, optional): Fit results with 'fitted_paras'.
+        plot_data (xr.Dataset): variable 'density' over coords 'x', 'y', with
+            ``mean_I``, ``mean_Q``, ``std``, ``outlier_probability`` in ``.attrs``.
     Returns:
         fig, ax
     """
@@ -18,8 +18,8 @@ def plot_2d_histogram_single(hist_dataset, analysis_result=None):
 
     fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
 
-    x = hist_dataset["x"].values
-    y = hist_dataset["y"].values
+    x = plot_data["x"].values
+    y = plot_data["y"].values
     xedges = (
         np.concatenate([x - (x[1] - x[0]) / 2, [x[-1] + (x[1] - x[0]) / 2]])
         if len(x) > 1
@@ -31,7 +31,7 @@ def plot_2d_histogram_single(hist_dataset, analysis_result=None):
         else np.array([y[0] - 0.5, y[0] + 0.5])
     )
 
-    density = hist_dataset["density"].values
+    density = plot_data["density"].values
     density_masked = np.ma.masked_where(density <= 0, density)
     ax.pcolormesh(xedges, yedges, density_masked, shading="auto", cmap="viridis", norm=LogNorm())
     ax.set_xlabel("I")
@@ -39,20 +39,18 @@ def plot_2d_histogram_single(hist_dataset, analysis_result=None):
     ax.set_title("2D Histogram")
     ax.set_aspect("equal")
 
-    if analysis_result is not None:
-        fitted_paras = analysis_result.get("fitted_paras", None)
-        if fitted_paras is not None:
-            _plot_mean_and_circles(ax, fitted_paras)
+    a = plot_data.attrs
+    if "mean_I" in a:
+        fitted_paras = {"mean": np.array([[a["mean_I"], a["mean_Q"]]]), "std": a["std"]}
+        _plot_mean_and_circles(ax, fitted_paras)
 
-        y_offset = 0.98
-        if "outlier_probability" in analysis_result:
-            text_msg = f"Outlier prob.: {analysis_result['outlier_probability']:.3e}"
-            ax.text(
-                0.02, y_offset, text_msg,
-                transform=ax.transAxes, fontsize=10,
-                verticalalignment="top", horizontalalignment="left",
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
-            )
+    if "outlier_probability" in a:
+        ax.text(
+            0.02, 0.98, f"Outlier prob.: {a['outlier_probability']:.3e}",
+            transform=ax.transAxes, fontsize=10,
+            verticalalignment="top", horizontalalignment="left",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
+        )
 
     fig.tight_layout()
     plt.close(fig)

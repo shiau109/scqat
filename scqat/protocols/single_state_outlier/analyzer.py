@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import xarray as xr
@@ -92,26 +92,57 @@ class SingleStateOutlierAnalyzer(BaseAnalyzer):
             "hist_dataset": hist_dataset,
         }
 
-    def generate_figures(
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist the fit parameters and outlier summary; drop the per-shot mask,
+        residue array, and binned histogram."""
+        return {
+            "fitted_paras": results["fitted_paras"],
+            "outlier_probability": results["outlier_probability"],
+            "outlier_indices": results["outlier_indices"],
+            "norm_res": results["norm_res"],
+        }
+
+    def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
+    ) -> Optional[xr.Dataset]:
+        """
+        Bundle the 2-D histogram density (over ``x``/``Q``-``y``) with the fitted
+        Gaussian centre, std, and outlier probability in ``.attrs`` so the 2-D
+        histogram figure redraws without refitting.
+
+        Returns ``None`` in outlier-only mode (no histogram was built).
+        """
+        hist = results.get("hist_dataset")
+        if hist is None:
+            return None
+
+        fp = results["fitted_paras"]
+        mean = fp["mean"][0]
+        return xr.Dataset(
+            {"density": (["y", "x"], hist["density"].values)},
+            coords={"x": hist["x"].values, "y": hist["y"].values},
+            attrs={
+                "mean_I": float(mean[0]),
+                "mean_Q": float(mean[1]),
+                "std": float(fp["std"]),
+                "outlier_probability": float(results["outlier_probability"]),
+            },
+        )
+
+    def generate_figures(
+        self,
+        dataset: xr.Dataset,
+        results: Dict[str, Any],
+        plot_data: Optional[xr.Dataset] = None,
+        **kwargs,
     ) -> Dict[str, plt.Figure]:
-        figs = {}
+        if plot_data is None:
+            plot_data = self.build_plot_data(dataset, results)
+        if plot_data is None:
+            return {}
 
-        if results["hist_dataset"] is not None:
-            fig_hist, ax_hist = plot_2d_histogram_single(
-                results["hist_dataset"], analysis_result=results
-            )
-            figs["2DHist"] = fig_hist
-
-        # fig_outliers, ax_outliers = plot_outliers_single(
-        #     dataset, results["outlier_mask"], analysis_result=results
-        # )
-
-        # fig_dist, ax_dist = plot_distance_vs_shot(dataset, results)
-
-        # figs["outliers"] = fig_outliers
-        # figs["distance_vs_shot"] = fig_dist
-        return figs
+        fig_hist, _ = plot_2d_histogram_single(plot_data)
+        return {"2DHist": fig_hist}
 
     # ==========================================
     # STATELESS HELPER METHODS

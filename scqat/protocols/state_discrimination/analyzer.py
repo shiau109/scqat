@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import xarray as xr
@@ -7,12 +7,11 @@ import matplotlib.pyplot as plt
 from scqat.core.base_analyzer import BaseAnalyzer
 from scqat.math_tools.fit_gaussian2d import FitMultiGaussian2D
 from scqat.protocols.state_discrimination.visualization import (
-    plot_prepared_state_scatter, 
-    plot_2d_histogram, 
-    plot_outliers, 
+    plot_prepared_state_scatter,
+    plot_2d_histogram,
+    plot_outliers,
     plot_2d_fit_residue,
-    compute_shared_axis_limits,
-    axis_formatter
+    axis_formatter,
 )
 
 class StateDiscriminationAnalyzer(BaseAnalyzer):
@@ -85,31 +84,109 @@ class StateDiscriminationAnalyzer(BaseAnalyzer):
             'hist_dataset': hist_dataset # Saving the binned data for plotting later
         }
 
-    def generate_figures(self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs) -> Dict[str, plt.Figure]:
-        """Generates all 4 diagnostic plots using the qcat visualization module."""
-        figs = {}
-        hist_dataset = results['hist_dataset']
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist the trained/fitted GMM parameters and per-state summaries; drop
+        the per-shot arrays, residue grids, and binned histogram Dataset."""
+        keep = (
+            'trained_paras', 'fitted_paras', 'gaussian_norms',
+            'direct_counts', 'outlier_probability', 'norm_res',
+        )
+        return {k: results[k] for k in keep}
 
-        # Call your pre-existing qcat plotting functions
-        fig_raw, axes_raw = plot_prepared_state_scatter(dataset, results)
-        fig_2Dhist, axes_2Dhist = plot_2d_histogram(hist_dataset, analysis_result=results)
-        fig_outliers, axes_outliers = plot_outliers(dataset, results["outlier_mask"], analysis_result=results)
-        fig_residue, axes_residue = plot_2d_fit_residue(results['fit_residues'], results['norm_res'])
-        
-        lim_I, lim_Q = compute_shared_axis_limits(dataset)
+    def build_plot_data(
+        self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
+    ) -> Optional[xr.Dataset]:
+        """
+        Bundle everything the four figures need into one Dataset: raw I/Q with
+        per-shot state labels and outlier masks, the binned density and fit
+        residue per state, the trained GMM mean/std, and the per-state count /
+        norm / outlier summaries. Shared I/Q axis limits (5σ) live in ``.attrs``.
+        """
+        hist = results['hist_dataset']
+        states = hist['prepared_state'].values
+        n_state = len(states)
 
-        for i in range(2):
+        I_arr = np.stack([dataset['I'].sel(prepared_state=s).values.ravel() for s in states])
+        Q_arr = np.stack([dataset['Q'].sel(prepared_state=s).values.ravel() for s in states])
+        state_label = np.asarray(results['state_label'])
+        outlier_mask = np.asarray(results['outlier_mask']).astype(np.int8)
+        density = hist['density'].values
+        fit_residue = results['fit_residues'].values
+        trained = results['trained_paras']
+        mean = np.asarray(trained['mean'], dtype=float)
+        direct_counts = np.asarray(results['direct_counts'])
+        gaussian_norms = np.asarray(results['gaussian_norms'])
+        outlier_prob = np.asarray(results['outlier_probability'], dtype=float)
+        norm_res = np.asarray(results['norm_res'], dtype=float)
+
+        all_I, all_Q = I_arr.ravel(), Q_arr.ravel()
+        lim_I = (float(all_I.mean() - 5 * all_I.std()), float(all_I.mean() + 5 * all_I.std()))
+        lim_Q = (float(all_Q.mean() - 5 * all_Q.std()), float(all_Q.mean() + 5 * all_Q.std()))
+
+        return xr.Dataset(
+            {
+                'I': (['prepared_state', 'idx_shot'], I_arr),
+                'Q': (['prepared_state', 'idx_shot'], Q_arr),
+                'state_label': (['prepared_state', 'idx_shot'], state_label),
+                'outlier_mask': (['prepared_state', 'idx_shot'], outlier_mask),
+                'density': (['prepared_state', 'y', 'x'], density),
+                'fit_residue': (['prepared_state', 'y', 'x'], fit_residue),
+                'trained_mean': (['center', 'comp'], mean),
+                'trained_amp': ('center', np.asarray(trained['amp'], dtype=float)),
+                'direct_counts': (['prepared_state', 'count'], direct_counts),
+                'gaussian_norms': (['prepared_state', 'gauss'], gaussian_norms),
+                'outlier_probability': ('prepared_state', outlier_prob),
+                'norm_res': ('prepared_state', norm_res),
+            },
+            coords={
+                'prepared_state': np.arange(n_state),
+                'idx_shot': np.arange(I_arr.shape[1]),
+                'x': hist['x'].values,
+                'y': hist['y'].values,
+                'center': np.arange(mean.shape[0]),
+                'comp': np.arange(2),
+                'count': np.arange(direct_counts.shape[1]),
+                'gauss': np.arange(gaussian_norms.shape[1]),
+            },
+            attrs={
+                'trained_std': float(trained['std']),
+                'trained_covariance': float(trained['covariance']),
+                'lim_I_low': lim_I[0], 'lim_I_high': lim_I[1],
+                'lim_Q_low': lim_Q[0], 'lim_Q_high': lim_Q[1],
+            },
+        )
+
+    def generate_figures(
+        self,
+        dataset: xr.Dataset,
+        results: Dict[str, Any],
+        plot_data: Optional[xr.Dataset] = None,
+        **kwargs,
+    ) -> Dict[str, plt.Figure]:
+        """Generate all 4 diagnostic plots, drawing entirely from plot_data."""
+        if plot_data is None:
+            plot_data = self.build_plot_data(dataset, results)
+
+        fig_raw, axes_raw = plot_prepared_state_scatter(plot_data)
+        fig_2Dhist, axes_2Dhist = plot_2d_histogram(plot_data)
+        fig_outliers, axes_outliers = plot_outliers(plot_data)
+        fig_residue, axes_residue = plot_2d_fit_residue(plot_data)
+
+        lim_I = (plot_data.attrs['lim_I_low'], plot_data.attrs['lim_I_high'])
+        lim_Q = (plot_data.attrs['lim_Q_low'], plot_data.attrs['lim_Q_high'])
+
+        for i in range(plot_data.sizes['prepared_state']):
             axis_formatter(axes_raw[i], lim_I, lim_Q, i)
             axis_formatter(axes_2Dhist[i], lim_I, lim_Q, i)
             axis_formatter(axes_outliers[i], lim_I, lim_Q, i)
             axis_formatter(axes_residue[i], lim_I, lim_Q, i)
 
-        figs["raw"] = fig_raw
-        figs["2DHist"] = fig_2Dhist
-        figs["outliers"] = fig_outliers
-        figs["fit_residue"] = fig_residue
-        
-        return figs
+        return {
+            "raw": fig_raw,
+            "2DHist": fig_2Dhist,
+            "outliers": fig_outliers,
+            "fit_residue": fig_residue,
+        }
 
     # ==========================================
     # STATELESS HELPER METHODS

@@ -6,7 +6,7 @@ input files. It chains:
 
 1. HDF5 load + qubit split (``scqat.parsers``).
 2. Tomography → density-matrix construction (``rho_11``, ``rho_10``).
-3. Per-``driving_frequency`` Hankel pre-analysis (``HankelAnalyzer``).
+3. Per-``driving_frequency`` Hankel pre-analysis (``hankel_decompose``).
 4. Per-``driving_frequency`` multi-damped-oscillation fit
    (``FitMultiDampedOscillation``), seeded from Hankel modes.
 5. Per-``driving_frequency`` non-Markovian decoherence fit
@@ -39,9 +39,9 @@ from scqat.math_tools.fit_multi_damped_oscillation import (
     multi_damped_osc_eval,
 )
 from scqat.math_tools.fit_qubit_decoherence import FitQubitDecoherence, rho11_model
+from scqat.math_tools.hankel import hankel_decompose
 from scqat.parsers.qualibrate_parser import repetition_data
 from scqat.parsers.xarray_h5_parser import load_xarray_h5
-from scqat.protocols.hankel_analysis import HankelAnalyzer
 
 # ---------------------------------------------------------------------------
 # Defaults (mirror the values previously hardcoded in view_single_raw.ipynb).
@@ -182,7 +182,6 @@ def run_hankel_per_freq(
     if hankel_kwargs:
         hk.update(hankel_kwargs)
 
-    analyzer = HankelAnalyzer()
     out: dict[float, dict[str, Any]] = {}
 
     for f_val in rho_ds.coords["driving_frequency"].values:
@@ -191,15 +190,13 @@ def run_hankel_per_freq(
         y_arr = sub["rho_11"].values.astype(float)
         signal, _ = _baseline_subtract(y_arr, tail_frac)
 
-        hankel_ds = xr.Dataset({"signal": ("time", signal)}, coords={"time": t_arr})
-
         Lambda_seed: float | None = None
         modes: list[dict[str, Any]] = []
         singular_values: np.ndarray | None = None
         reconstruction: np.ndarray | None = None
         n_modes_svd: int = 0
         try:
-            h_results, _ = analyzer.analyze(hankel_ds, skip_figures=True, **hk)
+            h_results = hankel_decompose(signal, t_arr, **hk)
             modes = h_results.get("modes", [])
             n_modes_svd = h_results.get("n_modes", len(modes))
             singular_values = h_results.get("singular_values")

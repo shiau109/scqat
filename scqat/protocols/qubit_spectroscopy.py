@@ -24,7 +24,7 @@ The dataset should have the ``qubit`` dimension already removed (e.g. via
 ``repetition_data`` from ``scqat.parsers.qualibrate_parser``).
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from scipy.signal import find_peaks
@@ -257,20 +257,97 @@ class QubitSpectroscopyAnalyzer(BaseAnalyzer):
         }
 
     # ------------------------------------------------------------------
-    # Visualization
+    # Metadata + plot data
     # ------------------------------------------------------------------
-    def generate_figures(
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist the reference, polarity, and per-peak fit parameters; drop the
+        full spectrum arrays and per-peak fit curves."""
+        drop_peak = {"fit_x", "fit_y"}
+        return {
+            "ref_iq": results.get("ref_iq"),
+            "inverted": results["inverted"],
+            "peaks": [
+                {k: v for k, v in pk.items() if k not in drop_peak}
+                for pk in results["peaks"]
+            ],
+        }
+
+    def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
-    ) -> Dict[str, plt.Figure]:
+    ) -> Optional[xr.Dataset]:
         """
-        Single figure showing the spectrum, baseline, and
-        Lorentzian fits overlaid at each detected peak.
+        Bundle the spectrum / baseline / corrected traces (over ``detuning``)
+        and each Lorentzian fit, pre-evaluated on the full detuning grid and
+        NaN-padded outside its window, as ``peak_fit`` (peak, detuning).  The
+        optional ``full_freq`` axis and peak centres/FWHMs are included so both
+        sub-plots redraw with no refitting.
         """
         detuning = dataset.coords["detuning"].values.astype(float)
 
-        signal = results["signal"]
-        baseline = results["baseline"]
-        peaks = results["peaks"]
+        data_vars: Dict[str, Any] = {
+            "signal": ("detuning", np.asarray(results["signal"], dtype=float)),
+            "baseline": ("detuning", np.asarray(results["baseline"], dtype=float)),
+            "signal_corrected": ("detuning", np.asarray(results["signal_corrected"], dtype=float)),
+        }
+        coords: Dict[str, Any] = {"detuning": detuning}
+        attrs: Dict[str, Any] = {"inverted": int(bool(results["inverted"]))}
+
+        ref_iq = results.get("ref_iq")
+        if ref_iq is not None:
+            attrs["ref_iq_real"] = float(np.real(ref_iq))
+            attrs["ref_iq_imag"] = float(np.imag(ref_iq))
+
+        if "full_freq" in dataset.coords:
+            data_vars["full_freq"] = (
+                "detuning", dataset.coords["full_freq"].values.ravel().astype(float)
+            )
+            attrs["has_full_freq"] = 1
+        else:
+            attrs["has_full_freq"] = 0
+
+        peaks = results.get("peaks", [])
+        attrs["n_peaks"] = len(peaks)
+        if peaks:
+            n = len(detuning)
+            peak_fit = np.full((len(peaks), n), np.nan)
+            peak_det = np.empty(len(peaks))
+            peak_fwhm = np.empty(len(peaks))
+            for i, pk in enumerate(peaks):
+                fit_x = np.asarray(pk["fit_x"], dtype=float)
+                fit_y = np.asarray(pk["fit_y"], dtype=float)
+                lo = int(np.argmin(np.abs(detuning - fit_x[0])))
+                peak_fit[i, lo:lo + len(fit_y)] = fit_y
+                peak_det[i] = pk["detuning"]
+                peak_fwhm[i] = pk["fwhm"]
+            coords["peak"] = np.arange(len(peaks))
+            data_vars["peak_fit"] = (["peak", "detuning"], peak_fit)
+            data_vars["peak_detuning"] = ("peak", peak_det)
+            data_vars["peak_fwhm"] = ("peak", peak_fwhm)
+
+        return xr.Dataset(data_vars, coords=coords, attrs=attrs)
+
+    # ------------------------------------------------------------------
+    # Visualization
+    # ------------------------------------------------------------------
+    def generate_figures(
+        self,
+        dataset: xr.Dataset,
+        results: Dict[str, Any],
+        plot_data: Optional[xr.Dataset] = None,
+        **kwargs,
+    ) -> Dict[str, plt.Figure]:
+        """
+        Single figure showing the spectrum, baseline, and Lorentzian fits
+        overlaid at each detected peak, drawn entirely from plot_data.
+        """
+        if plot_data is None:
+            plot_data = self.build_plot_data(dataset, results)
+
+        detuning = plot_data.coords["detuning"].values.astype(float)
+        signal = plot_data["signal"].values
+        baseline = plot_data["baseline"].values
+        corrected = plot_data["signal_corrected"].values
+        n_peaks = int(plot_data.attrs.get("n_peaks", 0))
 
         fig, (ax_top, ax_bot) = plt.subplots(
             2, 1, sharex=True,
@@ -283,35 +360,32 @@ class QubitSpectroscopyAnalyzer(BaseAnalyzer):
         ax_top.plot(det_mhz, signal, "-", lw=0.8, label="|IQdata - ref|")
         ax_top.plot(det_mhz, baseline, "--", color="gray", lw=1.0, label="baseline")
 
-        for i, pk in enumerate(peaks):
+        for i in range(n_peaks):
+            fit_y = plot_data["peak_fit"].isel(peak=i).values
+            pk_det = float(plot_data["peak_detuning"].values[i])
+            pk_fwhm = float(plot_data["peak_fwhm"].values[i])
             ax_top.plot(
-                pk["fit_x"] / 1e6,
-                pk["fit_y"] + baseline[np.searchsorted(detuning, pk["fit_x"][0]):
-                                       np.searchsorted(detuning, pk["fit_x"][0]) + len(pk["fit_x"])],
-                "-", lw=1.5, color=f"C{i + 1}",
-                label=f"peak {i}: {pk['detuning'] / 1e6:.2f} MHz, FWHM={pk['fwhm'] / 1e6:.2f} MHz",
+                det_mhz, fit_y + baseline, "-", lw=1.5, color=f"C{i + 1}",
+                label=f"peak {i}: {pk_det / 1e6:.2f} MHz, FWHM={pk_fwhm / 1e6:.2f} MHz",
             )
-            ax_top.axvline(pk["detuning"] / 1e6, color=f"C{i + 1}",
-                           ls=":", lw=0.8, alpha=0.7)
+            ax_top.axvline(pk_det / 1e6, color=f"C{i + 1}", ls=":", lw=0.8, alpha=0.7)
 
         ax_top.set_ylabel("Signal (arb. u.)")
         ax_top.legend(fontsize=8)
         ax_top.set_title("Qubit spectroscopy")
 
         # Add absolute-frequency twin axis if available
-        if len(peaks) > 0 and "full_freq" in peaks[0]:
-            if "full_freq" in dataset.coords:
-                freq_vals = dataset.coords["full_freq"].values.ravel().astype(float) / 1e9
-                ax_freq = ax_top.twiny()
-                ax_freq.set_xlim(freq_vals[0], freq_vals[-1])
-                ax_freq.set_xlabel("RF frequency (GHz)")
+        if plot_data.attrs.get("has_full_freq", 0):
+            freq_vals = plot_data["full_freq"].values / 1e9
+            ax_freq = ax_top.twiny()
+            ax_freq.set_xlim(freq_vals[0], freq_vals[-1])
+            ax_freq.set_xlabel("RF frequency (GHz)")
 
         # -- Bottom: baseline-subtracted + fits --
-        corrected = results["signal_corrected"]
         ax_bot.plot(det_mhz, corrected, "-", lw=0.8, color="C0")
-        for i, pk in enumerate(peaks):
-            ax_bot.plot(pk["fit_x"] / 1e6, pk["fit_y"],
-                        "-", lw=1.5, color=f"C{i + 1}")
+        for i in range(n_peaks):
+            fit_y = plot_data["peak_fit"].isel(peak=i).values
+            ax_bot.plot(det_mhz, fit_y, "-", lw=1.5, color=f"C{i + 1}")
 
         ax_bot.axhline(0, color="k", lw=0.5)
         ax_bot.set_xlabel("Detuning (MHz)")

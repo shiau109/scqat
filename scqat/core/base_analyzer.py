@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple
@@ -18,12 +19,16 @@ def _json_safe(obj: Any) -> Any:
     a short ``"<skipped: type>"`` marker so the metadata file never fails to
     write.  Bulky arrays belong in the plot-data Dataset, not here.
     """
-    if obj is None or isinstance(obj, (bool, int, float, str)):
+    if obj is None or isinstance(obj, (bool, int, str)):
         return obj
+    if isinstance(obj, float):
+        # NaN/Inf are not valid JSON — map to null for cross-language portability.
+        return obj if math.isfinite(obj) else None
     if isinstance(obj, np.integer):
         return int(obj)
     if isinstance(obj, np.floating):
-        return float(obj)
+        v = float(obj)
+        return v if math.isfinite(v) else None
     if isinstance(obj, (complex, np.complexfloating)):
         return {"real": float(obj.real), "imag": float(obj.imag)}
     if isinstance(obj, np.ndarray):
@@ -42,16 +47,22 @@ class BaseAnalyzer(ABC):
     Abstract base class for scqat experimental/simulation protocols.
 
     Enforces a strict separation of Data Checking, Math, Plot-data extraction,
-    Visualization, and I/O.  Each analyzer produces two distinct artifacts:
+    Visualization, and I/O.  An analyzer produces **one mandatory artifact and
+    two optional ones**:
 
-    * **metadata** — the key physical parameters (returned by
-      :meth:`extract_parameters`), saved as ``<protocol_name>_metadata.json``.
-    * **plot data** — the minimal arrays needed to redraw every figure with no
-      recalculation (returned by :meth:`build_plot_data`), saved as
-      ``<protocol_name>_plotdata.nc``.
+    * **metadata** (mandatory) — the key physical parameters. Computed by
+      :meth:`extract_parameters` and projected by :meth:`extract_metadata`,
+      saved as ``<protocol_name>_metadata.json``.
+    * **plot data** (optional) — the minimal arrays needed to redraw every
+      figure with no recalculation, returned by :meth:`build_plot_data` and
+      saved as ``<protocol_name>_plotdata.nc``.
+    * **figures** (optional) — produced by :meth:`generate_figures`, which draws
+      **only** from the plot data. Providing figures therefore implies providing
+      plot data.
 
-    Subclasses must define ``protocol_name`` (str) to control default output
-    filenames when ``output_dir`` is used.
+    The only method a subclass MUST implement is :meth:`extract_parameters`;
+    everything else has a safe default. Subclasses must also define
+    ``protocol_name`` (str) to control default output filenames.
     """
 
     protocol_name: str = "protocol"
@@ -65,15 +76,32 @@ class BaseAnalyzer(ABC):
 
     @abstractmethod
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
-        """Step 1: The heavy calculation. Must return the key-parameter (metadata) dict."""
+        """
+        Step 1 (mandatory): The heavy calculation. Returns the analysis
+        ``results`` — the key parameters plus any rich intermediates that
+        :meth:`build_plot_data` needs. For a simple protocol this dict *is* the
+        metadata.
+        """
         pass
+
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Project ``results`` down to the key parameters that get persisted as
+        JSON metadata.
+
+        Default is the identity, so a simple protocol's ``results`` is saved
+        verbatim. Override when ``results`` carries bulky intermediates (large
+        arrays, ``xarray`` containers, fit objects) that should not land in the
+        metadata file — return just the key scalars/arrays.
+        """
+        return results
 
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
         """
-        Step 2: Assemble the minimal arrays needed to redraw every figure
-        without any recalculation, as a single ``xarray.Dataset``.
+        Step 2 (optional): Assemble the minimal arrays needed to redraw every
+        figure without any recalculation, as a single ``xarray.Dataset``.
 
         Default returns ``None`` (no plot-data artifact). Override to provide a
         self-sufficient Dataset; :meth:`generate_figures` should then draw using
@@ -81,7 +109,6 @@ class BaseAnalyzer(ABC):
         """
         return None
 
-    @abstractmethod
     def generate_figures(
         self,
         dataset: xr.Dataset,
@@ -90,24 +117,34 @@ class BaseAnalyzer(ABC):
         **kwargs,
     ) -> Dict[str, plt.Figure]:
         """
-        Step 3: The visualization. Must return a dict of figures.
+        Step 3 (optional): The visualization. Returns a dict of figures.
 
-        Migrated protocols MUST draw using **only** ``plot_data`` so the figures
-        stay reconstructable by an external consumer; ``dataset`` and ``results``
-        are still passed for protocols that have not yet been migrated to the
-        plot-data contract and must not be relied on by new code.
+        Migrated protocols draw using **only** ``plot_data`` so the figures stay
+        reconstructable by an external consumer; ``dataset`` and ``results`` are
+        still passed for protocols not yet migrated to the plot-data contract and
+        must be ignored by new code.
+
+        Default returns ``{}`` (no figures). Override only alongside
+        :meth:`build_plot_data` — figures require plot data.
         """
-        pass
+        return {}
 
     # ------------------------------------------------------------------
     # I/O helpers
     # ------------------------------------------------------------------
-    def save_metadata(self, results: Dict[str, Any], output_dir: str) -> None:
-        """Save the key parameters as ``<output_dir>/<protocol_name>_metadata.json``."""
+    def save_metadata(self, metadata: Dict[str, Any], output_dir: str) -> None:
+        """
+        Save the key parameters as ``<output_dir>/<protocol_name>_metadata.json``.
+
+        The file is stamped with ``protocol_name`` so a loaded metadata file
+        self-identifies which analyzer produced it, even as the parameter set
+        evolves over time.
+        """
         os.makedirs(output_dir, exist_ok=True)
         filepath = os.path.join(output_dir, f"{self.protocol_name}_metadata.json")
+        payload = {"protocol_name": self.protocol_name, **_json_safe(metadata)}
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(_json_safe(results), f, indent=2)
+            json.dump(payload, f, indent=2)
 
     def load_metadata(self, output_dir: str) -> Dict[str, Any]:
         """Load the key parameters from ``<output_dir>/<protocol_name>_metadata.json``."""
@@ -148,8 +185,12 @@ class BaseAnalyzer(ABC):
         """
         The Orchestrator.
 
-        Calls Data Checking -> Math (metadata) -> Plot-data build ->
-        Metadata/Plot-data I/O -> Plotting -> Figure I/O.
+        Calls Data Checking -> Math (results) -> Metadata projection ->
+        Plot-data build -> Metadata/Plot-data I/O -> Plotting -> Figure I/O.
+
+        The metadata artifact is mandatory; plot data and figures are produced
+        only when the analyzer overrides :meth:`build_plot_data` /
+        :meth:`generate_figures` (otherwise nothing is saved/drawn for them).
 
         Args:
             dataset: The input xarray Dataset.
@@ -158,32 +199,37 @@ class BaseAnalyzer(ABC):
             skip_figures: If True, skip figure generation and return empty dict.
 
         Returns:
-            ``(metadata, figures)``. The plot-data Dataset is saved (when
-            ``output_dir`` is given) and passed to ``generate_figures``; retrieve
-            it via :meth:`build_plot_data` or :meth:`load_plot_data` if needed.
+            ``(results, figures)``. ``results`` is the full in-memory analysis
+            output; the persisted metadata is ``extract_metadata(results)``. The
+            plot-data Dataset is saved (when ``output_dir`` is given) and passed
+            to ``generate_figures``; retrieve it via :meth:`build_plot_data` or
+            :meth:`load_plot_data` if needed.
         """
         # 1. Input checking
         self._check_data(dataset)
 
-        # 2. Heavy physics calculation -> key parameters (metadata)
+        # 2. Heavy physics calculation -> full analysis results
         results = self.extract_parameters(dataset, **kwargs)
 
-        # 3. Minimal arrays needed to redraw the figures (plot data)
+        # 3. Project the key parameters to persist (mandatory artifact)
+        metadata = self.extract_metadata(results)
+
+        # 4. Minimal arrays needed to redraw the figures (optional plot data)
         plot_data = self.build_plot_data(dataset, results, **kwargs)
 
-        # 4. Save metadata + plot data if requested
+        # 5. Save metadata + plot data if requested (plot data skipped when None)
         if output_dir:
-            self.save_metadata(results, output_dir)
+            self.save_metadata(metadata, output_dir)
             self.save_plot_data(plot_data, output_dir)
 
         if skip_figures:
             return results, {}
 
-        # 5. Generate figures. Migrated protocols use only plot_data; dataset and
-        #    results remain available for not-yet-migrated protocols.
+        # 6. Generate figures (optional). Migrated protocols use only plot_data;
+        #    dataset and results remain available for not-yet-migrated protocols.
         figs = self.generate_figures(dataset, results, plot_data=plot_data, **kwargs)
 
-        # 6. Save figures if requested
+        # 7. Save figures if requested
         if output_dir:
             self.save_figures(figs, output_dir)
 

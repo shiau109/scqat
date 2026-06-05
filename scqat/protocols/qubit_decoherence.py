@@ -24,7 +24,7 @@ Expected xarray.Dataset contract:
         - rho_10 : 1-D array – off-diagonal coherence vs time
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -134,20 +134,61 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
 
         return results
 
-    def generate_figures(
-        self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
-    ) -> Dict[str, plt.Figure]:
-        """One figure per fitted variable: data + fit overlay with residual subplot."""
-        t = dataset.coords["time"].values
-        figs: Dict[str, plt.Figure] = {}
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist the fit parameters per variable; drop the per-time arrays."""
+        drop = {"fit_curve", "residuals"}
+        return {
+            var: {k: v for k, v in res.items() if k not in drop}
+            for var, res in results.items()
+        }
 
+    def build_plot_data(
+        self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
+    ) -> Optional[xr.Dataset]:
+        """
+        Bundle, per fitted variable, the data / fit / residual curves (over
+        ``time``) plus the key fit parameters (in ``.attrs``) so each figure is
+        reconstructable without refitting.
+        """
+        t = dataset.coords["time"].values.astype(float)
+        data_vars: Dict[str, Any] = {}
+        attrs: Dict[str, Any] = {}
+        present = []
         for var_name in ("rho_11", "rho_10"):
             if var_name not in results:
                 continue
             res = results[var_name]
-            y_data = dataset[var_name].values
-            y_fit = res["fit_curve"]
-            residuals = res["residuals"]
+            present.append(var_name)
+            data_vars[f"{var_name}_data"] = ("time", dataset[var_name].values.astype(float))
+            data_vars[f"{var_name}_fit"] = ("time", np.asarray(res["fit_curve"], dtype=float))
+            data_vars[f"{var_name}_residual"] = ("time", np.asarray(res["residuals"], dtype=float))
+            attrs[f"{var_name}_gamma"] = float(res["gamma"])
+            attrs[f"{var_name}_lambda"] = float(res["lambda_"])
+            attrs[f"{var_name}_Delta"] = float(res["Delta"])
+            attrs[f"{var_name}_regime"] = res["regime"]
+        attrs["variables"] = ",".join(present)
+        return xr.Dataset(data_vars, coords={"time": t}, attrs=attrs)
+
+    def generate_figures(
+        self,
+        dataset: xr.Dataset,
+        results: Dict[str, Any],
+        plot_data: Optional[xr.Dataset] = None,
+        **kwargs,
+    ) -> Dict[str, plt.Figure]:
+        """One figure per fitted variable: data + fit overlay with residual subplot."""
+        if plot_data is None:
+            plot_data = self.build_plot_data(dataset, results)
+
+        t = plot_data.coords["time"].values
+        figs: Dict[str, plt.Figure] = {}
+
+        for var_name in ("rho_11", "rho_10"):
+            if f"{var_name}_data" not in plot_data:
+                continue
+            y_data = plot_data[f"{var_name}_data"].values
+            y_fit = plot_data[f"{var_name}_fit"].values
+            residuals = plot_data[f"{var_name}_residual"].values
             label = r"$\rho_{11}$" if var_name == "rho_11" else r"$\rho_{10}$"
 
             fig, (ax_top, ax_bot) = plt.subplots(
@@ -159,14 +200,16 @@ class QubitDecoherenceAnalyzer(BaseAnalyzer):
                 t, y_fit, "-",
                 label=(
                     f"fit ("
-                    f"\u03b3={res['gamma']:.4g}, "
-                    f"\u03bb={res['lambda_']:.4g}, "
-                    f"\u0394={res['Delta']:.4g})"
+                    f"\u03b3={plot_data.attrs[f'{var_name}_gamma']:.4g}, "
+                    f"\u03bb={plot_data.attrs[f'{var_name}_lambda']:.4g}, "
+                    f"\u0394={plot_data.attrs[f'{var_name}_Delta']:.4g})"
                 ),
             )
             ax_top.set_ylabel(label)
             ax_top.legend()
-            ax_top.set_title(f"{label}(t) decoherence fit  [{res['regime']}]")
+            ax_top.set_title(
+                f"{label}(t) decoherence fit  [{plot_data.attrs[f'{var_name}_regime']}]"
+            )
 
             ax_bot.plot(t, residuals, ".-", ms=2)
             ax_bot.axhline(0, color="k", lw=0.5)

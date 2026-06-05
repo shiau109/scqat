@@ -8,8 +8,8 @@ Model
 where ``k_i`` is the continuous-time decay rate (typically negative for
 decaying signals).  The number of components ``N`` and initial seeds for
 ``(a_i, k_i, f_i, phi_i)`` are taken from a list of Hankel mode dicts as
-returned by :class:`scqat.protocols.hankel_analysis.HankelAnalyzer` (each
-dict provides ``amplitude``, ``decay_rate``, ``freq_hz``, ``phase``).
+returned by :func:`scqat.math_tools.hankel.hankel_decompose` (each dict
+provides ``amplitude``, ``decay_rate``, ``freq_hz``, ``phase``).
 
 The constant offset ``c`` is a free parameter.  Frequency, decay rate,
 amplitude and phase of every component are all free; the Hankel values
@@ -71,7 +71,7 @@ class FitMultiDampedOscillation(FunctionFitting):
     modes : list of dict
         Hankel modes used as initial guesses.  Each dict must provide
         ``amplitude``, ``decay_rate``, ``freq_hz`` and ``phase`` (the
-        format produced by :class:`HankelAnalyzer`).
+        format produced by :func:`scqat.math_tools.hankel.hankel_decompose`).
     """
 
     def __init__(self, data: DataArray = None, modes: List[Dict[str, Any]] = None, x=None):
