@@ -75,7 +75,7 @@ copy the non-compliant shape.
 | `charge_gate_ramsey.ChargeGateRamseyAnalysis` | ✅ `ChargeGateRamseyAnalyzer` | present (reference impl) |
 | `readout_power.ROFidelityPower` | ❌ missing | **port** — orchestrates state-disc over `amp_prefactor` sweep |
 | `readout_freq.ROFidelityFreq` | ❌ missing | **port** — orchestrates state-disc over a frequency sweep |
-| `zz_interaction.ZZinteractionEcho` | ❌ missing | **port** — smallest; damped-oscillation vs flux coordinate |
+| `zz_interaction.ZZinteractionEcho` | ✅ `ZZInteractionEchoAnalyzer` | ported, plot_data-compliant (damped-oscillation per flux; reuses `damped_oscillation`) |
 | `ac_stark_shift` (functional) | ❌ missing | **port** — depends on qubit-spectroscopy fitting |
 | `readout_pulse_photon` (functional) | ❌ missing | **port** — qubit-spectroscopy fit vs pulse delay |
 | `conditional_phase` | empty stub | won't port |
@@ -118,10 +118,10 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
    pattern before new code copies the old shape). `ramsey` is done — use it (and
    `charge_gate_ramsey`) as the template; remaining: `state_discrimination`,
    `single_state_outlier`, `qubit_spectroscopy`, `qubit_decoherence`, `hankel_analysis`.
-2. **`ZZinteractionEcho`** — smallest, self-contained; validates the recipe end-to-end
-   (reuses `damped_oscillation`).
+2. ~~**`ZZinteractionEcho`**~~ — **done** (`ZZInteractionEchoAnalyzer`); validated the recipe
+   end-to-end (reuses `damped_oscillation`).
 3. **`ROFidelityPower` / `ROFidelityFreq`** — reuse `StateDiscriminationAnalyzer` (resolve the
-   schema risk below first).
+   schema risk below first). ← next feature.
 4. **`ac_stark_shift`** — reuse `QubitSpectroscopyAnalyzer`.
 5. **`readout_pulse_photon`**.
 
