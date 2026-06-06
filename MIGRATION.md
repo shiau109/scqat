@@ -40,21 +40,14 @@ The architecture is sound — do **not** restructure it. Findings from this pass
 - **`scqat/__init__.py` was empty.** Now exposes `__version__` (kept import-light on
   purpose — `import scqat` stays side-effect-free and does not pull in matplotlib).
 
-### plot_data-contract compliance audit (the main structural debt)
-The flagship contract is implemented by **2 of 7** protocols. The base class tolerates this
-during migration, but until the rest are retrofitted, language-agnostic figure reconstruction
-holds for those two only. **New ports MUST implement the contract** (see recipe) so they don't
-copy the non-compliant shape.
-
-| Protocol | `build_plot_data`? | Notes |
-|---|---|---|
-| `charge_gate_ramsey` | ✅ | reference implementation — copy this shape |
-| `ramsey` | ✅ | retrofitted (figures rebuild from netCDF `plot_data` alone) |
-| `state_discrimination` | ❌ | |
-| `single_state_outlier` | ❌ | some figures commented out |
-| `qubit_spectroscopy` | ❌ | |
-| `qubit_decoherence` | ❌ | |
-| `hankel_analysis` | ❌ | |
+### plot_data-contract compliance audit — COMPLETE
+The flagship contract is now implemented by **every protocol** (`build_plot_data` +
+`generate_figures` drawing only from plot_data). `charge_gate_ramsey` and `ramsey` were the
+templates; `state_discrimination`, `single_state_outlier`, `qubit_spectroscopy`,
+`qubit_decoherence` were retrofitted, and the new ports (`zz_interaction`, `readout_fidelity`,
+`ac_stark_shift`, `readout_pulse_photon`) were compliant from the start. **New ports MUST keep
+implementing the contract.** (Note: the former `protocols/hankel_analysis.py` was relocated to
+`math_tools/hankel.py` — Hankel/SVD is pure math, so it lives in `math_tools`, not `protocols`.)
 
 ### Non-issues (noted, intentionally unchanged)
 - Flat-module vs subpackage protocol layout is sanctioned by the doc (simple vs complex).
@@ -82,8 +75,8 @@ copy the non-compliant shape.
 | `plot_ds_raw_scatter` | utility | optional helper, low priority |
 
 scqat-only protocols with no qcat analysis-module equivalent (added during EP/MIST work,
-keep): `qubit_spectroscopy` (lived in `NCU` in qcat), `qubit_decoherence`, `hankel_analysis`,
-`single_state_outlier`.
+keep): `qubit_spectroscopy` (lived in `NCU` in qcat), `qubit_decoherence`, `single_state_outlier`.
+(Hankel/SVD lives in `math_tools/hankel.py`, not `protocols`.)
 
 ### Fitters — `qcat/utilities/function_fitting/` vs `scqat/math_tools/`
 
@@ -92,10 +85,10 @@ keep): `qubit_spectroscopy` (lived in `NCU` in qcat), `qubit_decoherence`, `hank
 | `fit_damped_oscillation` | ✅ `damped_oscillation` |
 | `fit_damping_beat` | ✅ `damping_beat` |
 | `fit_gaussian2d` (single + multi) | ✅ `gaussian2d`, `multi_gaussian2d` |
-| `fit_cosine` | ❌ port |
+| `fit_cosine` | ✅ `cosine` (ported, tested; flexible `parse_xy` input) |
 | `fit_exp_decay` | ✅ `exp_decay` (ported, tested; flexible `parse_xy` input) |
-| `fit_powerlaw_base` | ❌ port |
-| `fit_transmon_freqeuency_flux` | ❌ port |
+| `fit_powerlaw_base` | ✅ `powerlaw_base` (ported, tested; flexible `parse_xy` input) |
+| `fit_transmon_freqeuency_flux` | ✅ `transmon_freq_flux` (ported, tested; data-driven offset/period guess) |
 
 scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
 `qubit_decoherence`.
@@ -114,10 +107,8 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
 
 ## Suggested order
 
-1. **Retrofit the remaining 5 non-compliant protocols to the `plot_data` contract** (locks the
-   pattern before new code copies the old shape). `ramsey` is done — use it (and
-   `charge_gate_ramsey`) as the template; remaining: `state_discrimination`,
-   `single_state_outlier`, `qubit_spectroscopy`, `qubit_decoherence`, `hankel_analysis`.
+1. ~~**Retrofit the non-compliant protocols to the `plot_data` contract**~~ — **done**; every
+   protocol now implements `build_plot_data` (see the compliance audit above).
 2. ~~**`ZZinteractionEcho`**~~ — **done** (`ZZInteractionEchoAnalyzer`); validated the recipe
    end-to-end (reuses `damped_oscillation`).
 3. ~~**`ROFidelityPower` / `ROFidelityFreq`**~~ — **done** (unified `ReadoutFidelityAnalyzer`
@@ -127,16 +118,16 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
 5. ~~**`readout_pulse_photon`**~~ — **done** (`ReadoutPulsePhotonAnalyzer`). Its raw-2D figure subsumes the
    commented node's `plot_2d_colormap_from_h5`, so a separate generic colormap util is no longer needed.
 
-**All five LCHQMDriver-driven gaps are now closed.** Remaining scqat work is the optional `plot_data`
-retrofit of the still-non-compliant legacy protocols (track 1) and the lower-priority fitters
-(`cosine`, `powerlaw_base`, `transmon_freq_vs_flux`).
+**All five LCHQMDriver-driven gaps are now closed**, the `plot_data` retrofit (track 1) is
+complete, and **every qcat fitter has been ported** (`cosine`, `exp_decay`, `powerlaw_base`,
+`transmon_freq_flux`, plus the originals). The remaining qcat surface is intentionally deferred:
+the `common_calculator` physics/conversion helpers and the `NCU` monolith (port on demand).
 
 **Note — the notebooks are temporary, path-based scripts; the Analyzer is the destination.**
 `notebooks/ac_stark_spectroscopy.ipynb` and `notebooks/ac_stark_readout.ipynb` now have Analyzer
 equivalents and can be retired (or rewritten to call the analyzers).
 
-Port the remaining missing fitters (`cosine`, `powerlaw_base`, `transmon_freq_vs_flux`) as the
-dependent analyzer needs them, each with a `pytest`. (`exp_decay` is done — `tests/test_fit_exp_decay.py`.)
+All qcat fitters are ported, each with a `pytest` under `tests/`.
 
 ---
 
