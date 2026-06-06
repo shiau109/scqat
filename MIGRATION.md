@@ -76,7 +76,7 @@ copy the non-compliant shape.
 | `readout_power.ROFidelityPower` | ✅ `ReadoutPowerFidelityAnalyzer` | ported, plot_data-compliant (unified `ReadoutFidelityAnalyzer`, `sweep_coord='amp_prefactor'`; reuses `StateDiscriminationAnalyzer`) |
 | `readout_freq.ROFidelityFreq` | ✅ `ReadoutFreqFidelityAnalyzer` | ported (same unified analyzer, `sweep_coord='frequency'`) |
 | `zz_interaction.ZZinteractionEcho` | ✅ `ZZInteractionEchoAnalyzer` | ported, plot_data-compliant (damped-oscillation per flux; reuses `damped_oscillation`) |
-| `ac_stark_shift` (functional) | ❌ missing | **port** — depends on qubit-spectroscopy fitting |
+| `ac_stark_shift` (functional) | ✅ `AcStarkShiftAnalyzer` | ported, plot_data-compliant (per-power f01 via `QubitSpectroscopyAnalyzer`, then `fa-(2AP+1)X_eff` Stark fit) |
 | `readout_pulse_photon` (functional) | ❌ missing | **port** — qubit-spectroscopy fit vs pulse delay |
 | `conditional_phase` | empty stub | won't port |
 | `plot_ds_raw_scatter` | utility | optional helper, low priority |
@@ -123,8 +123,8 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
 3. ~~**`ROFidelityPower` / `ROFidelityFreq`**~~ — **done** (unified `ReadoutFidelityAnalyzer`
    + `ReadoutPowerFidelityAnalyzer` / `ReadoutFreqFidelityAnalyzer`); the StateDiscrimination
    schema matched, so reuse was clean.
-4. **`ac_stark_shift`** — reuse `QubitSpectroscopyAnalyzer`. ← next feature.
-5. **`readout_pulse_photon`**.
+4. ~~**`ac_stark_shift`**~~ — **done** (`AcStarkShiftAnalyzer`, reuses `QubitSpectroscopyAnalyzer`).
+5. **`readout_pulse_photon`** + `plot_2d_colormap_from_h5`. ← next feature (lowest urgency; commented node).
 
 Port the remaining missing fitters (`cosine`, `powerlaw_base`, `transmon_freq_vs_flux`) as the
 dependent analyzer needs them, each with a `pytest`. (`exp_decay` is done — `tests/test_fit_exp_decay.py`.)
