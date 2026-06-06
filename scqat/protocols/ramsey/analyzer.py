@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import xarray as xr
@@ -112,11 +112,63 @@ class RamseyAnalyzer(BaseAnalyzer):
 
         return results
 
-    def generate_figures(self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs) -> Dict[str, plt.Figure]:
-        """Generate time-domain fit plot and FFT spectrum plot."""
+    def build_plot_data(
+        self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
+    ) -> xr.Dataset:
+        """Assemble the minimal arrays needed to redraw the time-domain and FFT
+        figures into one self-sufficient Dataset.
+
+        Variables: ``signal`` and ``best_fit`` over the ``idle_time`` coordinate,
+        and ``fft_amp`` over the ``fft_freq`` coordinate. The fit parameters shown
+        in the annotation box live in ``.attrs`` (``model_type``, ``a_1``,
+        ``kappa_1``, ``f_1``, ``phi_1``, ``c``, plus the ``*_2`` set for beat fits).
+        """
+        idle_time = dataset.coords['idle_time'].values
+        signal = np.asarray(dataset['signal'].values).squeeze()
+
+        data_vars = {
+            'signal': ('idle_time', signal),
+            'best_fit': ('idle_time', np.asarray(results['best_fit'])),
+            'fft_amp': ('fft_freq', np.asarray(results['fft_amp'])),
+        }
+        coords = {
+            'idle_time': idle_time,
+            'fft_freq': np.asarray(results['fft_freq']),
+        }
+
+        attrs: Dict[str, Any] = {
+            'model_type': results.get('model_type', 'single'),
+            'a_1': float(results.get('a_1', float('nan'))),
+            'kappa_1': float(results.get('kappa_1', float('nan'))),
+            'f_1': float(results.get('f_1', float('nan'))),
+            'phi_1': float(results.get('phi_1', float('nan'))),
+            'c': float(results.get('c', float('nan'))),
+        }
+        if results.get('model_type') == 'beat':
+            attrs.update({
+                'a_2': float(results.get('a_2', float('nan'))),
+                'kappa_2': float(results.get('kappa_2', float('nan'))),
+                'f_2': float(results.get('f_2', float('nan'))),
+                'phi_2': float(results.get('phi_2', float('nan'))),
+            })
+
+        return xr.Dataset(data_vars, coords=coords, attrs=attrs)
+
+    def generate_figures(
+        self,
+        dataset: xr.Dataset,
+        results: Dict[str, Any],
+        plot_data: Optional[xr.Dataset] = None,
+        **kwargs,
+    ) -> Dict[str, plt.Figure]:
+        """Generate the time-domain fit plot and FFT spectrum plot, drawing
+        strictly from ``plot_data`` so the figures stay reconstructable
+        downstream; rebuild it only when called outside ``analyze()``."""
+        if plot_data is None:
+            plot_data = self.build_plot_data(dataset, results)
         return {
-            'time_domain': plot_time_domain(dataset, results),
-            'fft_spectrum': plot_fft(results),
+            'time_domain': plot_time_domain(plot_data),
+            'fft_spectrum': plot_fft(plot_data),
         }
 
     # ------------------------------------------------------------------

@@ -41,15 +41,15 @@ The architecture is sound — do **not** restructure it. Findings from this pass
   purpose — `import scqat` stays side-effect-free and does not pull in matplotlib).
 
 ### plot_data-contract compliance audit (the main structural debt)
-The flagship contract is implemented by only **1 of 7** protocols. The base class tolerates
-this during migration, but until the rest are retrofitted, language-agnostic figure
-reconstruction holds for one protocol only. **New ports MUST implement the contract** (see
-recipe) so they don't copy the non-compliant shape.
+The flagship contract is implemented by **2 of 7** protocols. The base class tolerates this
+during migration, but until the rest are retrofitted, language-agnostic figure reconstruction
+holds for those two only. **New ports MUST implement the contract** (see recipe) so they don't
+copy the non-compliant shape.
 
 | Protocol | `build_plot_data`? | Notes |
 |---|---|---|
 | `charge_gate_ramsey` | ✅ | reference implementation — copy this shape |
-| `ramsey` | ❌ | `generate_figures` draws from `dataset`/`results` |
+| `ramsey` | ✅ | retrofitted (figures rebuild from netCDF `plot_data` alone) |
 | `state_discrimination` | ❌ | |
 | `single_state_outlier` | ❌ | some figures commented out |
 | `qubit_spectroscopy` | ❌ | |
@@ -114,8 +114,10 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
 
 ## Suggested order
 
-1. **Retrofit the 6 non-compliant protocols to the `plot_data` contract** (locks the pattern
-   before new code copies the old shape).
+1. **Retrofit the remaining 5 non-compliant protocols to the `plot_data` contract** (locks the
+   pattern before new code copies the old shape). `ramsey` is done — use it (and
+   `charge_gate_ramsey`) as the template; remaining: `state_discrimination`,
+   `single_state_outlier`, `qubit_spectroscopy`, `qubit_decoherence`, `hankel_analysis`.
 2. **`ZZinteractionEcho`** — smallest, self-contained; validates the recipe end-to-end
    (reuses `damped_oscillation`).
 3. **`ROFidelityPower` / `ROFidelityFreq`** — reuse `StateDiscriminationAnalyzer` (resolve the
