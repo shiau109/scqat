@@ -71,13 +71,13 @@ copy the non-compliant shape.
 | qcat analyzer | scqat status | Disposition |
 |---|---|---|
 | `ramsey.RamseyAnalysis` | ✅ `RamseyAnalyzer` | present — verify beat-model parity (`f_1/f_2/a_1/a_2/kappa`) |
-| `state_discrimination.StateDiscrimination` | ✅ `StateDiscriminationAnalyzer` | present (GMM); metadata schema differs from qcat — see risk below |
+| `state_discrimination.StateDiscrimination` | ✅ `StateDiscriminationAnalyzer` | present (GMM); returns the **same** result-dict keys as qcat, so ROFidelity reuse is clean |
 | `charge_gate_ramsey.ChargeGateRamseyAnalysis` | ✅ `ChargeGateRamseyAnalyzer` | present (reference impl) |
-| `readout_power.ROFidelityPower` | ❌ missing | **port** — orchestrates state-disc over `amp_prefactor` sweep |
-| `readout_freq.ROFidelityFreq` | ❌ missing | **port** — orchestrates state-disc over a frequency sweep |
+| `readout_power.ROFidelityPower` | ✅ `ReadoutPowerFidelityAnalyzer` | ported, plot_data-compliant (unified `ReadoutFidelityAnalyzer`, `sweep_coord='amp_prefactor'`; reuses `StateDiscriminationAnalyzer`) |
+| `readout_freq.ROFidelityFreq` | ✅ `ReadoutFreqFidelityAnalyzer` | ported (same unified analyzer, `sweep_coord='frequency'`) |
 | `zz_interaction.ZZinteractionEcho` | ✅ `ZZInteractionEchoAnalyzer` | ported, plot_data-compliant (damped-oscillation per flux; reuses `damped_oscillation`) |
-| `ac_stark_shift` (functional) | ❌ missing | **port** — depends on qubit-spectroscopy fitting |
-| `readout_pulse_photon` (functional) | ❌ missing | **port** — qubit-spectroscopy fit vs pulse delay |
+| `ac_stark_shift` (functional) | ✅ `AcStarkShiftAnalyzer` | ported; Analyzer form of `notebooks/ac_stark_spectroscopy.ipynb` (per-amp f01 via `QubitSpectroscopyAnalyzer`, detuning→photon via `chi_eff`, linear fit vs amp²) |
+| `readout_pulse_photon` (functional) | ✅ `ReadoutPulsePhotonAnalyzer` | ported; Analyzer form of `notebooks/ac_stark_readout.ipynb` (per-delay f01 via `QubitSpectroscopyAnalyzer`, photon-number trace + steady-state average) |
 | `conditional_phase` | empty stub | won't port |
 | `plot_ds_raw_scatter` | utility | optional helper, low priority |
 
@@ -120,10 +120,20 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
    `single_state_outlier`, `qubit_spectroscopy`, `qubit_decoherence`, `hankel_analysis`.
 2. ~~**`ZZinteractionEcho`**~~ — **done** (`ZZInteractionEchoAnalyzer`); validated the recipe
    end-to-end (reuses `damped_oscillation`).
-3. **`ROFidelityPower` / `ROFidelityFreq`** — reuse `StateDiscriminationAnalyzer` (resolve the
-   schema risk below first). ← next feature.
-4. **`ac_stark_shift`** — reuse `QubitSpectroscopyAnalyzer`.
-5. **`readout_pulse_photon`**.
+3. ~~**`ROFidelityPower` / `ROFidelityFreq`**~~ — **done** (unified `ReadoutFidelityAnalyzer`
+   + `ReadoutPowerFidelityAnalyzer` / `ReadoutFreqFidelityAnalyzer`); the StateDiscrimination
+   schema matched, so reuse was clean.
+4. ~~**`ac_stark_shift`**~~ — **done** (`AcStarkShiftAnalyzer`, notebook approach; reuses `QubitSpectroscopyAnalyzer`).
+5. ~~**`readout_pulse_photon`**~~ — **done** (`ReadoutPulsePhotonAnalyzer`). Its raw-2D figure subsumes the
+   commented node's `plot_2d_colormap_from_h5`, so a separate generic colormap util is no longer needed.
+
+**All five LCHQMDriver-driven gaps are now closed.** Remaining scqat work is the optional `plot_data`
+retrofit of the still-non-compliant legacy protocols (track 1) and the lower-priority fitters
+(`cosine`, `powerlaw_base`, `transmon_freq_vs_flux`).
+
+**Note — the notebooks are temporary, path-based scripts; the Analyzer is the destination.**
+`notebooks/ac_stark_spectroscopy.ipynb` and `notebooks/ac_stark_readout.ipynb` now have Analyzer
+equivalents and can be retired (or rewritten to call the analyzers).
 
 Port the remaining missing fitters (`cosine`, `powerlaw_base`, `transmon_freq_vs_flux`) as the
 dependent analyzer needs them, each with a `pytest`. (`exp_decay` is done — `tests/test_fit_exp_decay.py`.)
@@ -154,10 +164,15 @@ Checklist for each new protocol:
 5. Re-export the analyzer in `scqat/protocols/__init__.py`.
 6. Add a notebook and/or `pytest` exercising it.
 
-### Known porting risk — readout-fidelity sweeps
+### Readout-fidelity sweeps — schema risk RESOLVED
 `ROFidelityPower`/`ROFidelityFreq` in qcat loop over a sweep and call `StateDiscrimination`,
 consuming `analysis_result` keys: `trained_paras{std, mean}`, `outlier_probability`,
-`gaussian_norms`, `direct_counts`, `norm_res`. scqat's `StateDiscriminationAnalyzer` returns a
-**different metadata schema**. Before porting these two, verify the exact keys
-`StateDiscriminationAnalyzer.extract_parameters` returns and adapt the orchestration — do
-**not** assume drop-in reuse.
+`gaussian_norms`, `direct_counts`, `norm_res`. scqat's `StateDiscriminationAnalyzer.extract_parameters`
+returns those **exact same keys**, so the port reuses it directly with no schema adaptation
+(`ReadoutFidelityAnalyzer`). The one qcat feature intentionally **not** ported is
+`ROFidelityPower`'s linear mean-drift refit (`fit_means_vs_amp_prefactor`, which fed corrected
+means back into per-slice state discrimination); add it as an optional step if a node needs it.
+
+**Note on `sweep_coord`-only nodes:** several LCH nodes (`coupler_spectroscopy_dispersive`,
+`qubit_parametric_drive_*`, `qubit_spectroscopy_zz`) import only the qcat *parser*; they need
+nothing new in scqat, just a repoint to `scqat.parsers` (LCHQMDriver-side work).
