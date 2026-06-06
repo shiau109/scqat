@@ -92,7 +92,7 @@ keep): `qubit_spectroscopy` (lived in `NCU` in qcat), `qubit_decoherence`, `hank
 | `fit_damped_oscillation` | ✅ `damped_oscillation` |
 | `fit_damping_beat` | ✅ `damping_beat` |
 | `fit_gaussian2d` (single + multi) | ✅ `gaussian2d`, `multi_gaussian2d` |
-| `fit_cosine` | ❌ port |
+| `fit_cosine` | ✅ `cosine` (ported, tested; flexible `parse_xy` input) |
 | `fit_exp_decay` | ✅ `exp_decay` (ported, tested; flexible `parse_xy` input) |
 | `fit_powerlaw_base` | ❌ port |
 | `fit_transmon_freqeuency_flux` | ❌ port |
