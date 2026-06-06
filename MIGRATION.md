@@ -93,7 +93,7 @@ keep): `qubit_spectroscopy` (lived in `NCU` in qcat), `qubit_decoherence`, `hank
 | `fit_damping_beat` | ✅ `damping_beat` |
 | `fit_gaussian2d` (single + multi) | ✅ `gaussian2d`, `multi_gaussian2d` |
 | `fit_cosine` | ❌ port |
-| `fit_exp_decay` | ❌ port (T1) |
+| `fit_exp_decay` | ✅ `exp_decay` (ported, tested; flexible `parse_xy` input) |
 | `fit_powerlaw_base` | ❌ port |
 | `fit_transmon_freqeuency_flux` | ❌ port |
 
@@ -125,8 +125,8 @@ scqat-only fitters (keep): `abscos`, `lorentzian`, `multi_damped_oscillation`,
 4. **`ac_stark_shift`** — reuse `QubitSpectroscopyAnalyzer`.
 5. **`readout_pulse_photon`**.
 
-Port missing fitters (`cosine`, `exp_decay`, `powerlaw_base`, `transmon_freq_vs_flux`) as the
-dependent analyzer needs them, each with a `pytest`.
+Port the remaining missing fitters (`cosine`, `powerlaw_base`, `transmon_freq_vs_flux`) as the
+dependent analyzer needs them, each with a `pytest`. (`exp_decay` is done — `tests/test_fit_exp_decay.py`.)
 
 ---
 

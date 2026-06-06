@@ -10,6 +10,7 @@ from .function_fitting import FunctionFitting, register_fitter, get_fitter
 from . import fit_abscos  # noqa: F401
 from . import fit_damped_oscillation  # noqa: F401
 from . import fit_damping_beat  # noqa: F401
+from . import fit_exp_decay  # noqa: F401
 from . import fit_multi_damped_oscillation  # noqa: F401
 from . import fit_gaussian2d  # noqa: F401
 from . import fit_lorentzian  # noqa: F401
