@@ -2,15 +2,15 @@
 
 This top-level package is intentionally kept import-light: ``import scqat`` must
 have no side effects and must not pull in heavy/optional dependencies (e.g.
-matplotlib, which ``core`` and ``protocols`` import). Import the layer you need
+matplotlib, which ``core`` and ``estimators`` import). Import the layer you need
 explicitly, for example::
 
     from scqat.parsers import load_xarray_h5
-    from scqat.math_tools import get_fitter
-    from scqat.protocols import RamseyAnalyzer
+    from scqat.tools import get_fitter
+    from scqat.estimators import RamseyEstimator
 
 See ``MIGRATION.md`` for the QCAT→scqat feature backlog and porting recipe, and
-``.github/copilot-instructions.md`` for the architecture.
+``CLAUDE.md`` for the architecture.
 """
 
 __version__ = "0.1.0"

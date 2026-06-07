@@ -34,12 +34,12 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from scqat.math_tools.fit_multi_damped_oscillation import (
+from scqat.tools.fit_multi_damped_oscillation import (
     FitMultiDampedOscillation,
     multi_damped_osc_eval,
 )
-from scqat.math_tools.fit_qubit_decoherence import FitQubitDecoherence, rho11_model
-from scqat.math_tools.hankel import hankel_decompose
+from scqat.tools.fit_qubit_decoherence import FitQubitDecoherence, rho11_model
+from scqat.tools.hankel import hankel_decompose
 from scqat.parsers.qualibrate_parser import repetition_data
 from scqat.parsers.xarray_h5_parser import load_xarray_h5
 

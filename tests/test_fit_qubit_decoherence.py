@@ -2,13 +2,13 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools.fit_qubit_decoherence import (
+from scqat.tools.fit_qubit_decoherence import (
     FitQubitDecoherence,
     decoherence_G,
     rho11_model,
     rho10_model,
 )
-from scqat.math_tools import get_fitter
+from scqat.tools import get_fitter
 
 
 # Reparametrisation:

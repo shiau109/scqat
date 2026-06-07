@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from scqat.math_tools.hankel import hankel_decompose, _select_n_modes
+from scqat.tools.hankel import hankel_decompose, _select_n_modes
 
 
 class TestHankelDecompose:

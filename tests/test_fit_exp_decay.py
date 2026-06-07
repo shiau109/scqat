@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools import get_fitter
-from scqat.math_tools.fit_exp_decay import FitExponentialDecay
+from scqat.tools import get_fitter
+from scqat.tools.fit_exp_decay import FitExponentialDecay
 
 
 def _make_decay(a=1.0, tau=0.5, c=0.1, n_points=200, noise_std=0.0, x_max=2.0):

@@ -2,7 +2,7 @@ import numpy as np
 import xarray as xr
 import pytest
 
-from scqat.math_tools.fit_multi_damped_oscillation import (
+from scqat.tools.fit_multi_damped_oscillation import (
     FitMultiDampedOscillation,
     multi_damped_osc_eval,
 )

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools import get_fitter
-from scqat.math_tools.fit_cosine import FitCosine
+from scqat.tools import get_fitter
+from scqat.tools.fit_cosine import FitCosine
 
 
 def _make_cosine(a=1.0, f=2.0, phi=0.3, c=0.5, n_points=200, noise_std=0.0, x_max=2.0):

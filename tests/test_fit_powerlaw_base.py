@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools import get_fitter
-from scqat.math_tools.fit_powerlaw_base import FitBasePowerLaw
+from scqat.tools import get_fitter
+from scqat.tools.fit_powerlaw_base import FitBasePowerLaw
 
 
 def _make_powerlaw(a=0.5, base=0.9, c=0.5, n_points=60, noise_std=0.0):

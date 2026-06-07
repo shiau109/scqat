@@ -2,7 +2,7 @@
 
 `scqat` fits analysis models to superconducting-qubit data — from **experiment or
 simulation** — and extracts physical parameters. It is a pip-installable library meant to be
-imported by simulation/experiment repos; analyzers are blind to where the data came from and
+imported by simulation/experiment repos; estimators are blind to where the data came from and
 interact only with `xarray.Dataset`.
 
 ## Architecture
@@ -10,20 +10,20 @@ interact only with `xarray.Dataset`.
 A decoupled, one-directional layering with `xarray.Dataset` as the universal data container:
 
 ```
-workflows  →  protocols  →  math_tools
+workflows  →  estimators  →  tools
 parsers    →  (nothing in scqat)
-core       →  BaseAnalyzer ABC + I/O helpers
+core       →  BaseEstimator ABC + I/O helpers
 ```
 
 - **`parsers/`** — read raw files (HDF5, …) into an `xarray.Dataset`. No analysis.
   `from scqat.parsers import load_xarray_h5, repetition_data, parse_timestamp`
-- **`protocols/`** — one `BaseAnalyzer` subclass per experiment (Ramsey, state
+- **`estimators/`** — one `BaseEstimator` subclass per experiment (Ramsey, state
   discrimination, …). Output **metadata** (JSON) + **plot data** (netCDF).
-  `from scqat.protocols import RamseyAnalyzer`
-- **`math_tools/`** — shared, pure fitters/algorithms, discoverable via `get_fitter('<name>')`.
-- **`workflows/`** — multi-protocol orchestration pipelines.
+  `from scqat.estimators import RamseyEstimator`
+- **`tools/`** — shared, pure fitters/algorithms, discoverable via `get_fitter('<name>')`.
+- **`workflows/`** — multi-estimator orchestration pipelines.
 
-Each analyzer returns two artifacts so a different (possibly non-Python) consumer can redraw
+Each estimator returns two artifacts so a different (possibly non-Python) consumer can redraw
 figures with no recomputation: `extract_parameters()` → metadata, `build_plot_data()` → a
 self-sufficient plot-data `Dataset`, and `generate_figures()` draws from **plot data only**.
 
@@ -31,11 +31,11 @@ self-sufficient plot-data `Dataset`, and `generate_figures()` draws from **plot 
 
 ```python
 from scqat.parsers import load_xarray_h5, repetition_data
-from scqat.protocols import RamseyAnalyzer
+from scqat.estimators import RamseyEstimator
 
 ds = load_xarray_h5("ds_raw.h5")
 for sq in repetition_data(ds, repetition_dim="qubit"):
-    metadata, figs = RamseyAnalyzer().analyze(sq, output_dir="out/")
+    metadata, figs = RamseyEstimator().analyze(sq, output_dir="out/")
 ```
 
 ## Docs

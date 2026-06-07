@@ -1,1 +1,0 @@
-from scqat.protocols.single_state_outlier.analyzer import SingleStateOutlierAnalyzer

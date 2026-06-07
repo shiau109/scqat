@@ -1,0 +1,1 @@
+from scqat.estimators.single_state_outlier.estimator import SingleStateOutlierEstimator

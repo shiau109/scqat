@@ -1,4 +1,4 @@
-"""End-to-end tests for the composite ResonatorSpectroscopyFluxAnalyzer.
+"""End-to-end tests for the composite ResonatorSpectroscopyFluxEstimator.
 
 Synthesises a resonator-spectroscopy-vs-flux map whose dip centre follows the
 flux-tunable-transmon dispersive model, then checks that the composite chains the
@@ -12,11 +12,11 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import pytest
 
-from scqat.protocols import ResonatorSpectroscopyFluxAnalyzer
-from scqat.protocols.resonator_spectroscopy_flux import (
-    ResonatorSpectroscopyFluxAnalyzer as SubpkgAnalyzer,
+from scqat.estimators import ResonatorSpectroscopyFluxEstimator
+from scqat.estimators.resonator_spectroscopy_flux import (
+    ResonatorSpectroscopyFluxEstimator as SubpkgEstimator,
 )
-from scqat.protocols.resonator_spectroscopy_flux.visualization import plot_combined
+from scqat.estimators.resonator_spectroscopy_flux.visualization import plot_combined
 
 
 def _flux_dispersion(flux, f_r0, g, phi0, phi_off, f_q_max):
@@ -58,20 +58,20 @@ def _make_dataset(n_flux=21, n_det=121, noise=0.0, seed=0):
 
 class TestResonatorSpectroscopyFluxComposite:
     def test_aggregated_and_subpackage_imports_match(self):
-        assert ResonatorSpectroscopyFluxAnalyzer is SubpkgAnalyzer
-        assert ResonatorSpectroscopyFluxAnalyzer.protocol_name == "resonator_spectroscopy_flux"
+        assert ResonatorSpectroscopyFluxEstimator is SubpkgEstimator
+        assert ResonatorSpectroscopyFluxEstimator.estimator_name == "resonator_spectroscopy_flux"
 
     def test_nested_results_structure(self):
         ds, _ = _make_dataset()
-        results = ResonatorSpectroscopyFluxAnalyzer().extract_parameters(ds)
+        results = ResonatorSpectroscopyFluxEstimator().extract_parameters(ds)
         assert set(results) == {"vs_flux", "dispersion"}
         # Most flux slices yield a good dip.
         assert results["vs_flux"]["n_good"] >= 18
 
     def test_recovers_sweet_spot(self):
         ds, truth = _make_dataset()
-        analyzer = ResonatorSpectroscopyFluxAnalyzer()
-        results = analyzer.extract_parameters(ds)
+        estimator = ResonatorSpectroscopyFluxEstimator()
+        results = estimator.extract_parameters(ds)
         disp = results["dispersion"]
         assert disp["success"] is True
         # Sweet spot is the well-determined (degeneracy-independent) output.
@@ -80,9 +80,9 @@ class TestResonatorSpectroscopyFluxComposite:
 
     def test_metadata_projection(self):
         ds, _ = _make_dataset()
-        analyzer = ResonatorSpectroscopyFluxAnalyzer()
-        results = analyzer.extract_parameters(ds)
-        meta = analyzer.extract_metadata(results)
+        estimator = ResonatorSpectroscopyFluxEstimator()
+        results = estimator.extract_parameters(ds)
+        meta = estimator.extract_metadata(results)
         # Flat, JSON-friendly scalars only — no nested stage dicts.
         for key in ("n_flux", "n_good", "sweet_spot_flux", "sweet_spot_freq",
                     "dv_phi0", "f_r0", "g", "dispersion_success"):
@@ -91,9 +91,9 @@ class TestResonatorSpectroscopyFluxComposite:
 
     def test_plot_data_is_self_sufficient(self):
         ds, _ = _make_dataset()
-        analyzer = ResonatorSpectroscopyFluxAnalyzer()
-        results = analyzer.extract_parameters(ds)
-        pd = analyzer.build_plot_data(ds, results)
+        estimator = ResonatorSpectroscopyFluxEstimator()
+        results = estimator.extract_parameters(ds)
+        pd = estimator.build_plot_data(ds, results)
 
         assert isinstance(pd, xr.Dataset)
         for var in ("amplitude", "center_full_freq", "good", "outlier", "fit_freq"):
@@ -106,27 +106,27 @@ class TestResonatorSpectroscopyFluxComposite:
 
     def test_generate_figures_from_plot_data_only(self):
         ds, _ = _make_dataset()
-        analyzer = ResonatorSpectroscopyFluxAnalyzer()
-        results = analyzer.extract_parameters(ds)
-        pd = analyzer.build_plot_data(ds, results)
+        estimator = ResonatorSpectroscopyFluxEstimator()
+        results = estimator.extract_parameters(ds)
+        pd = estimator.build_plot_data(ds, results)
 
-        figs = analyzer.generate_figures(None, None, plot_data=pd)
+        figs = estimator.generate_figures(None, None, plot_data=pd)
         assert set(figs) == {"resonator_spectroscopy_flux"}
         assert isinstance(figs["resonator_spectroscopy_flux"], plt.Figure)
         plt.close("all")
 
     def test_analyze_roundtrip_and_reconstructable_figure(self, tmp_path):
         ds, _ = _make_dataset()
-        analyzer = ResonatorSpectroscopyFluxAnalyzer()
-        results, figs = analyzer.analyze(ds, output_dir=str(tmp_path))
+        estimator = ResonatorSpectroscopyFluxEstimator()
+        results, figs = estimator.analyze(ds, output_dir=str(tmp_path))
 
-        # Artifacts written with the protocol_name prefix.
+        # Artifacts written with the estimator_name prefix.
         assert (tmp_path / "resonator_spectroscopy_flux_metadata.json").exists()
         assert (tmp_path / "resonator_spectroscopy_flux_plotdata.nc").exists()
         assert isinstance(figs["resonator_spectroscopy_flux"], plt.Figure)
 
         # Reconstruct the figure from the reloaded plot_data alone (no re-analysis).
-        reloaded = analyzer.load_plot_data(str(tmp_path))
+        reloaded = estimator.load_plot_data(str(tmp_path))
         fig = plot_combined(reloaded)
         assert isinstance(fig, plt.Figure)
         plt.close("all")

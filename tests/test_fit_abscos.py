@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools.fit_abscos import FitAbsCos
+from scqat.tools.fit_abscos import FitAbsCos
 
 
 def _make_abscos_data(amplitude=0.5, frequency=2.0, phase=0.1, n_points=100, noise_std=0.0):

@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from scqat.math_tools.fit_multi_damped_oscillation import multi_damped_osc_eval
-from scqat.math_tools.fit_qubit_decoherence import rho11_model
-from scqat.protocols.qubit_decoherence import QubitDecoherenceAnalyzer
+from scqat.tools.fit_multi_damped_oscillation import multi_damped_osc_eval
+from scqat.tools.fit_qubit_decoherence import rho11_model
+from scqat.estimators.qubit_decoherence import QubitDecoherenceEstimator
 
 
 # ---------------------------------------------------------------------------
@@ -370,11 +370,11 @@ def _decoh_best_inspection(
 
     sub = rho_ds.sel(driving_frequency=f_val).rename({"driving_time": "time"})
     fit_ds = sub[["rho_11"]]
-    analyzer = QubitDecoherenceAnalyzer()
-    _results, figs = analyzer.analyze(fit_ds)
+    estimator = QubitDecoherenceEstimator()
+    _results, figs = estimator.analyze(fit_ds)
 
     fig = figs.get("rho_11")
-    # Drop any other figures the analyzer produced
+    # Drop any other figures the estimator produced
     for key, f in figs.items():
         if key != "rho_11":
             plt.close(f)

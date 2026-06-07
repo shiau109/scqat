@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools import get_fitter
-from scqat.math_tools.fit_transmon_freq_flux import FitTransmonFrequencyFlux
+from scqat.tools import get_fitter
+from scqat.tools.fit_transmon_freq_flux import FitTransmonFrequencyFlux
 
 
 def _make_transmon(Ej_sum=20.0, period=0.8, offset=0.0, Ec=0.2, n_points=41,

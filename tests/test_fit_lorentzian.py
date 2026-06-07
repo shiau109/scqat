@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.math_tools.fit_lorentzian import FitLorentzian, lorentzian
-from scqat.math_tools import get_fitter
+from scqat.tools.fit_lorentzian import FitLorentzian, lorentzian
+from scqat.tools import get_fitter
 
 
 def _make_lorentzian_data(x0=0.0, amplitude=1.0, gamma=0.1, offset=0.05,
