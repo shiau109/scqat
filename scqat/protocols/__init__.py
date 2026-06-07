@@ -4,6 +4,11 @@ from scqat.protocols.ramsey import RamseyAnalyzer
 from scqat.protocols.charge_gate_ramsey import ChargeGateRamseyAnalyzer
 from scqat.protocols.single_state_outlier import SingleStateOutlierAnalyzer
 from scqat.protocols.qubit_spectroscopy import QubitSpectroscopyAnalyzer
+from scqat.protocols.qubit_spectroscopy_flux import QubitSpectroscopyFluxAnalyzer
+from scqat.protocols.resonator_spectroscopy import ResonatorSpectroscopyAnalyzer
+from scqat.protocols.resonator_spectroscopy_vs_flux import ResonatorSpectroscopyVsFluxAnalyzer
+from scqat.protocols.resonator_flux_dispersion import ResonatorFluxDispersionAnalyzer
+from scqat.protocols.resonator_spectroscopy_flux import ResonatorSpectroscopyFluxAnalyzer
 from scqat.protocols.zz_interaction import ZZInteractionEchoAnalyzer
 from scqat.protocols.readout_fidelity import (
     ReadoutFidelityAnalyzer,
