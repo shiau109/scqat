@@ -40,7 +40,7 @@ for sq in repetition_data(ds, repetition_dim="qubit"):
 
 ## Docs
 
-- Architecture & contribution rules: [`.github/copilot-instructions.md`](.github/copilot-instructions.md)
+- Architecture & contribution rules: [`CLAUDE.md`](CLAUDE.md)
 - QCAT→scqat migration status, feature backlog, and porting recipe: [`MIGRATION.md`](MIGRATION.md)
 
 ## Install
