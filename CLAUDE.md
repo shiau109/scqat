@@ -5,6 +5,8 @@ from **either an experiment or a simulation** — estimators must be blind to wh
 It strictly follows a decoupled, Domain-Driven architecture using
 `xarray.Dataset` as the universal data transfer object.
 
+> Cross-repo terminology (Experiment = probe + **estimator**) is defined in `D:\github\SCQO\CLAUDE.md` → Terminology. This repo implements the **estimator** + **tool/fitter** half (the analysis side).
+
 ## Purpose & Consumption
 `scqat` is a **pip-installable library** (`pyproject.toml`) meant to be imported
 by other repositories:
