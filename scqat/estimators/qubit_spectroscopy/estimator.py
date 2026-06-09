@@ -73,14 +73,28 @@ class QubitSpectroscopyEstimator(BaseEstimator):
     # ------------------------------------------------------------------
     # Data validation
     # ------------------------------------------------------------------
+    @staticmethod
+    def _with_iqdata(dataset: xr.Dataset) -> xr.Dataset:
+        """Return a dataset that has an ``IQdata`` variable, building it from
+        ``I``/``Q`` when only the quadratures are present (so a saved ds_raw with
+        netCDF-safe float ``I``/``Q`` is read natively)."""
+        if "IQdata" in dataset:
+            return dataset
+        if "I" in dataset and "Q" in dataset:
+            return dataset.assign(IQdata=dataset["I"] + 1j * dataset["Q"])
+        raise ValueError(
+            "QubitSpectroscopyEstimator requires an 'IQdata' variable, or both 'I' and 'Q'."
+        )
+
     def _check_data(self, dataset: xr.Dataset) -> None:
         if "detuning" not in dataset.coords:
             raise ValueError(
                 "QubitSpectroscopyEstimator requires a 'detuning' coordinate."
             )
-        if "IQdata" not in dataset.data_vars:
+        if "IQdata" not in dataset and not ("I" in dataset and "Q" in dataset):
             raise ValueError(
-                "Dataset must contain an 'IQdata' (complex) data variable."
+                "QubitSpectroscopyEstimator requires an 'IQdata' (complex) variable, "
+                "or both 'I' and 'Q'."
             )
 
     # ------------------------------------------------------------------
@@ -135,6 +149,7 @@ class QubitSpectroscopyEstimator(BaseEstimator):
             signal = dataset[signal_var].values.astype(float).ravel()
             ref_iq = None
         else:
+            dataset = self._with_iqdata(dataset)
             iq_complex = dataset["IQdata"].values.ravel()
             if ref is not None:
                 ref_iq = complex(ref)
