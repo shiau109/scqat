@@ -118,6 +118,11 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         prominence : float, optional
             Minimum prominence for ``find_peaks`` relative to the baseline-
             subtracted signal span.  Default 0.1 (10 %).
+        min_snr : float, optional
+            Significance gate: a peak's prominence must also exceed
+            ``min_snr * robust_sigma`` (robust_sigma = 1.4826 * MAD of the
+            baseline-corrected signal). Rejects noise-only sweeps (returns no
+            peaks) and keeps all genuine lines regardless of count. Default 6.0.
         max_peaks : int or None, optional
             Maximum number of peaks to return.  When set, the *max_peaks*
             most prominent peaks are kept (sorted by amplitude) and the
@@ -138,6 +143,7 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         """
         ref = kwargs.get("ref", None)
         prominence_rel = kwargs.get("prominence", 0.1)
+        min_snr = kwargs.get("min_snr", 6.0)
         max_peaks = kwargs.get("max_peaks", None)
         fit_window_factor = kwargs.get("fit_window_factor", 5.0)
         signal_var = kwargs.get("signal_var", None)
@@ -167,7 +173,12 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         # Try both polarities; keep the one whose most prominent
         # peak is larger (handles both absorption dips and emission peaks).
         span = signal_corrected.max() - signal_corrected.min()
-        abs_prom = prominence_rel * span
+        # Significance gate: a peak must rise above the noise, not merely be the most
+        # prominent bump within the span. robust sigma = 1.4826 * MAD (median-based, so a
+        # few strong peaks don't inflate it). This rejects noise-only sweeps (no peak found)
+        # while keeping every genuine line, e.g. both peaks of a two-transition sweep.
+        robust_sigma = 1.4826 * np.median(np.abs(signal_corrected - np.median(signal_corrected)))
+        abs_prom = max(prominence_rel * span, min_snr * robust_sigma)
 
         idx_pos, props_pos = find_peaks(
             signal_corrected, prominence=abs_prom, width=1,
