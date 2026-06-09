@@ -33,6 +33,7 @@ fit found nothing. ``estimator_method`` uses it to turn any estimator+kwargs int
 """
 from __future__ import annotations
 
+import glob
 import os
 from typing import Callable
 
@@ -123,27 +124,69 @@ def compare(slices_, methods, out_png=None, freq_scale: float = 1e6, freq_unit: 
     return rows, fig
 
 
-def replot(estimator, slices_, out_dir=None, **analyze_kwargs):
-    """Regenerate the estimator's OWN figures per slice from saved raw data — the
-    figures an LCHQM run would have produced had ``plot`` not been skipped.
+def _plotdata_name(path: str) -> str:
+    """Unit name from a saved plot-data filename: ``plotdata_q1.h5`` -> ``q1``."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return stem[len("plotdata_"):] if stem.startswith("plotdata_") else stem
 
-    For each ``(name, sq)``: re-run the (deterministic) fit, call
-    ``estimator.generate_figures`` and, if ``out_dir`` is given, save each figure as
-    ``<out_dir>/<name>__<figname>.png``. Also prints the persisted metadata keys so you
-    can eyeball the extracted parameters. Returns ``{name: {figname: Figure}}``.
+
+def _iter_plotdata(spec):
+    """Yield ``(name, plot_data)`` from a ``{name: path}`` mapping, a directory of
+    ``plotdata_*.h5`` (e.g. an LCHQM run folder saved with ``save_plot_data=True``), or a
+    single saved file path."""
+    if isinstance(spec, dict):
+        items = list(spec.items())
+    elif os.path.isdir(spec):
+        items = [(_plotdata_name(p), p) for p in sorted(glob.glob(os.path.join(spec, "plotdata_*.h5")))]
+    else:
+        items = [(_plotdata_name(spec), spec)]
+    for name, path in items:
+        yield name, load_xarray_h5(path)
+
+
+def _save_figs(figs, name, out_dir):
+    if not out_dir:
+        return
+    for fig_name, fig in figs.items():
+        path = os.path.join(out_dir, f"{name}__{fig_name}.png")
+        fig.savefig(path, bbox_inches="tight")
+        print(f"   saved {path}")
+
+
+def replot(estimator, slices_=None, out_dir=None, from_plotdata=None, **analyze_kwargs):
+    """Regenerate the estimator's OWN figures per unit and (optionally) save them as
+    ``<out_dir>/<name>__<figname>.png``. Returns ``{name: {figname: Figure}}``.
+
+    Two modes — pass exactly one of:
+
+    * ``slices_`` (the ``(name, sq)`` list): **re-fit** the saved raw data — the figures an
+      LCHQM run would have produced had ``plot`` not been skipped. Also prints the
+      persisted metadata so you can eyeball the extracted parameters.
+    * ``from_plotdata``: **no re-fit** — a saved ``plotdata_<unit>.h5`` path, a directory of
+      them (e.g. an LCHQM run folder saved with ``save_plot_data=True``), or a
+      ``{name: path}`` mapping. Each is loaded and drawn via
+      ``estimator.generate_figures(None, None, plot_data=...)`` (plot-data-contract
+      estimators only — they draw using only ``plot_data``).
     """
+    if (slices_ is None) == (from_plotdata is None):
+        raise ValueError("pass exactly one of `slices_` or `from_plotdata`")
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
+
     figures = {}
+    if from_plotdata is not None:
+        for name, plot_data in _iter_plotdata(from_plotdata):
+            figs = estimator.generate_figures(None, None, plot_data=plot_data)
+            figures[name] = figs
+            print(f"{name}: replotted {list(figs)} from saved plot-data (no re-fit)")
+            _save_figs(figs, name, out_dir)
+        return figures
+
     for name, sq in slices_:
         results = estimator.analyze(sq, output_dir=None, skip_figures=True, **analyze_kwargs)[0]
         figs = estimator.generate_figures(sq, results)
         figures[name] = figs
         meta = estimator.extract_metadata(results)
         print(f"{name}: figures={list(figs)}  metadata={meta}")
-        if out_dir:
-            for fig_name, fig in figs.items():
-                path = os.path.join(out_dir, f"{name}__{fig_name}.png")
-                fig.savefig(path, bbox_inches="tight")
-                print(f"   saved {path}")
+        _save_figs(figs, name, out_dir)
     return figures
