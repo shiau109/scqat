@@ -100,6 +100,13 @@ compare(slices(DS, prep=prep), param_methods,
         out_png=os.path.join(DATA_DIR, "compare_params.png"))
 
 
-# %% (C) REPLOT a plot-skipped LCHQM run — regenerate the estimator's own figures
+# %% (C) REPLOT by RE-FITTING saved raw — figures a plot-skipped run would have made
 replot(EST, slices(DS, prep=prep),
        out_dir=os.path.join(DATA_DIR, "replot"), max_peaks=1)
+
+
+# %% (D) REPLOT with NO re-fit — from a run saved with save_plot_data=True
+# Point at any LCHQM run folder that contains plotdata_*.h5; figures are reconstructed
+# straight from the saved plot-data (zero recomputation).
+SAVED_RUN = r"D:/SynologyDrive/LiChiehHsiao/AS/SynologyDrive/data/raw_data/2026-06-09/#54_LCH_qubit_spectroscopy_090054"
+replot(EST, from_plotdata=SAVED_RUN, out_dir=os.path.join(SAVED_RUN, "replot_check"))
