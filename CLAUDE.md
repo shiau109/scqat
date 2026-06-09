@@ -168,3 +168,30 @@ All fitters inherit from `FunctionFitting` (in
 3. Implement `model_function`, `guess`, and `fit` methods.
 4. Write `pytest` tests in `tests/` for the new fitter (estimator-level tests are
    optional).
+
+## Offline analysis on saved data (`analysis/`)
+Iterate on estimators against **real saved runs** (`ds_raw.h5` / `plotdata_*.h5` produced by a
+driver such as LCHQM) without re-running hardware. The reusable engine is
+`analysis/_harness.py`; per-experiment entry points are thin `# %%`-cell scripts
+(`analysis/try_<experiment>.py`).
+
+1. **`.py` + `# %%` cells, not `.ipynb`.** Notebook UX in VS Code (run-cell, inline figures) but
+   git-friendly files (clean diffs, reviewable, importable). Real notebooks stay in `notebooks/`.
+2. **Reuse the engine; never re-implement load/slice/plot per file.** `_harness.py` provides
+   `load(path)`, `slices(ds, prep)`, `compare(slices, methods)`,
+   `estimator_method(est, adapt, **kwargs)`, and `replot(est, slices_ | from_plotdata=…)`. A
+   per-experiment `try_<exp>.py` sets only: the data path, `prep` (raw → estimator input),
+   `adapt` (`results` → normalized plot fields), and the methods to compare.
+3. **Three uses, one engine:** (A) try a new approach — compare a custom method against the
+   estimator; (B) test parameters — the estimator across a kwarg grid (e.g. `min_snr` /
+   `prominence`); (C) replot a plot-skipped run — re-fit from `ds_raw`, or with **no re-fit**
+   from a saved `plotdata_*.h5` via `replot(..., from_plotdata=<run dir or file>)`.
+4. **Validate estimator changes against real saved data before committing**, stating the
+   expected truth (e.g. a noise sweep → 0 peaks; a two-transition sweep → both peaks). But
+   **never put external/absolute data paths in `tests/`** — tests use synthetic data or a small
+   committed fixture (e.g. `notebooks/charge_gate_ramsey_plot_payload.h5`); `analysis/` is the
+   only place path-based exploration lives.
+
+A saved `plotdata_*.h5` *is* the estimator-native `build_plot_data` Dataset (see **Estimator
+Output Contract**): reload it with `from scqat.parsers import load_xarray_h5` and draw via
+`estimator.generate_figures(None, None, plot_data=…)` — no re-fit, no parsing.
