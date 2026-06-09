@@ -84,14 +84,19 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
         Each slice is handed to ``QubitSpectroscopyEstimator.extract_parameters``
         (peak detection + single-Lorentzian fit per peak); ``kwargs`` such as
         ``signal_var`` (e.g. ``"state"``), ``prominence`` and ``max_peaks`` are
-        forwarded to it. By default no peak cap is applied (all peaks above the
-        prominence threshold are kept).
+        forwarded to it. By default each flux slice is capped to its 4 most
+        prominent peaks (``max_peaks=4``); pass ``max_peaks=None`` to keep every
+        peak above the prominence threshold.
 
         Keyword arguments
         -----------------
         n_sigma : float, optional
             Robust-sigma threshold for the width / amplitude outlier test
             (default 3.0). Not forwarded to the per-slice estimator.
+        max_peaks : int or None, optional
+            Per-flux cap forwarded to the single-slice estimator: keep each
+            slice's ``max_peaks`` most prominent peaks. Default 4; pass ``None``
+            to keep all peaks above the prominence threshold.
 
         Returns
         -------
@@ -103,6 +108,9 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
             n_flux, n_peaks, n_in_window, n_good, n_outlier}``
         """
         n_sigma = float(kwargs.pop("n_sigma", 3.0))
+        # Default cap: keep each flux slice's 4 most-prominent peaks (headroom over the
+        # typical 1-2 real transitions). setdefault preserves an explicit max_peaks=None opt-out.
+        kwargs.setdefault("max_peaks", 4)
         signal_var = kwargs.get("signal_var", None)
 
         ds = dataset
