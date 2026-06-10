@@ -80,7 +80,16 @@ def _build_param_text(attrs: dict) -> str:
     model_type = attrs.get('model_type', 'single')
 
     k1 = attrs.get('kappa_1', float('nan'))
-    tau1 = 1.0 / k1 if k1 != 0 else float('nan')
+    tau1 = attrs.get('tau_1', 1.0 / k1 if k1 != 0 else float('nan'))
+
+    # Relaxation: the fringe frequency is ~0, so only the decay is meaningful.
+    if model_type == 'relaxation':
+        return "\n".join([
+            "model: relaxation (f ≈ 0)",
+            f"τ₁ = {tau1:.4g}",
+            f"a₁ = {attrs.get('a_1', float('nan')):.4g}",
+            f"c = {attrs.get('c', float('nan')):.4g}",
+        ])
 
     lines = [
         f"κ₁ = {k1:.4g}  (τ₁ = {tau1:.4g})",
