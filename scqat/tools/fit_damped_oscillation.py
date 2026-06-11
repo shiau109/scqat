@@ -1,7 +1,7 @@
 from xarray import DataArray
 from lmfit import Model
 from lmfit.model import ModelResult
-from numpy import cos, abs, exp, max, min, mean, argmax, pi
+from numpy import cos, sin, abs, exp, max, min, mean, argmax, pi
 from numpy import fft
 
 from .function_fitting import FunctionFitting, register_fitter, parse_xy
@@ -11,12 +11,20 @@ from .function_fitting import FunctionFitting, register_fitter, parse_xy
 class FitDampedOscillation(FunctionFitting):
     """
     Fit a damped oscillation model:
-        a * exp(-kappa * x) * cos(2*pi*f*x + phi) + c
+        a * exp(-kappa * x) * trig(2*pi*f*x + phi) + c
+
+    where ``trig`` is ``cos`` (default) or ``sin`` per the ``basis`` argument.
+    The ``sin`` basis suits sequences whose fringe starts at zero amplitude and
+    rises (e.g. a Ramsey x90 -> idle -> y90, whose phase is seeded at 0); the
+    ``cos`` basis is the historical default and is unchanged for existing callers.
 
     Input DataArray must have a coordinate named 'x'.
     """
 
-    def __init__(self, data: DataArray = None, x=None):
+    def __init__(self, data: DataArray = None, x=None, basis: str = "cos"):
+        if basis not in ("cos", "sin"):
+            raise ValueError(f"basis must be 'cos' or 'sin', got {basis!r}.")
+        self.basis = basis
         self._data_parser(data, x)
         self.model = Model(self.model_function)
         self.params = None
@@ -25,7 +33,8 @@ class FitDampedOscillation(FunctionFitting):
         self.x, self.y = parse_xy(data, x)
 
     def model_function(self, x, a, kappa, f, phi, c):
-        return a * exp(-kappa * x) * cos(2 * pi * f * x + phi) + c
+        trig = sin if self.basis == "sin" else cos
+        return a * exp(-kappa * x) * trig(2 * pi * f * x + phi) + c
 
     def guess(self):
         y = self.y

@@ -192,15 +192,36 @@ class StateDiscriminationEstimator(BaseEstimator):
     # STATELESS HELPER METHODS
     # ==========================================
     
+    @staticmethod
+    def _robust_sigma(da: xr.DataArray) -> np.ndarray:
+        """Per-prepared_state Gaussian width from the median absolute deviation
+        (MAD / 0.6745, the consistency factor for a normal distribution); one value per
+        ``prepared_state``. MAD is used instead of the plain standard deviation because
+        each prepared state's data is slightly bimodal — a few percent of shots are
+        mis-assigned and sit in the OTHER blob — and a std of that bimodal data is
+        inflated by the inter-blob separation. MAD ignores that minority tail and tracks
+        the dominant blob's width."""
+        med = da.median(dim='shot_idx')
+        return (np.abs(da - med).median(dim='shot_idx') / 0.67448975).values
+
     def _preprocess_data(self, dataset: xr.Dataset, user_std=None):
         """Stateless helper to bin the raw data into 2D histograms."""
         prepared_states = dataset.coords['prepared_state'].values
         
-        # Calculate standard deviations for bin sizing
-        std_I = dataset['I'].std(dim='shot_idx').values
-        std_Q = dataset['Q'].std(dim='shot_idx').values
-        std_init = np.min([np.array([std_I[i], std_Q[i]]) for i in range(len(prepared_states))])
-        
+        # Per-state single-blob width for bin sizing and as the GMM sigma seed: the
+        # rotation-invariant RMS of the two axes, sqrt((sigma_I**2 + sigma_Q**2) / 2), of
+        # the robust (MAD-based) per-axis widths.
+        #  * RMS (not min(sigma_I, sigma_Q)) keeps the bin size from oscillating when an
+        #    elongated blob rotates with a swept parameter (e.g. readout frequency, whose
+        #    resonator phase rotates the IQ blobs) — min would alias into a period-2
+        #    zigzag in std/norm_res/outliers across the sweep.
+        #  * MAD (not std) keeps the few-percent of mis-assigned shots in the other blob
+        #    from inflating the width (a std of the bimodal per-state data overestimates
+        #    sigma, blowing up the n-sigma circles and the SNR).
+        sig_I = self._robust_sigma(dataset['I'])
+        sig_Q = self._robust_sigma(dataset['Q'])
+        std_init = float(np.min(np.sqrt((sig_I**2 + sig_Q**2) / 2)))
+
         step = (user_std if user_std else std_init) / 3
         # step = max(step, 1e-3)
         

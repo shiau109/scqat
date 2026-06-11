@@ -1,6 +1,7 @@
 from scqat.estimators.qubit_decoherence import QubitDecoherenceEstimator
 from scqat.estimators.state_discrimination import StateDiscriminationEstimator
 from scqat.estimators.ramsey import RamseyEstimator
+from scqat.estimators.power_rabi import PowerRabiEstimator
 from scqat.estimators.charge_gate_ramsey import ChargeGateRamseyEstimator
 from scqat.estimators.single_state_outlier import SingleStateOutlierEstimator
 from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
@@ -17,3 +18,5 @@ from scqat.estimators.readout_fidelity import (
 )
 from scqat.estimators.ac_stark_shift import AcStarkShiftEstimator
 from scqat.estimators.readout_pulse_photon import ReadoutPulsePhotonEstimator
+from scqat.estimators.parametric_drive_decoherence import ParametricDriveDecoherenceEstimator
+from scqat.estimators.parametric_drive_resonance import ParametricDriveResonanceEstimator

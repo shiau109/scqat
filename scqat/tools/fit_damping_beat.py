@@ -1,7 +1,7 @@
 from xarray import DataArray
 from lmfit import Model
 from lmfit.model import ModelResult
-from numpy import cos, abs, exp, max, min, mean, pi, nan
+from numpy import cos, sin, abs, exp, max, min, mean, pi, nan
 from numpy import fft, asarray
 from scipy.signal import find_peaks
 
@@ -12,17 +12,26 @@ from .function_fitting import FunctionFitting, register_fitter, parse_xy
 class FitDampingBeat(FunctionFitting):
     """
     Fit a damped beat model (two oscillation frequencies with independent decay):
-        a_1*exp(-kappa_1*x)*cos(2*pi*f_1*x + phi_1)
-      + a_2*exp(-kappa_2*x)*cos(2*pi*f_2*x + phi_2)
+        a_1*exp(-kappa_1*x)*trig(2*pi*f_1*x + phi_1)
+      + a_2*exp(-kappa_2*x)*trig(2*pi*f_2*x + phi_2)
       + c
 
+    where ``trig`` is ``cos`` (default) or ``sin`` per the ``basis`` argument.
+
     If only one frequency is detected in the FFT, the second component is
-    automatically frozen to zero, reducing to a single damped oscillation.
+    automatically frozen to zero, reducing to a single damped oscillation —
+    unless ``guess(force_two_components=True)`` is used, which keeps both
+    components free (seeding ``f_2`` from a perturbation of ``f_1``) so the fit
+    is a genuine two-frequency model. That is the form a model-selection caller
+    wants, so an information criterion can fairly penalise the extra parameters.
 
     Input DataArray must have a coordinate named 'x'.
     """
 
-    def __init__(self, data: DataArray = None, x=None):
+    def __init__(self, data: DataArray = None, x=None, basis: str = "cos"):
+        if basis not in ("cos", "sin"):
+            raise ValueError(f"basis must be 'cos' or 'sin', got {basis!r}.")
+        self.basis = basis
         self._data_parser(data, x)
         self.model = Model(self.model_function)
         self.params = None
@@ -31,13 +40,14 @@ class FitDampingBeat(FunctionFitting):
         self.x, self.y = parse_xy(data, x)
 
     def model_function(self, x, a_1, kappa_1, f_1, phi_1, a_2, kappa_2, f_2, phi_2, c):
+        trig = sin if self.basis == "sin" else cos
         return (
-            a_1 * exp(-kappa_1 * x) * cos(2 * pi * f_1 * x + phi_1)
-            + a_2 * exp(-kappa_2 * x) * cos(2 * pi * f_2 * x + phi_2)
+            a_1 * exp(-kappa_1 * x) * trig(2 * pi * f_1 * x + phi_1)
+            + a_2 * exp(-kappa_2 * x) * trig(2 * pi * f_2 * x + phi_2)
             + c
         )
 
-    def guess(self):
+    def guess(self, force_two_components: bool = False):
         y = self.y
         t = self.x
         dt = float(t[1] - t[0])
@@ -77,15 +87,25 @@ class FitDampingBeat(FunctionFitting):
         kappa_1_guess = 1.0 / abs(t[-1] / 2) if abs(t[-1] / 2) > 0 else 1.0
         kappa_1_dict = dict(value=kappa_1_guess, min=0.0, max=10 * kappa_1_guess)
 
-        if f_2_idx is None:
+        if f_2_idx is not None:
+            f_2_guess = float(abs(freq[f_2_idx]))
+            a_2_guess = float(abs(amp[f_2_idx]))
+        elif force_two_components:
+            # No resolvable second peak, but the caller wants a genuine
+            # two-frequency fit: seed f_2 just off f_1 and let it move so the
+            # second component is real (not frozen) for model comparison.
+            f_2_guess = f_1_guess * 1.1
+            a_2_guess = a_1_guess
+        else:
+            f_2_guess = None  # collapse to a single damped oscillation
+
+        if f_2_guess is None:
             # Single-frequency mode: freeze second component
             a_2_dict = dict(value=0, vary=False)
             f_2_dict = dict(value=0, vary=False)
             phi_2_dict = dict(value=0, vary=False)
             kappa_2_dict = dict(value=0, vary=False)
         else:
-            f_2_guess = float(abs(freq[f_2_idx]))
-            a_2_guess = float(abs(amp[f_2_idx]))
             a_2_dict = dict(value=a_2_guess, min=0.0, max=a_2_guess * 2)
             f_2_dict = dict(value=f_2_guess, min=0.0, max=1.0 / dt / 2)
             phi_2_dict = dict(value=0.0, min=-float(pi), max=float(pi))

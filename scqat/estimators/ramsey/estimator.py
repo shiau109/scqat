@@ -1,30 +1,54 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
+from lmfit.model import ModelResult
 
 from scqat.core.base_estimator import BaseEstimator
 from scqat.tools.fit_damped_oscillation import FitDampedOscillation
 from scqat.tools.fit_damping_beat import FitDampingBeat
+from scqat.tools.fit_exp_decay import FitExponentialDecay
 from scqat.estimators.ramsey.visualization import plot_time_domain, plot_fft
 
 
 class RamseyEstimator(BaseEstimator):
-    """
-    Analyzes Ramsey experiment data to extract decay rate and oscillation frequency.
+    """Estimator for a Ramsey experiment: fits a *model* to the probed *Dataset*
+    and returns the extracted model parameters (the fringe frequency, which
+    calibrates the qubit frequency, and the decay time T2*).
 
-    Expects an xarray.Dataset with:
-        - Variable: 'signal'
-        - Coordinate: 'idle_time'
+    Expects an ``xarray.Dataset`` with:
+        - Variable: ``'signal'``
+        - Coordinate: ``'idle_time'``
 
-    Automatically detects whether the data contains a single damped oscillation
-    or a damped beat (two frequencies) using FFT peak analysis,
-    then fits the appropriate model.
+    The lab sequence is ``x90 -> idle -> y90``, so the fringe is a **sine** whose
+    phase is seeded at 0. Model selection is principled rather than heuristic:
+
+    1. **frequency gate** — if the dominant fringe spans fewer than
+       :attr:`MIN_CYCLES` oscillations over the idle window (i.e. the frequency
+       is too close to 0 to resolve), fit a pure **exponential decay**
+       (relaxation / T1-like) and report the frequency as 0;
+    2. otherwise fit a single damped sine and a two-frequency **beat** and keep
+       the **beat** only when it improves the Bayesian information criterion by
+       at least :attr:`DELTA_BIC` (so a single-frequency signal is not upgraded
+       to a beat by fitting noise). The beat case (charge dispersion) calibrates
+       the qubit with the **mean** of the two frequencies.
+
+    The QM node's ``estimate`` step calls :meth:`analyze`; ``update`` then writes
+    ``f_01`` / ``charge_dispersion`` from the returned ``model_type`` + ``f_1``/``f_2``.
     """
 
     estimator_name = "ramsey"
+
+    #: Minimum number of fringe oscillations across the idle window for a real
+    #: frequency to be resolvable. A pure decay concentrates its spectrum in the
+    #: first non-DC bin, which corresponds to just under one cycle across the
+    #: window ((N-1)/N), so a threshold of 1.0 catches it while a genuine
+    #: multi-cycle fringe (cycles > 1) passes through to the BIC comparison.
+    MIN_CYCLES = 1.0
+    #: Bayesian-information-criterion margin by which the beat model must beat the
+    #: single model to be accepted (Kass-Raftery "strong evidence").
+    DELTA_BIC = 6.0
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         if 'signal' not in dataset:
@@ -33,78 +57,52 @@ class RamseyEstimator(BaseEstimator):
             raise ValueError("Ramsey analysis requires an 'idle_time' coordinate in the dataset.")
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
-        """
-        Fit the Ramsey signal and extract oscillation/decay parameters.
+        """Fit the Ramsey signal and extract oscillation/decay parameters.
 
         Kwargs:
-            force_model (str): Force 'single' or 'beat' model instead of auto-detect.
+            force_model (str): Force ``'single'``, ``'beat'`` or ``'relaxation'``
+                instead of the automatic frequency-gate + BIC selection.
 
         Returns a dict with:
-            model_type, a_1, kappa_1, tau_1, f_1, phi_1, c, best_fit,
-            fft_freq, fft_amp, fit_report,
-            and (for beat model) a_2, kappa_2, tau_2, f_2, phi_2.
+            model_type, a_1, kappa_1, tau_1, f_1, phi_1, c, success,
+            best_fit, fft_freq, fft_amp, fit_report,
+            and (for the beat model) a_2, kappa_2, tau_2, f_2, phi_2.
         """
         force_model = kwargs.get('force_model', None)
+        if force_model not in (None, 'single', 'beat', 'relaxation'):
+            raise ValueError(
+                f"force_model must be None, 'single', 'beat' or 'relaxation', got {force_model!r}."
+            )
 
-        # Prepare DataArray with 'x' coordinate for the fitters
+        # Prepare a DataArray with an 'x' coordinate for the fitters.
         fit_data = dataset['signal'].rename({'idle_time': 'x'}).squeeze()
 
-        # Compute FFT (always returned for diagnostics)
+        # FFT once: feeds both the diagnostic spectrum and the frequency gate.
         fft_freq, fft_amp = self._compute_fft(dataset)
+        f_dom = float(fft_freq[int(np.argmax(fft_amp))]) if fft_amp.size else 0.0
 
-        # Auto-detect or use forced model
-        detected_type, peak_freqs = self._detect_model_type(fit_data)
-        if force_model == 'single':
-            model_type = 'single'
+        x = np.asarray(fit_data.coords['x'].values, dtype=float)
+        span = float(x[-1] - x[0]) if x.size > 1 else 0.0
+        cycles = abs(f_dom) * span
+
+        # Select and fit the model.
+        if force_model == 'relaxation' or (force_model is None and cycles < self.MIN_CYCLES):
+            results, fit_result = self._fit_relaxation(fit_data)
+        elif force_model == 'single':
+            results, fit_result = self._fit_single(fit_data, f_dom)
         elif force_model == 'beat':
-            model_type = 'beat'
+            results, fit_result = self._fit_beat(fit_data)
         else:
-            model_type = detected_type
+            # Auto: compare a single damped sine against a genuine two-frequency
+            # beat and keep the beat only on a decisive BIC improvement.
+            res_single, fr_single = self._fit_single(fit_data, f_dom)
+            beat = self._try_fit_beat(fit_data)
+            if beat is not None and beat[1].bic < fr_single.bic - self.DELTA_BIC:
+                results, fit_result = beat
+            else:
+                results, fit_result = res_single, fr_single
 
-        # Fit
-        if model_type == 'beat':
-            fitter = FitDampingBeat(fit_data)
-            fitter.guess()
-            if len(peak_freqs) >= 2:
-                fitter.params['f_1'].set(value=peak_freqs[0])
-                fitter.params['f_2'].set(value=peak_freqs[1])
-            elif len(peak_freqs) == 1:
-                fitter.params['f_1'].set(value=peak_freqs[0])
-            fit_result = fitter.fit()
-            params = {k: v.value for k, v in fit_result.params.items()}
-
-            results = {
-                'model_type': 'beat',
-                'a_1': params['a_1'],
-                'kappa_1': params['kappa_1'],
-                'tau_1': 1.0 / params['kappa_1'] if params['kappa_1'] != 0 else float('nan'),
-                'f_1': params['f_1'],
-                'phi_1': params['phi_1'],
-                'a_2': params['a_2'],
-                'kappa_2': params['kappa_2'],
-                'tau_2': 1.0 / params['kappa_2'] if params['kappa_2'] != 0 else float('nan'),
-                'f_2': params['f_2'],
-                'phi_2': params['phi_2'],
-                'c': params['c'],
-            }
-        else:
-            fitter = FitDampedOscillation(fit_data)
-            fitter.guess()
-            if len(peak_freqs) >= 1:
-                fitter.params['f'].set(value=peak_freqs[0])
-            fit_result = fitter.fit()
-            params = {k: v.value for k, v in fit_result.params.items()}
-
-            results = {
-                'model_type': 'single',
-                'a_1': params['a'],
-                'kappa_1': params['kappa'],
-                'tau_1': 1.0 / params['kappa'] if params['kappa'] != 0 else float('nan'),
-                'f_1': params['f'],
-                'phi_1': params['phi'],
-                'c': params['c'],
-            }
-
+        results['success'] = bool(fit_result.success)
         results['best_fit'] = fit_result.best_fit
         results['fft_freq'] = fft_freq
         results['fft_amp'] = fft_amp
@@ -132,8 +130,10 @@ class RamseyEstimator(BaseEstimator):
         fft_amp = np.asarray(results['fft_amp'], dtype=float)
 
         attr_keys = ('model_type', 'a_1', 'kappa_1', 'tau_1', 'f_1', 'phi_1', 'c',
-                     'a_2', 'kappa_2', 'tau_2', 'f_2', 'phi_2')
+                     'a_2', 'kappa_2', 'tau_2', 'f_2', 'phi_2', 'success')
         attrs = {k: results[k] for k in attr_keys if k in results}
+        if 'success' in attrs:
+            attrs['success'] = int(bool(attrs['success']))
 
         return xr.Dataset(
             {
@@ -163,12 +163,86 @@ class RamseyEstimator(BaseEstimator):
         }
 
     # ------------------------------------------------------------------
+    # Model fits (each returns the uniform results dict + the lmfit result)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fit_single(fit_data, f_seed: float) -> Tuple[Dict[str, Any], ModelResult]:
+        """Single damped sine: ``a*exp(-kappa*x)*sin(2*pi*f*x + phi) + c``."""
+        fitter = FitDampedOscillation(fit_data, basis="sin")
+        fitter.guess()
+        if f_seed and f_seed > 0:
+            fitter.params['f'].set(value=abs(f_seed))
+        fit_result = fitter.fit()
+        p = {k: v.value for k, v in fit_result.params.items()}
+        results = {
+            'model_type': 'single',
+            'a_1': p['a'],
+            'kappa_1': p['kappa'],
+            'tau_1': 1.0 / p['kappa'] if p['kappa'] != 0 else float('nan'),
+            'f_1': p['f'],
+            'phi_1': p['phi'],
+            'c': p['c'],
+        }
+        return results, fit_result
+
+    @staticmethod
+    def _fit_beat(fit_data) -> Tuple[Dict[str, Any], ModelResult]:
+        """Two damped sines (charge dispersion); both components kept free."""
+        fitter = FitDampingBeat(fit_data, basis="sin")
+        fitter.guess(force_two_components=True)
+        fit_result = fitter.fit()
+        p = {k: v.value for k, v in fit_result.params.items()}
+        results = {
+            'model_type': 'beat',
+            'a_1': p['a_1'],
+            'kappa_1': p['kappa_1'],
+            'tau_1': 1.0 / p['kappa_1'] if p['kappa_1'] != 0 else float('nan'),
+            'f_1': p['f_1'],
+            'phi_1': p['phi_1'],
+            'a_2': p['a_2'],
+            'kappa_2': p['kappa_2'],
+            'tau_2': 1.0 / p['kappa_2'] if p['kappa_2'] != 0 else float('nan'),
+            'f_2': p['f_2'],
+            'phi_2': p['phi_2'],
+            'c': p['c'],
+        }
+        return results, fit_result
+
+    @classmethod
+    def _try_fit_beat(cls, fit_data) -> Optional[Tuple[Dict[str, Any], ModelResult]]:
+        """Beat fit guarded for the model comparison; ``None`` if it fails."""
+        try:
+            return cls._fit_beat(fit_data)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fit_relaxation(fit_data) -> Tuple[Dict[str, Any], ModelResult]:
+        """Pure exponential decay: ``a*exp(-x/tau) + c``; frequency reported as 0."""
+        fitter = FitExponentialDecay(fit_data)
+        fitter.guess()
+        fit_result = fitter.fit()
+        p = {k: v.value for k, v in fit_result.params.items()}  # a, tau, c
+        tau = p['tau']
+        results = {
+            'model_type': 'relaxation',
+            'a_1': p['a'],
+            'kappa_1': 1.0 / tau if tau != 0 else float('nan'),
+            'tau_1': tau,
+            'f_1': 0.0,
+            'phi_1': 0.0,
+            'c': p['c'],
+        }
+        return results, fit_result
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     @staticmethod
     def _compute_fft(dataset: xr.Dataset):
-        """Compute one-sided FFT amplitude spectrum."""
+        """Compute one-sided FFT amplitude spectrum (DC removed)."""
         idle_times = dataset.coords['idle_time'].values
         y = dataset['signal'].values
         n = len(idle_times)
@@ -178,46 +252,3 @@ class RamseyEstimator(BaseEstimator):
         freq = np.fft.fftfreq(n, dt)[: len(amp)]
         amp[0] = 0  # remove DC
         return freq, np.abs(amp)
-
-    @staticmethod
-    def _detect_model_type(fit_data):
-        """Auto-detect single vs beat by checking FFT for a second dominant peak.
-
-        Returns:
-            (model_type, peak_freqs): model_type is 'single' or 'beat';
-                peak_freqs is a list of detected frequencies sorted by power
-                (descending), used as initial guesses for the fitter.
-        """
-        y = fit_data.values
-        x = fit_data.coords['x'].values
-        dt = float(x[1] - x[0])
-
-        amp = np.fft.fft(y)[: len(y) // 2]
-        freq = np.fft.fftfreq(len(y), dt)[: len(amp)]
-        amp[0] = 0
-        power = np.abs(amp)
-
-        # Find local maxima in the power spectrum
-        local_peak_indices, _ = find_peaks(power, height=float(power.max()) * 0.1)
-        if len(local_peak_indices) == 0:
-            # Fallback: use global max
-            peak_freqs = [float(np.abs(freq[np.argmax(power)]))]
-            return 'single', peak_freqs
-
-        # Sort local peaks by power (descending)
-        sorted_local = local_peak_indices[power[local_peak_indices].argsort()[::-1]]
-        peak_freqs = [float(np.abs(freq[idx])) for idx in sorted_local]
-
-        if len(sorted_local) < 2:
-            return 'single', peak_freqs
-
-        # Estimate noise floor as median of the power spectrum
-        noise_floor = float(np.median(power[power > 0]))
-
-        for idx in sorted_local[1:]:
-            is_strong_relative = power[idx] / power[sorted_local[0]] > 0.5
-            is_above_noise = power[idx] > 2 * noise_floor
-            is_separated = abs(int(idx) - int(sorted_local[0])) > 2
-            if is_strong_relative and is_above_noise and is_separated:
-                return 'beat', peak_freqs
-        return 'single', peak_freqs

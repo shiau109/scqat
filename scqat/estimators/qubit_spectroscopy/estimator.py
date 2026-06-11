@@ -56,6 +56,53 @@ def _estimate_baseline(x: np.ndarray, y: np.ndarray, order: int = 1,
 
 
 # ------------------------------------------------------------------
+# Helper: merge near-coincident peaks
+# ------------------------------------------------------------------
+
+def _merge_overlapping_peaks(peaks: List[Dict[str, Any]],
+                             merge_factor: float) -> List[Dict[str, Any]]:
+    """Collapse peaks whose Lorentzians overlap within their summed half-widths.
+
+    Two peaks ``i, j`` are treated as the same physical line when their centres
+    are closer than a fraction of their combined linewidth::
+
+        |x0_i - x0_j| < merge_factor * (fwhm_i + fwhm_j) / 2
+
+    Within each overlapping group only the peak of largest Lorentzian **area**
+    (``|amplitude| * fwhm``) is kept; the rest are discarded.  This removes the
+    duplicate fits that arise when one transition is detected as two adjacent
+    ``find_peaks`` maxima whose overlapping fit windows both converge onto it,
+    while leaving genuinely separated transitions untouched.
+
+    A falsy ``merge_factor`` (``0`` / ``None``) disables merging and returns the
+    input unchanged.  Operates on the ``peaks_info`` dicts, which already carry
+    ``detuning``, ``amplitude`` and ``fwhm`` — no extra fields required.
+    """
+    if not merge_factor or len(peaks) < 2:
+        return peaks
+
+    def _area(p: Dict[str, Any]) -> float:
+        return abs(p["amplitude"]) * p["fwhm"]
+
+    kept = list(peaks)
+    while True:
+        # Find the closest still-overlapping pair (smallest centre gap relative
+        # to its overlap threshold), drop its smaller-area member, and repeat.
+        drop_idx = None
+        best_gap = np.inf
+        for a in range(len(kept)):
+            for b in range(a + 1, len(kept)):
+                gap = abs(kept[a]["detuning"] - kept[b]["detuning"])
+                threshold = merge_factor * (kept[a]["fwhm"] + kept[b]["fwhm"]) / 2.0
+                if gap < threshold and gap < best_gap:
+                    best_gap = gap
+                    drop_idx = a if _area(kept[a]) < _area(kept[b]) else b
+        if drop_idx is None:
+            return kept
+        kept.pop(drop_idx)
+
+
+# ------------------------------------------------------------------
 # Estimator
 # ------------------------------------------------------------------
 
@@ -124,9 +171,25 @@ class QubitSpectroscopyEstimator(BaseEstimator):
             baseline-corrected signal). Rejects noise-only sweeps (returns no
             peaks) and keeps all genuine lines regardless of count. Default 6.0.
         max_peaks : int or None, optional
-            Maximum number of peaks to return.  When set, the *max_peaks*
-            most prominent peaks are kept (sorted by amplitude) and the
-            rest are discarded.  Default ``None`` (keep all).
+            Maximum number of peaks to return.  Applied *after* merging, so a
+            duplicate fit can never consume a slot ahead of a genuine line.
+            When set, the *max_peaks* largest-area peaks are kept (sorted by
+            Lorentzian area ``|amplitude|*fwhm``) and the rest discarded.  The
+            returned ``peaks`` list is then sorted by ascending ``detuning``.
+            Default ``None`` (keep all).
+        merge_factor : float, optional
+            De-duplication strength.  Two fitted peaks are merged into one
+            (keeping the larger-area fit) when their centres are closer than
+            ``merge_factor * (fwhm_i + fwhm_j) / 2`` — i.e. they overlap within
+            their summed half-widths.  This collapses the duplicate Lorentzians
+            that a single noisy line can produce, while leaving well-separated
+            transitions intact.  Default ``1.0``; set ``0`` to disable merging.
+        min_fwhm_factor : float, optional
+            Sub-resolution spike guard.  A fitted peak is dropped when its
+            ``fwhm`` is below ``min_fwhm_factor * median(diff(detuning))``,
+            removing single-sample noise spikes fit as delta-like Lorentzians.
+            Default ``0.5`` (only sub-resolution fits are dropped); set ``0``
+            to disable.
         fit_window_factor : float, optional
             Each peak is fitted inside a window of
             ``fit_window_factor * estimated_width`` around the peak centre.
@@ -145,6 +208,8 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         prominence_rel = kwargs.get("prominence", 0.1)
         min_snr = kwargs.get("min_snr", 6.0)
         max_peaks = kwargs.get("max_peaks", None)
+        merge_factor = kwargs.get("merge_factor", 1.0)
+        min_fwhm_factor = kwargs.get("min_fwhm_factor", 0.5)
         fit_window_factor = kwargs.get("fit_window_factor", 5.0)
         signal_var = kwargs.get("signal_var", None)
 
@@ -198,15 +263,11 @@ class QubitSpectroscopyEstimator(BaseEstimator):
             peak_indices, properties = idx_pos, props_pos
             inverted = False
 
-        # --- Keep only the most prominent peaks if max_peaks is set ---
-        if max_peaks is not None and len(peak_indices) > max_peaks:
-            top_idx = np.argsort(properties["prominences"])[::-1][:max_peaks]
-            top_idx = np.sort(top_idx)  # preserve original order
-            peak_indices = peak_indices[top_idx]
-            for key in properties:
-                properties[key] = properties[key][top_idx]
-
         # --- Fit Lorentzians to each peak ---
+        # All detected peaks are fitted; de-duplication (merge) and the
+        # ``max_peaks`` cap are applied afterwards on the fitted results, so a
+        # duplicate of one line can't crowd out a genuine separate transition.
+        min_fwhm = min_fwhm_factor * abs(float(np.median(np.diff(detuning)))) if len(detuning) > 1 else 0.0
         peaks_info: List[Dict[str, Any]] = []
         for i, idx in enumerate(peak_indices):
             est_width_pts = properties["widths"][i] if "widths" in properties else 10
@@ -251,6 +312,11 @@ class QubitSpectroscopyEstimator(BaseEstimator):
             det_fit = popt[0]
             fwhm = 2 * abs(popt[2])
 
+            # Drop sub-resolution spikes: a fit whose linewidth collapsed below
+            # the sampling step is a single noise sample, not a real line.
+            if min_fwhm > 0 and fwhm < min_fwhm:
+                continue
+
             peak_entry: Dict[str, Any] = {
                 "detuning": float(det_fit),
                 "amplitude": float(popt[1]),
@@ -270,6 +336,15 @@ class QubitSpectroscopyEstimator(BaseEstimator):
                 peak_entry["full_freq"] = float(np.interp(det_fit, detuning, freq_vals))
 
             peaks_info.append(peak_entry)
+
+        # Merge duplicate fits of the same line (keep the larger-area one), then
+        # cap to the strongest ``max_peaks`` by area so a duplicate can't crowd
+        # out a genuine transition.
+        peaks_info = _merge_overlapping_peaks(peaks_info, merge_factor)
+        if max_peaks is not None and len(peaks_info) > max_peaks:
+            peaks_info = sorted(
+                peaks_info, key=lambda p: abs(p["amplitude"]) * p["fwhm"], reverse=True
+            )[:max_peaks]
 
         # Sort peaks by detuning
         peaks_info.sort(key=lambda p: p["detuning"])
