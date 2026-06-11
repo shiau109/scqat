@@ -47,15 +47,19 @@ estimator analyses it unchanged. `load_parametric_sim_h5`
 experiment path is `rho11_offset=0, rho11_scale=1` (a simulated population needs
 no readout correction).
 
+Generate the sim file from the SCQ.jl study on a frequency sweep. `export_fake_data`
+(`studies/driven_q/parametric_drive/export.jl`) writes `rho_11` / `driving_frequency`
+(Hz) / `driving_time` (ns) to the case directory's `output/`, following SCQ.jl's
+case-dir convention (the `data/` folder is deprecated):
+
 ```bash
-python examples/parametric_drive/run_decoherence_on_sim.py                 # bundled SCQ.jl sweep
-python examples/parametric_drive/run_decoherence_on_sim.py path/to/sim.h5  # your sweep
+julia studies/driven_q/parametric_drive/run.jl    <case>   # task_config with [sweep] omega_flux
+julia studies/driven_q/parametric_drive/export.jl <case>   # -> <case>/output/ds_sim.h5
+python examples/parametric_drive/run_decoherence_on_sim.py <case>/output/ds_sim.h5
 ```
 
-The canonical SCQ.jl export (`studies/driven_q/parametric_drive`,
-`export_fake_data`) writes `rho_11` / `driving_frequency` (Hz) / `driving_time`
-(ns) directly; legacy `all_expect` sweeps (projector or moment channels) are also
-read. Large sim time grids are thinned with `time_stride`.
+Legacy `all_expect` sweeps (projector or moment channels) are also read; large sim
+time grids are thinned with `time_stride`.
 
 ## Resonance (fixed-time map)
 
