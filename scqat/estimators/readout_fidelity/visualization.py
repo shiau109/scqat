@@ -10,11 +10,12 @@ name is taken from ``plot_data.attrs['sweep_coord']`` (e.g. ``amp_prefactor`` or
 plot_data layout
 ----------------
 coords : <sweep_coord>, ``center``, ``iq``, ``prepared_state``, ``gauss``, ``count``
-vars   : ``std`` (sweep), ``mean`` (sweep, center, iq),
+vars   : ``std`` (sweep), ``fidelity`` (sweep), ``snr`` (sweep), ``mean`` (sweep, center, iq),
          ``p_outlier``/``norm_res`` (sweep, prepared_state),
          ``gaussian_norms`` (sweep, prepared_state, gauss),
          ``direct_counts`` (sweep, prepared_state, count)
-attrs  : ``sweep_coord``
+attrs  : ``sweep_coord``, and (when a best point was found) ``best_sweep_value`` /
+         ``best_fidelity``
 """
 
 import numpy as np
@@ -34,6 +35,20 @@ def plot_std_vs_sweep(plot_data):
     ax.set_xlabel(coord, fontsize=14)
     ax.set_ylabel('GMM std', fontsize=14)
     ax.set_title('State-discrimination std vs sweep')
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    plt.close(fig)
+    return fig
+
+
+def plot_snr_vs_sweep(plot_data):
+    """Readout SNR (|center₁ − center₀| / GMM std) as a function of the sweep."""
+    coord, sweep = _sweep(plot_data)
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+    ax.plot(sweep, plot_data['snr'].values, 'o-')
+    ax.set_xlabel(coord, fontsize=14)
+    ax.set_ylabel('SNR (separation / σ)', fontsize=14)
+    ax.set_title('Readout SNR vs sweep')
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     plt.close(fig)
@@ -92,23 +107,32 @@ def plot_norm_res_vs_sweep(plot_data):
 
 
 def plot_fidelity_vs_sweep(plot_data):
-    """Correct-assignment fidelity vs the sweep: the diagonal of ``direct_counts``
-    (fraction of shots of prepared_state k assigned to label k), with the diagonal
-    of ``gaussian_norms`` overlaid dashed when available."""
+    """Correct-assignment fidelity vs the sweep: the mean of the ``direct_counts``
+    diagonal (the reduced ``fidelity`` curve, bold), with the per-state diagonals of
+    ``direct_counts`` and ``gaussian_norms`` overlaid. A vertical marker shows the
+    chosen ``best_sweep_value`` (from attrs) when present."""
     coord, sweep = _sweep(plot_data)
     fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+
+    if 'fidelity' in plot_data:
+        ax.plot(sweep, plot_data['fidelity'].values, 'k-o', lw=2, label='mean fidelity')
 
     if 'direct_counts' in plot_data:
         dc = plot_data['direct_counts'].values  # (sweep, prepared_state, count)
         n = min(dc.shape[1], dc.shape[2])
         for k in range(n):
-            ax.plot(sweep, dc[:, k, k], 'o-', label=f'direct counts state {k}')
+            ax.plot(sweep, dc[:, k, k], 'o-', alpha=0.7, label=f'direct counts state {k}')
 
     if 'gaussian_norms' in plot_data:
         gn = plot_data['gaussian_norms'].values  # (sweep, prepared_state, gauss)
         n = min(gn.shape[1], gn.shape[2])
         for k in range(n):
             ax.plot(sweep, gn[:, k, k], '--', alpha=0.7, label=f'gaussian norm state {k}')
+
+    best = plot_data.attrs.get('best_sweep_value')
+    if best is not None:
+        ax.axvline(best, color='red', ls=':', lw=1.5,
+                   label=f'best {coord}={best:.4g}')
 
     ax.set_xlabel(coord, fontsize=14)
     ax.set_ylabel('Fidelity (correct assignment)', fontsize=14)
@@ -118,6 +142,34 @@ def plot_fidelity_vs_sweep(plot_data):
     fig.tight_layout()
     plt.close(fig)
     return fig
+
+
+def _plot_mean_component_vs_sweep(plot_data, comp, label):
+    """Shared helper: plot one I/Q component (``comp`` = 0 for I, 1 for Q) of every
+    trained GMM center as a function of the sweep, one line per center."""
+    coord, sweep = _sweep(plot_data)
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+    mean = plot_data['mean'].values  # (sweep, center, iq)
+    for c in range(mean.shape[1]):
+        ax.plot(sweep, mean[:, c, comp], 'o-', label=f'center {c}')
+    ax.set_xlabel(coord, fontsize=14)
+    ax.set_ylabel(f'mean {label}', fontsize=14)
+    ax.set_title(f'GMM center {label} vs sweep')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    plt.close(fig)
+    return fig
+
+
+def plot_mean_i_vs_sweep(plot_data):
+    """Mean I of each trained GMM center as a function of the sweep."""
+    return _plot_mean_component_vs_sweep(plot_data, 0, 'I')
+
+
+def plot_mean_q_vs_sweep(plot_data):
+    """Mean Q of each trained GMM center as a function of the sweep."""
+    return _plot_mean_component_vs_sweep(plot_data, 1, 'Q')
 
 
 def plot_means_on_iq_plane(plot_data):

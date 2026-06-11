@@ -153,7 +153,8 @@ def _save_figs(figs, name, out_dir):
         print(f"   saved {path}")
 
 
-def replot(estimator, slices_=None, out_dir=None, from_plotdata=None, **analyze_kwargs):
+def replot(estimator, slices_=None, out_dir=None, from_plotdata=None,
+           print_metadata=True, **analyze_kwargs):
     """Regenerate the estimator's OWN figures per unit and (optionally) save them as
     ``<out_dir>/<name>__<figname>.png``. Returns ``{name: {figname: Figure}}``.
 
@@ -167,6 +168,10 @@ def replot(estimator, slices_=None, out_dir=None, from_plotdata=None, **analyze_
       ``{name: path}`` mapping. Each is loaded and drawn via
       ``estimator.generate_figures(None, None, plot_data=...)`` (plot-data-contract
       estimators only — they draw using only ``plot_data``).
+
+    Set ``print_metadata=False`` to suppress the per-unit metadata line in the re-fit
+    mode — handy when an estimator's metadata is bulky (e.g. state discrimination's GMM
+    arrays) and the caller prints its own summary instead.
     """
     if (slices_ is None) == (from_plotdata is None):
         raise ValueError("pass exactly one of `slices_` or `from_plotdata`")
@@ -186,7 +191,9 @@ def replot(estimator, slices_=None, out_dir=None, from_plotdata=None, **analyze_
         results = estimator.analyze(sq, output_dir=None, skip_figures=True, **analyze_kwargs)[0]
         figs = estimator.generate_figures(sq, results)
         figures[name] = figs
-        meta = estimator.extract_metadata(results)
-        print(f"{name}: figures={list(figs)}  metadata={meta}")
+        if print_metadata:
+            print(f"{name}: figures={list(figs)}  metadata={estimator.extract_metadata(results)}")
+        else:
+            print(f"{name}: figures={list(figs)}")
         _save_figs(figs, name, out_dir)
     return figures
