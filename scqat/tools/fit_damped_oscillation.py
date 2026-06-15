@@ -4,7 +4,7 @@ from lmfit.model import ModelResult
 from numpy import cos, sin, abs, exp, max, min, mean, argmax, pi
 from numpy import fft
 
-from .function_fitting import FunctionFitting, register_fitter, parse_xy
+from .function_fitting import FunctionFitting, register_fitter, parse_xy, robust_dt
 
 
 @register_fitter('damped_oscillation')
@@ -39,7 +39,7 @@ class FitDampedOscillation(FunctionFitting):
     def guess(self):
         y = self.y
         t = self.x
-        dt = float(t[1] - t[0])
+        dt = robust_dt(t)
         max_val = float(max(y))
         min_val = float(min(y))
 

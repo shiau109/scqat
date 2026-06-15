@@ -27,7 +27,7 @@ from _harness import load, slices, compare, estimator_method, replot
 from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
 from scqat.tools.fit_lorentzian import FitLorentzian, lorentzian
 
-DATA = r"D:\SynologyDrive\LiChiehHsiao\AS\SynologyDrive\data\raw_data\2026-06-09\#54_LCH_qubit_spectroscopy_090054/ds_raw.h5"
+DATA = r"D:\SynologyDrive\LiChiehHsiao\AS\SynologyDrive\data\raw_data\2026-06-09\#66_LCH_qubit_spectroscopy_214541/ds_raw.h5"
 DATA_DIR = os.path.dirname(DATA)
 
 EST = QubitSpectroscopyEstimator()
@@ -55,7 +55,7 @@ def adapt(res: dict, sq: xr.Dataset):
 
 
 # the current estimator as a reusable baseline method
-m_estimator = estimator_method(EST, adapt, label="estimator (baseline)", max_peaks=1)
+m_estimator = estimator_method(EST, adapt, label="estimator (baseline)", max_peaks=4)
 
 
 # %% (A) Try a NEW approach — <<< EDIT m_new >>> (example: rotated-I + single Lorentzian)
@@ -102,7 +102,7 @@ compare(slices(DS, prep=prep), param_methods,
 
 # %% (C) REPLOT by RE-FITTING saved raw — figures a plot-skipped run would have made
 replot(EST, slices(DS, prep=prep),
-       out_dir=os.path.join(DATA_DIR, "replot"), max_peaks=1)
+       out_dir=os.path.join(DATA_DIR, "replot"), max_peaks=4)
 
 
 # %% (D) REPLOT with NO re-fit — from a run saved with save_plot_data=True

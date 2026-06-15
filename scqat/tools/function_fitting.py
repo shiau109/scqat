@@ -30,6 +30,30 @@ def parse_xy(data, x=None, dtype=float):
     return x_arr, y
 
 
+def robust_dt(t) -> float:
+    """Average sample spacing of a 1-D axis, robust to a degenerate leading step.
+
+    Returns the first step ``t[1]-t[0]`` when it is non-zero (preserving the
+    historical behaviour for well-formed, uniformly sampled axes) and falls back
+    to the average spacing ``(t[-1]-t[0])/(N-1)`` when the leading step is zero --
+    e.g. a Ramsey idle-time sweep whose first points collapse onto the same value
+    after 4 ns clock-cycle rounding. Raises ``ValueError`` if no non-zero spacing
+    exists (fewer than two samples, or every position identical), so a divide by
+    zero surfaces as a clear error instead of a ``ZeroDivisionError`` deep in FFT.
+    """
+    t = np.asarray(t)
+    n = len(t)
+    if n < 2:
+        raise ValueError("Need at least 2 samples to determine a sample spacing.")
+    dt = float(t[1] - t[0])
+    if dt != 0:
+        return dt
+    span = float(t[-1] - t[0])
+    if span != 0:
+        return span / (n - 1)
+    raise ValueError("Degenerate x axis: all sample positions are equal.")
+
+
 class FunctionFitting(ABC):
     """
     Abstract base class for all function fitting routines.

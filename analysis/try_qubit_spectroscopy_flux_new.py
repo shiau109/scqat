@@ -75,7 +75,9 @@ def summarize(slices_, **kw) -> None:
 
 
 # for ns in (3.0, np.inf):
-summarize(slices(DS, prep=prep), prominence=0.1, n_sigma=np.inf)
+summarize(slices(DS, prep=prep), prominence=0.8, n_sigma=np.inf)
 replot(EST, slices(DS, prep=prep),
         out_dir=os.path.join(DATA_DIR, f"replot_nsigma_inf"),
-        prominence=0.1, n_sigma=np.inf)
+        prominence=0.8, n_sigma=np.inf)
+
+# %%

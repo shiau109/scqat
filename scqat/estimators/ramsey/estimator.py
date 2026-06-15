@@ -9,6 +9,7 @@ from scqat.core.base_estimator import BaseEstimator
 from scqat.tools.fit_damped_oscillation import FitDampedOscillation
 from scqat.tools.fit_damping_beat import FitDampingBeat
 from scqat.tools.fit_exp_decay import FitExponentialDecay
+from scqat.tools.function_fitting import robust_dt
 from scqat.estimators.ramsey.visualization import plot_time_domain, plot_fft
 
 
@@ -246,7 +247,7 @@ class RamseyEstimator(BaseEstimator):
         idle_times = dataset.coords['idle_time'].values
         y = dataset['signal'].values
         n = len(idle_times)
-        dt = idle_times[1] - idle_times[0] if n > 1 else 1.0
+        dt = robust_dt(idle_times) if n > 1 else 1.0
 
         amp = np.fft.fft(y)[: n // 2]
         freq = np.fft.fftfreq(n, dt)[: len(amp)]

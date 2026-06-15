@@ -5,7 +5,7 @@ from numpy import cos, sin, abs, exp, max, min, mean, pi, nan
 from numpy import fft, asarray
 from scipy.signal import find_peaks
 
-from .function_fitting import FunctionFitting, register_fitter, parse_xy
+from .function_fitting import FunctionFitting, register_fitter, parse_xy, robust_dt
 
 
 @register_fitter('damping_beat')
@@ -50,7 +50,7 @@ class FitDampingBeat(FunctionFitting):
     def guess(self, force_two_components: bool = False):
         y = self.y
         t = self.x
-        dt = float(t[1] - t[0])
+        dt = robust_dt(t)
         max_val = float(max(y))
         min_val = float(min(y))
 
