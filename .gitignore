@@ -6,3 +6,6 @@ __pycache__/
 
 # Generated notebook output (re-derivable; not source)
 notebooks/temp_output/
+
+# Claude Code: personal/local settings stay local
+.claude/settings.local.json
