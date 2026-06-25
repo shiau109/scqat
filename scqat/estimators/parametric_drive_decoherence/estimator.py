@@ -51,6 +51,7 @@ import xarray as xr
 from scqat.core.base_estimator import BaseEstimator
 from scqat.workflows.ep_pipeline import (
     build_rho_dataset,
+    squeeze_singleton_dims,
     run_hankel_per_freq,
     run_mdo_per_freq,
     run_decoherence_per_freq,
@@ -136,7 +137,7 @@ class ParametricDriveDecoherenceEstimator(BaseEstimator):
 
         rho_11 = (dataset[state_var].astype(float) - rho11_offset) / rho11_scale
         rho_ds = xr.Dataset({"rho_11": rho_11}, attrs=dict(dataset.attrs))
-        return rho_ds.squeeze(drop=True)
+        return squeeze_singleton_dims(rho_ds)
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
         """

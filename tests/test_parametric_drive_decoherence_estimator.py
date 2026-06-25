@@ -123,6 +123,20 @@ class TestParametricDriveDecoherenceEstimator:
         assert res["n_freq"] == len(gammas)
         assert res["n_decoh_ok"] >= 1
 
+    def test_single_frequency_rho11_only(self):
+        """frequency_points=1 keeps 'driving_frequency' as a length-1 dim instead of
+        squeezing it away (regression for the rho_11-only analysis crash)."""
+        ds, _ = _make_rho11_only(n_freq=1)
+        res = ParametricDriveDecoherenceEstimator().extract_parameters(ds, **_KW)
+        assert res["n_freq"] == 1
+        assert np.asarray(res["gamma"]).shape == (1,)
+
+    def test_single_frequency_tomography(self):
+        """Same single-frequency regression for the tomography (basis) path."""
+        ds, _ = _make_tomo(n_freq=1)
+        res = ParametricDriveDecoherenceEstimator().extract_parameters(ds, **_KW)
+        assert res["n_freq"] == 1
+
     def test_metadata_drops_bulky(self):
         ds, _ = _make_rho11_only()
         est = ParametricDriveDecoherenceEstimator()

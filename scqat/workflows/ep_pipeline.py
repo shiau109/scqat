@@ -89,6 +89,18 @@ def load_and_split(h5_path: str, repetition_dim: str = "qubit") -> list[xr.Datas
     return [ds]
 
 
+_ESSENTIAL_AXES = ("driving_frequency", "driving_time")
+
+
+def squeeze_singleton_dims(ds: xr.Dataset) -> xr.Dataset:
+    """Drop stray length-1 dims (e.g. a leftover 'qubit' axis) while keeping the
+    per-frequency physics axes ('driving_frequency'/'driving_time') even when a
+    sweep has a single point (e.g. frequency_points=1). The downstream per-frequency
+    stages require those to remain dimensions."""
+    drop_dims = [d for d, n in ds.sizes.items() if n == 1 and d not in _ESSENTIAL_AXES]
+    return ds.squeeze(drop_dims, drop=True) if drop_dims else ds
+
+
 def build_rho_dataset(
     sq_data: xr.Dataset,
     *,
@@ -115,7 +127,7 @@ def build_rho_dataset(
         },
         attrs=dict(sq_data.attrs),
     )
-    return rho_ds.squeeze(drop=True)
+    return squeeze_singleton_dims(rho_ds)
 
 
 def _load_sim_rho_dataset(h5_path: str) -> xr.Dataset:
