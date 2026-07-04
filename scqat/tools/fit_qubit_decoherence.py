@@ -140,10 +140,13 @@ class FitQubitDecoherence(FunctionFitting):
         lambda_guess = float(np.sqrt(Gamma_guess * Lambda_guess / 2.0))
         rho0_guess = float(y[0])
 
+        # gamma / lambda_ are rates: only physical constraint is >= 0.  Do NOT
+        # hardcode absolute upper bounds here — they would silently pin the fit
+        # for data in different units/scales (caller can tighten via params).
         delta_spec = dict(value=0.0, vary=False) if self.fix_delta else dict(value=0.0, min=-0.01, max=0.01)
         self.params = self.model.make_params(
-            gamma=dict(value=gamma_guess, min=0.0, max=0.02),
-            lambda_=dict(value=lambda_guess, min=0.0, max=0.02),
+            gamma=dict(value=gamma_guess, min=0.0),
+            lambda_=dict(value=lambda_guess, min=0.0),
             Delta=delta_spec,
             rho_0=dict(value=rho0_guess),
         )
@@ -171,9 +174,10 @@ class FitQubitDecoherence(FunctionFitting):
             Gamma_seed = r * Lambda0
             gamma_seed = 2.0 * Lambda0  # = gamma0
             lambda_seed = float(np.sqrt(Gamma_seed * Lambda0 / 2.0))
+            # Rates bounded below by 0 only (scale-free); see guess().
             seed = self.model.make_params(
-                gamma=dict(value=gamma_seed, min=0.0, max=0.01),
-                lambda_=dict(value=lambda_seed, min=0.0, max=0.02),
+                gamma=dict(value=gamma_seed, min=0.0),
+                lambda_=dict(value=lambda_seed, min=0.0),
                 Delta=delta_spec,
                 rho_0=dict(value=rho0, min=-1.2, max=1.2),
             )

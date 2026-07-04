@@ -113,28 +113,41 @@ class FitMultiDampedOscillation(FunctionFitting):
 
     def guess(self):
         y = self.y
-        amp_max = 0.5 #float(np.max(np.abs(y))) if y.size else 1.0
-        # c_guess = float(np.mean(y[-max(int(0.1 * y.size), 1):])) if y.size else 0.0
-        c_guess = 0.0
+        amp_max = float(np.max(np.abs(y))) if y.size else 1.0
+        c_guess = float(np.mean(y[-max(int(0.1 * y.size), 1):])) if y.size else 0.0
+
+        # Nyquist frequency from the median sampling interval: the only
+        # unit-agnostic physical upper bound for a fitted frequency.  (Never
+        # hardcode an absolute cap here — it silently pins fits whose data is
+        # in different units/scales.)
+        if self.x.size > 1:
+            dt = float(np.median(np.abs(np.diff(self.x))))
+            f_nyq = 0.5 / max(dt, 1e-300)
+        else:
+            f_nyq = np.inf
 
         seeds = {}
         for i, m in enumerate(self.modes):
-            a0 = float(m.get("amplitude", amp_max ))#/ self.n_modes))
+            a0 = float(m.get("amplitude", amp_max / self.n_modes))
             k0 = float(m.get("decay_rate", -1.0 / max(abs(self.x[-1] - self.x[0]), 1e-12)))
             f0 = float(m.get("freq_hz", 0.0))
             phi0 = float(m.get("phase", 0.0))
 
-            # Reasonable bounds: decay must be non-positive, freq non-negative,
-            # amplitude bounded by a generous multiple of the signal peak.
-            seeds[f"a{i}"] = dict(value=a0, min=a0*0.1, max=a0*10)
-            seeds[f"k{i}"] = dict(value=k0, min=k0*0.1, max=k0*10)
-            if abs(f0) < 1e-12:
-                seeds[f"f{i}"] = dict(value=0, min=0, max=0.005)
+            # Reasonable bounds: a generous 0.1x-10x window around each Hankel
+            # seed, sorted so the (min, max) pair stays valid for negative
+            # seeds (e.g. decay rates k0 < 0), and freq capped at Nyquist.
+            if abs(a0) > 0.0:
+                a_lo, a_hi = sorted((0.1 * a0, 10.0 * a0))
             else:
-                seeds[f"f{i}"] = dict(value=abs(f0), min=0, max=0.005)
+                a_lo, a_hi = -10.0 * amp_max, 10.0 * amp_max
+            k_lo, k_hi = sorted((0.1 * k0, 10.0 * k0))
+            seeds[f"a{i}"] = dict(value=a0, min=a_lo, max=a_hi)
+            seeds[f"k{i}"] = dict(value=k0, min=k_lo, max=k_hi)
+            seeds[f"f{i}"] = dict(value=abs(f0), min=0.0, max=f_nyq)
             seeds[f"phi{i}"] = dict(value=phi0, min=-2.0 * np.pi, max=2.0 * np.pi)
 
-        seeds["c"] = dict(value=c_guess, min=-0.1, max=0.1)
+        c_span = amp_max if amp_max > 0 else 1.0
+        seeds["c"] = dict(value=c_guess, min=c_guess - c_span, max=c_guess + c_span)
         self.params = self.model.make_params(**seeds)
         return self.params
 

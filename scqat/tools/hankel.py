@@ -196,7 +196,9 @@ def hankel_decompose(
             ``phase``, ``complex_exponent``, ``complex_residue``.
         ``n_modes`` : number of retained singular-value modes.
         ``singular_values`` : the SVD spectrum.
-        ``reconstruction`` : the real signal rebuilt from the modes.
+        ``reconstruction`` : the real signal rebuilt from all extracted
+            exponential components (including negative-frequency conjugates
+            that are filtered out of ``modes``).
     """
     y_data = np.asarray(signal).astype(complex)
     tlist = np.asarray(time).astype(float)
@@ -237,13 +239,14 @@ def hankel_decompose(
         })
     modes.sort(key=lambda m: m["amplitude"], reverse=True)
 
-    # Reconstruct signal for diagnostics
-    if modes:
+    # Reconstruct signal for diagnostics.  Sum over ALL extracted components
+    # (exponents/residues), not just the physical ``modes`` list: for a real
+    # input every oscillatory mode comes as a conjugate pair and the
+    # negative-frequency partner (dropped from ``modes``) carries half the
+    # cosine amplitude — omitting it would rebuild the signal at half height.
+    if len(exponents) > 0:
         reconstruction = np.real(
-            np.sum(
-                [m["complex_residue"] * np.exp(m["complex_exponent"] * tlist) for m in modes],
-                axis=0,
-            )
+            np.exp(np.outer(tlist, exponents)) @ residues
         )
     else:
         reconstruction = np.zeros_like(tlist)
