@@ -166,10 +166,16 @@ class BaseEstimator(ABC):
         return xr.load_dataset(filepath)
 
     def save_figures(self, figs: Dict[str, plt.Figure], output_dir: str) -> None:
-        """Saves figures as ``<output_dir>/<estimator_name>_<fig_name>.png``."""
+        """Saves figures as ``<output_dir>/<estimator_name>_<fig_name>.png``.
+
+        A figure keyed with the estimator's own name (the single-figure idiom) is
+        saved as ``<estimator_name>.png`` — not the stuttering
+        ``resonator_spectroscopy_resonator_spectroscopy.png``.
+        """
         os.makedirs(output_dir, exist_ok=True)
         for name, fig in figs.items():
-            filepath = os.path.join(output_dir, f"{self.estimator_name}_{name}.png")
+            stem = self.estimator_name if name == self.estimator_name else f"{self.estimator_name}_{name}"
+            filepath = os.path.join(output_dir, f"{stem}.png")
             fig.savefig(filepath, bbox_inches="tight")
 
     # ------------------------------------------------------------------
