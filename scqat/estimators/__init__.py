@@ -2,11 +2,13 @@ from scqat.estimators.qubit_decoherence import QubitDecoherenceEstimator
 from scqat.estimators.state_discrimination import StateDiscriminationEstimator
 from scqat.estimators.ramsey import RamseyEstimator
 from scqat.estimators.t1_relaxation import T1RelaxationEstimator
+from scqat.estimators.t2_echo import T2EchoEstimator
 from scqat.estimators.power_rabi import PowerRabiEstimator
 from scqat.estimators.charge_gate_ramsey import ChargeGateRamseyEstimator
 from scqat.estimators.single_state_outlier import SingleStateOutlierEstimator
 from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
 from scqat.estimators.qubit_spectroscopy_flux import QubitSpectroscopyFluxEstimator
+from scqat.estimators.qubit_flux_arch import QubitFluxArchEstimator
 from scqat.estimators.resonator_spectroscopy import ResonatorSpectroscopyEstimator
 from scqat.estimators.resonator_spectroscopy_vs_flux import ResonatorSpectroscopyVsFluxEstimator
 from scqat.estimators.resonator_spectroscopy_power import ResonatorSpectroscopyPowerEstimator
