@@ -142,3 +142,23 @@ class TestResonatorSpectroscopyPower:
         results = ResonatorSpectroscopyPowerEstimator().extract_parameters(ds_iq)
         assert results["n_good"] >= 26
         assert results["optimal_success"] is True
+
+    def test_row_scaled_map_matches_unscaled(self):
+        # Real instruments measure |IQ| that grows with the readout drive: each
+        # power row arrives scaled by the drive amplitude prefactor 10**(p/20).
+        # Per-row fits are scale-invariant and the amplitude outlier test is
+        # baseline-normalized, so the scaled map must give the same answer as
+        # the pre-normalized one.
+        ds, truth = _make_dataset()
+        scale = xr.DataArray(10.0 ** (ds["power"].values / 20.0), dims="power")
+        ds_scaled = ds.assign(IQdata=ds["IQdata"] * scale)
+
+        ref = ResonatorSpectroscopyPowerEstimator().extract_parameters(ds)
+        res = ResonatorSpectroscopyPowerEstimator().extract_parameters(ds_scaled)
+
+        assert res["optimal_success"] is True
+        step = float(np.diff(truth["power"]).mean())
+        assert abs(res["optimal_power"] - ref["optimal_power"]) <= step + 1e-9
+        assert res["n_good"] >= ref["n_good"] - 1
+        good = res["good"]
+        assert np.allclose(res["center_detuning"][good], truth["center_det"][good], atol=0.1e6)

@@ -37,6 +37,11 @@ Coordinates:
 Data variables:
     - IQdata : (power, detuning) – complex demodulated signal (I + iQ), **or**
     - I, Q   : (power, detuning) – the two quadratures, combined into IQdata.
+
+Rows may carry a power-dependent overall scale (the measured |IQ| grows with the
+readout drive amplitude) — per-slice dip fits are scale-invariant, and the
+cross-power amplitude outlier test normalizes by each row's baseline scale, so
+both raw-instrument and pre-normalized maps are handled.
 """
 
 from typing import Any, Dict, Optional
@@ -159,8 +164,11 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
 
         Acceptance per power point happens in two stages: (1) the fitted dip centre
         must lie strictly **inside** the swept detuning window, and (2) the dip
-        ``fwhm`` and ``|dip_amplitude|`` must not be robust (median/MAD) outliers
-        across power.
+        ``fwhm`` and the **baseline-normalized** dip amplitude (``|dip_amplitude|``
+        divided by the row's 90th-percentile ``|IQ|`` squared — rows scale with the
+        readout drive on real instruments) must not be robust (median/MAD) outliers
+        across power. ``dip_amplitude_median``/``dip_amplitude_mad`` report the
+        normalized statistic; ``dip_amplitude`` itself stays in raw ``|IQ|^2`` units.
 
         Keyword arguments
         -----------------
@@ -226,14 +234,25 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         in_window = np.isfinite(center_detuning) & (center_detuning > det_lo) & (center_detuning < det_hi)
         valid = success & in_window
 
-        # (2) Robust outlier rejection on the dip width and amplitude.
+        # 2-D |IQ| amplitude map, oriented (power, detuning) — kept for plotting,
+        # and its per-row median doubles as the row's baseline scale below.
+        amplitude_map = np.abs(ds["IQdata"].transpose("power", "detuning").values)
+
+        # (2) Robust outlier rejection on the dip width and amplitude. The measured
+        # |IQ| grows with the readout drive, so rows carry a power-dependent overall
+        # scale and raw dip amplitudes are NOT comparable across power. Divide out
+        # each row's baseline scale — a HIGH quantile of |IQ| over detuning (the top
+        # decile sits on the off-resonant baseline even when the dip covers a sizable
+        # fraction of the span; the median does not, and its dip-depth bias can flip
+        # borderline flags) — squared to match the |IQ|^2 units of the fitted dip
+        # amplitude. For pre-normalized data the row scale is ~constant across rows,
+        # leaving the flags as before.
+        row_scale = np.quantile(amplitude_map, 0.9, axis=1) ** 2
+        rel_amp = np.abs(dip_amplitude) / np.maximum(row_scale, np.finfo(float).tiny)
         outlier_fwhm, fwhm_med, fwhm_mad = _mad_outliers(fwhm, valid, n_sigma)
-        outlier_amp, amp_med, amp_mad = _mad_outliers(np.abs(dip_amplitude), valid, n_sigma)
+        outlier_amp, amp_med, amp_mad = _mad_outliers(rel_amp, valid, n_sigma)
         outlier = valid & (outlier_fwhm | outlier_amp)
         good = valid & ~outlier
-
-        # 2-D |IQ| amplitude map, oriented (power, detuning) for plotting.
-        amplitude_map = np.abs(ds["IQdata"].transpose("power", "detuning").values)
 
         # Optimal readout power from where the centre trace stops shifting, using
         # only the good (in-window, non-outlier) centres.
