@@ -28,7 +28,8 @@ The dataset should have the ``qubit`` dimension already removed (e.g. via
 ``repetition_data`` from ``scqat.parsers.qualibrate_parser``).
 
 Coordinates:
-    - power     : 1-D float array – readout power (dBm).
+    - power     : 1-D float array – readout power in dB (relative to the current
+                  readout amplitude, or absolute dBm — any log-scale power axis).
     - detuning  : 1-D float array – readout-frequency detuning from the LO (Hz).
     - full_freq : (detuning,) absolute readout frequency (Hz). Optional; when
                   present the centre trace is also reported in absolute frequency
@@ -303,13 +304,22 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
         """Bundle the 2-D amplitude map and the extracted centre trace into one
-        self-sufficient Dataset so the figure redraws with no refitting."""
+        self-sufficient Dataset so the figure redraws with no refitting.
+
+        Alongside the raw linear ``amplitude``, stores the power-normalized
+        ``amplitude_db`` (``20*log10|IQ| - power``) the figure colors by: with
+        both response and drive on a log scale, subtracting the input power
+        removes the swept-drive brightness gradient across rows."""
         power = np.asarray(results["power"], dtype=float)
         detuning = np.asarray(results["detuning"], dtype=float)
         amplitude = np.asarray(results["amplitude_map"], dtype=float)
+        amplitude_db = (
+            20.0 * np.log10(np.maximum(amplitude, np.finfo(float).tiny)) - power[:, None]
+        )
 
         data_vars: Dict[str, Any] = {
             "amplitude": (("power", "detuning"), amplitude),
+            "amplitude_db": (("power", "detuning"), amplitude_db),
             "center_detuning": ("power", np.asarray(results["center_detuning"], float)),
             "fwhm": ("power", np.asarray(results["fwhm"], float)),
             "dip_amplitude": ("power", np.asarray(results["dip_amplitude"], float)),
@@ -350,9 +360,9 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         plot_data: Optional[xr.Dataset] = None,
         **kwargs,
     ) -> Dict[str, plt.Figure]:
-        """Single figure: the 2-D ``|IQ|`` amplitude map over (power, frequency)
-        with the fitted resonator-centre trace and the optimal-power marker
-        overlaid, drawn from plot_data."""
+        """Single figure: the power-normalized ``20*log10|IQ| - power`` map over
+        (power, frequency) with the fitted resonator-centre trace and the
+        optimal-power marker overlaid, drawn from plot_data."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
         return {"resonator_spectroscopy_power": plot_power_map(plot_data)}
