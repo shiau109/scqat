@@ -63,23 +63,28 @@ Cutting a release = **two steps, in this order**:
 2. Tag that commit `vX.Y.Z`.
 
 The pyproject version MUST equal the tag: dependents (SCQO) declare real floors
-like `scqat>=0.1.5`, resolved from package metadata (`importlib.metadata`), so a
+like `scqat>=0.1.4`, resolved from package metadata (`importlib.metadata`), so a
 tag whose tree still carries the old version breaks every downstream install.
-History: tags v0.1.0–v0.1.4 all shipped metadata `0.1.0` (floors were unusable);
-metadata and tags agree from **v0.1.5** on. Never retag or rewrite an existing
-tag — if a tagged tree has the wrong version, cut the next number.
+Never retag or rewrite an existing tag — if a tagged tree has the wrong version,
+cut the next number.
 
 ## Estimator Output Contract
-An estimator produces **one mandatory artifact and two optional ones**:
+**One compute, two projections:** `extract_parameters()` runs the heavy work
+**once** and returns the rich `results` — the single source of truth.
+`extract_metadata()` and `build_plot_data()` are pure projections of it (key
+scalars vs. plot arrays), so nothing is recomputed. Estimators transpose the
+input dataset **by coordinate name** (order-invariant), so callers may pass sweep
+axes in any order.
 
-1. **Metadata (mandatory)** — the *key physical parameters* extracted from the
-   data (e.g. `T1`, `frequency`, `fwhm`). Small and JSON-serializable. The heavy
-   compute `extract_parameters()` returns the full `results`; `extract_metadata(
-   results)` projects the subset to persist as `<estimator_name>_metadata.json`.
-   `extract_metadata` defaults to the identity (so a simple estimator's `results`
-   *is* the metadata) and is overridden only to drop bulky intermediates. The
-   file is stamped with `estimator_name`; the parameter set may evolve over time
-   (rarely), and JSON's flexible schema absorbs that.
+From that, an estimator produces **one mandatory artifact and two optional ones**:
+
+1. **Metadata (mandatory)** — the *key physical parameters* (e.g. `T1`,
+   `frequency`, `fwhm`), small and JSON-serializable, persisted as
+   `<estimator_name>_metadata.json` (stamped with `estimator_name`).
+   `extract_metadata(results)` projects the subset to keep; it defaults to the
+   identity (a simple estimator's `results` *is* the metadata) and is overridden
+   only to drop bulky intermediates. The parameter set may evolve (rarely), and
+   JSON's flexible schema absorbs that.
 2. **Plot data (optional)** — the *minimal arrays needed to redraw every figure
    with zero recalculation* (only trivial unit conversion, e.g. Hz→MHz, is
    allowed downstream). Returned by `build_plot_data()` as a single
@@ -93,11 +98,6 @@ The metadata/plot-data split exists so a *different* repo (possibly not even
 Python) can reload the plot data and reconstruct the figures without rerunning
 any analysis and without unpickling. JSON + netCDF are both self-describing and
 language-agnostic — never use `pickle` for these artifacts.
-
-**One compute, two projections:** `extract_parameters` runs the heavy work once
-and returns the rich `results`; `extract_metadata` and `build_plot_data` are pure
-projections of it (key scalars vs. plot arrays). This avoids recomputation and
-keeps `results` the single source of truth.
 
 **Self-enforcing rule:** `generate_figures()` must draw using **only** the
 `plot_data` Dataset, never the raw input `dataset` or the working `results`. If a
@@ -131,15 +131,13 @@ Every subclass SHOULD also:
 4. Document the **dataset contract** — the exact variable, coordinate, and
    attribute names the estimator expects — in the module or class docstring.
 
-A subclass MAY (optional, each has a safe default):
-5. Override `extract_metadata(results) -> Dict[str, Any]` to drop bulky
-   intermediates from the persisted metadata (default: identity).
-6. Override `build_plot_data(dataset, results, **kwargs) -> xr.Dataset` to emit
-   the **minimal arrays to redraw the figures** (default: `None`).
+A subclass MAY (optional — each has a safe default; semantics per **Estimator
+Output Contract** above):
+5. Override `extract_metadata(results) -> Dict[str, Any]` (default: identity).
+6. Override `build_plot_data(dataset, results, **kwargs) -> xr.Dataset`
+   (default: `None`).
 7. Override `generate_figures(dataset, results, plot_data=None, **kwargs)
-   -> Dict[str, plt.Figure]`, drawing **only** from `plot_data` (default: `{}`;
-   requires `build_plot_data`). `dataset`/`results` are passed for
-   not-yet-migrated estimators; new code must ignore them.
+   -> Dict[str, plt.Figure]` (default: `{}`; requires `build_plot_data`).
 
 The inherited `analyze()` method orchestrates:
 `_check_data` → `extract_parameters` → `extract_metadata` → `build_plot_data` →
@@ -147,21 +145,17 @@ The inherited `analyze()` method orchestrates:
 figures).
 
 - **Every estimator is a subpackage** — one uniform layout, so there is no
-  per-estimator judgment call about whether to "fold". The structure keys on stable
-  identity (it *is* an estimator), not on the mutable question of whether it
-  currently draws a figure:
+  per-estimator "should I fold this into a single module?" judgment call:
   ```
   estimators/<name>/
       __init__.py      # re-exports the estimator class
       estimator.py     # the BaseEstimator subclass
       visualization.py # estimator-specific plotting helpers (consume plot_data)
   ```
-  `visualization.py` is present **whenever the estimator draws figures** — i.e.
-  almost always, since `generate_figures` requires `plot_data` and every estimator
-  to date emits both. A genuine pure-fit estimator with no figures simply omits
-  `visualization.py` while staying a subpackage, so that *adding* a plot later is a
-  new file rather than a module→package restructure. The subpackage `__init__.py`
-  MUST re-export the estimator class so external code can always use
+  `visualization.py` is present whenever the estimator draws figures (almost
+  always); a pure-fit estimator with no figures omits it but stays a subpackage,
+  so adding a plot later is a new file, not a module→package restructure. The
+  `__init__.py` MUST re-export the estimator class so external code can always use
   `from scqat.estimators.<name> import <Estimator>`.
 
 - **`estimators/__init__.py` aggregation:** Every new estimator MUST also be
