@@ -25,3 +25,11 @@ from scqat.estimators.readout_pulse_photon import ReadoutPulsePhotonEstimator
 from scqat.estimators.parametric_drive_decoherence import ParametricDriveDecoherenceEstimator
 from scqat.estimators.parametric_drive_resonance import ParametricDriveResonanceEstimator
 from scqat.estimators.swap_oscillation import SwapOscillationEstimator
+from scqat.estimators.qubit_tomography import QubitTomographyEstimator
+from scqat.estimators.qubit_sqrb import QubitSQRBEstimator
+from scqat.estimators.qubit_relaxation_flux import QubitRelaxationFluxEstimator
+from scqat.estimators.qubit_echo_flux import QubitEchoFluxEstimator
+
+
+
+
