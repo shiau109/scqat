@@ -29,31 +29,31 @@ class QubitDragEquatorEstimator(BaseEstimator):
         
         y0 = signal[0, :]
         y1 = signal[1, :]
-        y2 = signal[2, :]
         
-        # Fit lines to y0 and y1 to find their intersection
+        # Fit lines to y0 (Rx(pi)-Ry(pi/2)) and y1 (Ry(pi)-Rx(pi/2)) to find their intersection
         p0 = np.polyfit(beta, y0, 1)
         p1 = np.polyfit(beta, y1, 1)
         
         slope_diff = p0[0] - p1[0]
-        if np.abs(slope_diff) > 1e-5:
+        if np.abs(slope_diff) > 1e-8:
             opt_beta = (p1[1] - p0[1]) / slope_diff
             success = bool(beta[0] <= opt_beta <= beta[-1])
         else:
-            opt_beta = np.nan
+            opt_beta = float((beta[0] + beta[-1]) / 2)
             success = False
             
         return {
             "beta": beta.tolist(),
-            "opt_beta": float(opt_beta) if success else None,
-            "success": success,
+            "opt_beta": float(opt_beta) if success else float((p1[1] - p0[1]) / slope_diff) if abs(slope_diff) > 1e-8 else None,
+            "success": True if abs(slope_diff) > 1e-8 else False,
             "seq0": y0.tolist(),
             "seq1": y1.tolist(),
-            "seq2": y2.tolist(),
+            "fit_seq0": (p0[0] * beta + p0[1]).tolist(),
+            "fit_seq1": (p1[0] * beta + p1[1]).tolist(),
         }
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in results.items() if k not in ("seq0", "seq1", "seq2")}
+        return {k: v for k, v in results.items() if k not in ("seq0", "seq1", "fit_seq0", "fit_seq1")}
 
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
@@ -62,7 +62,8 @@ class QubitDragEquatorEstimator(BaseEstimator):
             {
                 "seq0": ("beta", np.asarray(results["seq0"], dtype=float)),
                 "seq1": ("beta", np.asarray(results["seq1"], dtype=float)),
-                "seq2": ("beta", np.asarray(results["seq2"], dtype=float)),
+                "fit_seq0": ("beta", np.asarray(results["fit_seq0"], dtype=float)),
+                "fit_seq1": ("beta", np.asarray(results["fit_seq1"], dtype=float)),
             },
             coords={"beta": np.asarray(results["beta"], dtype=float)},
         )

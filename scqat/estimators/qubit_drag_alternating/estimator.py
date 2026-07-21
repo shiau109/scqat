@@ -30,8 +30,18 @@ class QubitDragAlternatingEstimator(BaseEstimator):
         # Calculate signal variance over the pulse sweep axis for each beta point
         # The optimal beta point minimizes the error accumulation and remains flat
         variances = np.var(signal, axis=0)
-        opt_idx = np.argmin(variances)
-        opt_beta = float(beta[opt_idx])
+        try:
+            p = np.polyfit(beta, variances, 2)
+            if p[0] > 0:  # U-shaped parabola with a minimum
+                vertex = -p[1] / (2 * p[0])
+                if beta[0] <= vertex <= beta[-1]:
+                    opt_beta = float(vertex)
+                else:
+                    opt_beta = float(beta[np.argmin(variances)])
+            else:
+                opt_beta = float(beta[np.argmin(variances)])
+        except Exception:
+            opt_beta = float(beta[np.argmin(variances)])
         
         return {
             "beta": beta.tolist(),

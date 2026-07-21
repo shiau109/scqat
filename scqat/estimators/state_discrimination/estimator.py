@@ -58,7 +58,7 @@ class StateDiscriminationEstimator(BaseEstimator):
         counts = xr.apply_ufunc(
             lambda arr: np.bincount(arr, minlength=max_label + 1),
             state_label,
-            input_core_dims=[['idx_shot']],
+            input_core_dims=[['shot_idx' if 'shot_idx' in state_label.dims else 'idx_shot']],
             output_core_dims=[['count']],
             vectorize=True,
             output_dtypes=[int]

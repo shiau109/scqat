@@ -38,11 +38,12 @@ class FitBasePowerLaw(FunctionFitting):
         max_y = float(max(y))
         min_y = float(min(y))
         y_range = max_y - min_y
+        delta = y_range if y_range > 1e-12 else 0.5
 
         base_dict = dict(value=0.9, min=0.0, max=1.0)
-        c_dict = dict(value=float(mean(y)), min=min_y - y_range * 2, max=max_y)
-        a_guess = y_range if y_range != 0 else 1.0
-        a_dict = dict(value=a_guess, min=-a_guess * 2, max=a_guess * 2)
+        c_dict = dict(value=float(mean(y)), min=min_y - delta * 2, max=max_y + delta * 2)
+        a_guess = y_range if y_range > 1e-12 else 0.5
+        a_dict = dict(value=a_guess, min=-delta * 2, max=delta * 2)
 
         self.params = self.model.make_params(a=a_dict, base=base_dict, c=c_dict)
         return self.params
