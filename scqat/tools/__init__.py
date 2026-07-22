@@ -15,6 +15,7 @@ from .discriminate import (
     discriminate_states,
     validate_discriminate_kwargs,
 )
+from .ramsey_fit import RAMSEY_MODELS, fit_ramsey
 from . import fit_abscos  # noqa: F401
 from . import fit_cosine  # noqa: F401
 from . import fit_damped_oscillation  # noqa: F401

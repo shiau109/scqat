@@ -5,7 +5,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 
 from scqat.core.base_estimator import BaseEstimator
-from scqat.estimators.ramsey.estimator import RamseyEstimator
+from scqat.tools.ramsey_fit import RAMSEY_MODELS, fit_ramsey
 from scqat.tools.fit_abscos import FitAbsCos
 from scqat.estimators.charge_gate_ramsey.visualization import (
     plot_raw_2d_colormap,
@@ -24,7 +24,8 @@ class ChargeGateRamseyEstimator(BaseEstimator):
         - Coordinate: 'idle_time'
         - Coordinate: 'charge_gate'
 
-    For each charge_gate slice, a RamseyEstimator extracts f_1 (and f_2 for
+    For each charge_gate slice the family-shared per-trace reduction
+    :func:`scqat.tools.ramsey_fit.fit_ramsey` extracts f_1 (and f_2 for
     beat-mode fits).  The centre frequency f_c is computed as the mean of
     (f_1 + f_2) / 2 across all charge gates where a beat was detected, unless
     the user supplies ``f_c_fixed``.
@@ -51,14 +52,19 @@ class ChargeGateRamseyEstimator(BaseEstimator):
         """
         Run Ramsey fits per charge-gate and fit the |cos| dispersion.
 
-        Kwargs:
+        Kwargs — flat and fully owned; unknown names raise:
             f_c_fixed (float | None): User-supplied centre frequency.
                 If None, f_c is computed from the data.
-            force_model (str | None): Forwarded to RamseyEstimator
-                ('single', 'beat', or None for auto-detect).
+            force_model (str | None): Per-trace model for
+                :func:`scqat.tools.ramsey_fit.fit_ramsey`
+                ('single', 'beat', 'relaxation', or None for auto-detect).
+            abscos_frequency_hint (float | None): Seed the FitAbsCos
+                ``frequency`` parameter (still varied during the fit).
             abscos_frequency_fixed (float | None): If given, fix the
                 FitAbsCos ``frequency`` parameter to this value (not varied
                 during the fit).  Analogous to ``f_c_fixed``.
+            abscos_phase_bounds (tuple | None): (min, max) bounds for the
+                FitAbsCos ``phase`` parameter.
 
         Returns a dict with:
             charge_gates, f_1, f_2, model_types,
@@ -68,11 +74,27 @@ class ChargeGateRamseyEstimator(BaseEstimator):
             abscos_fit_result (lmfit ModelResult or None),
             abscos_params (dict or None).
         """
+        valid = {'f_c_fixed', 'force_model', 'abscos_frequency_hint',
+                 'abscos_frequency_fixed', 'abscos_phase_bounds'}
+        unknown = set(kwargs) - valid
+        if unknown:
+            raise ValueError(
+                f"Unknown keyword argument(s) {sorted(unknown)} for "
+                f"ChargeGateRamseyEstimator; valid: {sorted(valid)}"
+            )
         force_model = kwargs.get('force_model', None)
         f_c_fixed = kwargs.get('f_c_fixed', None)
+        # Fail loudly BEFORE the gate loop — an invalid model name must never
+        # be swallowed by the per-gate try/except.
+        if force_model not in (None, *RAMSEY_MODELS):
+            raise ValueError(
+                f"force_model must be None or one of {list(RAMSEY_MODELS)}, "
+                f"got {force_model!r}."
+            )
 
         charge_gates = dataset.coords['charge_gate'].values
-        ramsey = RamseyEstimator()
+        idle_time = np.asarray(dataset.coords['idle_time'].values, dtype=float)
+        signal_map = dataset['signal'].transpose('charge_gate', 'idle_time').values
 
         f_1_list = []
         f_2_list = []
@@ -81,10 +103,9 @@ class ChargeGateRamseyEstimator(BaseEstimator):
         fft_spectra = []
         fft_freqs = None
 
-        for cg in charge_gates:
-            slice_ds = dataset.sel(charge_gate=cg)
+        for k in range(len(charge_gates)):
             try:
-                res = ramsey.extract_parameters(slice_ds, force_model=force_model)
+                res = fit_ramsey(idle_time, signal_map[k], force_model=force_model)
             except Exception:
                 res = None
 
