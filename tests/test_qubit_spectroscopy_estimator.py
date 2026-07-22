@@ -20,7 +20,7 @@ from scqat.estimators import QubitSpectroscopyEstimator
 from scqat.estimators.qubit_spectroscopy import (
     QubitSpectroscopyEstimator as SubpkgEstimator,
 )
-from scqat.estimators.qubit_spectroscopy.estimator import _merge_overlapping_peaks
+from scqat.tools.peak_fit import _merge_overlapping_peaks
 from scqat.tools.fit_lorentzian import lorentzian
 
 

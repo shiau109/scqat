@@ -143,8 +143,17 @@ joint-background fit vs `circle` Probst notch fit), structure it as follows:
 **Estimators never call estimators.** When an analysis needs another
 experiment's fit as an inner step (the vs-flux/vs-power maps fit a resonator
 dip per slice), the shared piece is a *pure per-trace reduction* — and by rule
-it lives in `tools/` (reference: `tools/dip_fit.py`, `fit_dip()` +
-`DIP_METHODS` + `DIP_KNOBS`), consumed by every estimator in the family.
+it lives in `tools/` (references: `tools/dip_fit.py`, `fit_dip()` +
+`DIP_METHODS` + `DIP_KNOBS`, for the resonator family; `tools/peak_fit.py`,
+`fit_peaks()` + `PEAK_KNOBS`, plus the generic 2-D tracker
+`tools/peak_map.py::track_peaks` for the qubit family), consumed by every
+estimator in the family. When two sweep experiments share the whole map
+reduction (vs-flux and parametric-drive), the tracker is generic-keyed
+(`x`/`y`) in `tools/` and each estimator relabels into its own vocabulary; an
+experiment's *Dataset-shaped* stage helpers live in its own subpackage
+(reference: `resonator_spectroscopy_flux/dips.py`,
+`qubit_spectroscopy_flux/peaks.py`) and may be imported as plain functions by
+a downstream composite estimator of the same family or by control repos.
 Estimator→estimator calls conflate the experiment-level contract
 (metadata/plot_data/figures) with plain math, and their flat `**kwargs`
 namespace makes inner options unreachable or silently mis-routed.

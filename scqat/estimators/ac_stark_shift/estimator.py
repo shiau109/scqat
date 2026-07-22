@@ -4,8 +4,8 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 
-from scqat.core.base_estimator import BaseEstimator
-from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
+from scqat.core.base_estimator import BaseEstimator, with_iqdata
+from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks
 from scqat.estimators.ac_stark_shift.visualization import (
     plot_raw_2d_with_peaks,
     plot_shift_vs_power,
@@ -22,8 +22,9 @@ class AcStarkShiftEstimator(BaseEstimator):
         - Coordinate:  the readout-amplitude axis named by :attr:`power_coord`
           (default ``readout_amp_ratio``)
 
-    For each amplitude slice the qubit line is located by reusing
-    :class:`QubitSpectroscopyEstimator` on ``|IQdata - ref|`` (peak detuning).
+    For each amplitude slice the qubit line is located by the family-shared
+    per-trace reduction :func:`scqat.tools.peak_fit.fit_peaks` on
+    ``|IQdata - ref|`` with ``max_peaks=1`` (peak detuning).
     With ``chi_eff`` the detuning is converted to readout photon number
     ``n = detuning / chi_eff`` (where ``chi_eff = 2*chi``), and ``n`` is fit
     linearly against ``amp**2`` (slope = photons per amp²).
@@ -35,14 +36,6 @@ class AcStarkShiftEstimator(BaseEstimator):
     power_coord: str = "readout_amp_ratio"
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _with_iqdata(dataset: xr.Dataset) -> xr.Dataset:
-        if "IQdata" in dataset:
-            return dataset
-        if "I" in dataset and "Q" in dataset:
-            return dataset.assign(IQdata=dataset["I"] + 1j * dataset["Q"])
-        raise ValueError("AC-Stark shift requires an 'IQdata' variable, or both 'I' and 'Q'.")
-
     def _check_data(self, dataset: xr.Dataset) -> None:
         if self.power_coord not in dataset.coords:
             raise ValueError(f"AC-Stark shift requires a '{self.power_coord}' coordinate.")
@@ -62,34 +55,50 @@ class AcStarkShiftEstimator(BaseEstimator):
             amp_ref (float): Scale ``power_coord`` by this to get a physical
                 readout amplitude (default: use the ratio as-is).
             power_coord (str): Override the swept coordinate name.
-            ref, prominence, fit_window_factor: forwarded to QubitSpectroscopyEstimator.
+            ref, prominence, fit_window_factor, ...: knobs of
+                :func:`scqat.tools.peak_fit.fit_peaks` (``max_peaks`` excluded —
+                this analysis pins ``max_peaks=1``). Unknown names raise before
+                any per-slice fit.
 
         Returns a dict: power_coord, power_values, amp_squared, peak_detuning,
         peak_freq, chi_eff, photon_number, has_photon, fit_slope, fit_intercept,
         amp_ref.
         """
-        power_coord = kwargs.get("power_coord", self.power_coord)
-        chi_eff = kwargs.get("chi_eff", None)
-        amp_ref = kwargs.get("amp_ref", None)
-        qs_kwargs = {k: v for k, v in kwargs.items()
-                     if k in ("ref", "prominence", "fit_window_factor")}
+        power_coord = kwargs.pop("power_coord", self.power_coord)
+        chi_eff = kwargs.pop("chi_eff", None)
+        amp_ref = kwargs.pop("amp_ref", None)
+        # Flat surface, validated up front: everything left must be a fit_peaks
+        # knob, and max_peaks is pinned to 1 (exactly one qubit line expected).
+        unknown = set(kwargs) - (PEAK_KNOBS - {"max_peaks"})
+        if unknown:
+            raise ValueError(
+                f"Unknown keyword argument(s) {sorted(unknown)} for "
+                f"AcStarkShiftEstimator; valid: "
+                f"{sorted((PEAK_KNOBS - {'max_peaks'}) | {'power_coord', 'chi_eff', 'amp_ref'})} "
+                f"(max_peaks is pinned to 1 here)"
+            )
 
-        ds = self._with_iqdata(dataset)
+        ds = with_iqdata(dataset)
         amp = np.asarray(ds.coords[power_coord].values, dtype=float)
+        detuning = np.asarray(ds.coords["detuning"].values, dtype=float)
+        full_freq = (
+            ds.coords["full_freq"].values.ravel().astype(float)
+            if "full_freq" in ds.coords else None
+        )
+        iq_map = ds["IQdata"].transpose(power_coord, "detuning").values
 
-        qs = QubitSpectroscopyEstimator()
         peak_det = np.full(amp.shape, np.nan)
         peak_freq = np.full(amp.shape, np.nan)
-        for i, val in enumerate(amp):
-            sub = ds.sel({power_coord: val})
+        for i in range(len(amp)):
             try:
-                res = qs.extract_parameters(sub, max_peaks=1, **qs_kwargs)
-                peaks = res.get("peaks", [])
-                if peaks:
-                    peak_det[i] = float(peaks[0]["detuning"])
-                    peak_freq[i] = float(peaks[0].get("full_freq", np.nan))
+                res = fit_peaks(detuning, iq_map[i], full_freq=full_freq,
+                                max_peaks=1, **kwargs)
             except Exception:
-                pass
+                continue  # fit-domain failure only: kwargs were validated up front
+            peaks = res["peaks"]
+            if peaks:
+                peak_det[i] = float(peaks[0]["detuning"])
+                peak_freq[i] = float(peaks[0].get("full_freq", np.nan))
 
         amp_scaled = amp * amp_ref if amp_ref is not None else amp
         amp_squared = amp_scaled ** 2
@@ -129,7 +138,7 @@ class AcStarkShiftEstimator(BaseEstimator):
         curve into one self-sufficient Dataset so the figures redraw from the saved
         ``*_plotdata.nc`` alone."""
         power_coord = results["power_coord"]
-        ds = self._with_iqdata(dataset)
+        ds = with_iqdata(dataset)
         detuning = np.asarray(ds.coords["detuning"].values, dtype=float)
         raw = np.abs(ds["IQdata"].transpose(power_coord, "detuning").values)
 

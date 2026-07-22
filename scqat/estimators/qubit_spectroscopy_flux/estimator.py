@@ -6,42 +6,33 @@ fitting **flux-by-flux**, keeping **all** peaks found at each flux (there can be
 two or more transitions at the same flux — e.g. the 0->1 line and the two-photon
 0->2/2 line, or, with a single xy drive source, another qubit's line showing up).
 
-For every flux-bias slice the estimator delegates to
-:class:`~scqat.estimators.qubit_spectroscopy.QubitSpectroscopyEstimator` (peak
-detection + single-Lorentzian fit per peak) and collects every detected peak.
-The result is therefore a **point-cloud** of peaks ``(flux, frequency, fwhm,
-amplitude)`` rather than a single ``frequency(flux)`` value — assigning points to
-individual transition branches belongs to the downstream flux-dependence fit.
+The heavy lifting is the stage function :func:`.peaks.track_flux_peaks` (the
+family-shared per-trace fit :func:`scqat.tools.peak_fit.fit_peaks`, driven
+per-flux by the generic map tracker :func:`scqat.tools.peak_map.track_peaks`);
+this estimator only forwards its flat kwarg surface and owns the artifacts.
+The result is a **point-cloud** of peaks ``(flux, frequency, fwhm, amplitude)``
+rather than a single ``frequency(flux)`` value — assigning points to individual
+transition branches belongs to the downstream flux-dependence fit.
 
 Cleaning: a peak is kept (``good``) when its centre lies strictly inside the
 swept detuning window and its ``fwhm`` / ``|amplitude|`` are not robust
 (median/MAD) outliers across the pooled set of detected peaks.
 
-Expected xarray.Dataset contract
----------------------------------
-The dataset should have the ``qubit`` dimension already removed (e.g. via
-``repetition_data`` from ``scqat.parsers.qualibrate_parser``).
-
-Coordinates:
-    - flux_bias : 1-D float array – applied flux bias (V).
-    - detuning  : 1-D float array – drive-frequency detuning from the LO (Hz).
-    - full_freq : (detuning,) absolute drive frequency (Hz). Optional; when
-                  present peak centres are also reported in absolute frequency.
-Data variables:
-    - IQdata : (flux_bias, detuning) – complex demodulated signal (I + iQ), **or**
-    - I, Q   : (flux_bias, detuning) – the two quadratures, combined into IQdata, **or**
-    - a real signal named by the ``signal_var`` kwarg (e.g. ``"state"``).
+Expected xarray.Dataset contract — see :mod:`.peaks` (the ``qubit`` dimension
+already removed).
 """
 
 from typing import Any, Dict, Optional
 
-import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator
-from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
-from scqat.tools.robust import mad_outliers
+from scqat.estimators.qubit_spectroscopy_flux.peaks import (
+    check_flux_dataset,
+    flux_cloud_plotdata,
+    track_flux_peaks,
+)
 from scqat.estimators.qubit_spectroscopy_flux.visualization import plot_flux_map
 
 
@@ -61,18 +52,7 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
     # Validation
     # ------------------------------------------------------------------
     def _check_data(self, dataset: xr.Dataset) -> None:
-        for coord in ("flux_bias", "detuning"):
-            if coord not in dataset.coords:
-                raise ValueError(
-                    f"QubitSpectroscopyFluxEstimator requires a '{coord}' coordinate."
-                )
-
-    @staticmethod
-    def _signal_map(ds: xr.Dataset, signal_var: Optional[str]) -> np.ndarray:
-        """2-D signal magnitude oriented (flux_bias, detuning) for plotting."""
-        if signal_var is not None:
-            return np.abs(ds[signal_var].transpose("flux_bias", "detuning").values)
-        return np.abs(ds["IQdata"].transpose("flux_bias", "detuning").values)
+        check_flux_dataset(dataset)
 
     # ------------------------------------------------------------------
     # Core extraction
@@ -81,123 +61,15 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
         """
         Fit and collect every qubit peak in every ``flux_bias`` slice.
 
-        Each slice is handed to ``QubitSpectroscopyEstimator.extract_parameters``
-        (peak detection + single-Lorentzian fit per peak); ``kwargs`` such as
-        ``signal_var`` (e.g. ``"state"``), ``prominence`` and ``max_peaks`` are
-        forwarded to it. By default each flux slice is capped to its 4 most
-        prominent peaks (``max_peaks=4``); pass ``max_peaks=None`` to keep every
-        peak above the prominence threshold.
-
-        Keyword arguments
-        -----------------
-        n_sigma : float, optional
-            Robust-sigma threshold for the width / amplitude outlier test
-            (default 3.0). Not forwarded to the per-slice estimator.
-        max_peaks : int or None, optional
-            Per-flux cap forwarded to the single-slice estimator: keep each
-            slice's ``max_peaks`` most prominent peaks. Default 4; pass ``None``
-            to keep all peaks above the prominence threshold.
-
-        Returns
-        -------
-        dict
-            ``{flux_bias, detuning, full_freq?, peak_flux, peak_flux_index,
-            peak_detuning, peak_full_freq?, peak_fwhm, peak_amplitude,
-            in_window, outlier, good, fwhm_median, fwhm_mad,
-            peak_amplitude_median, peak_amplitude_mad, amplitude_map,
-            n_flux, n_peaks, n_in_window, n_good, n_outlier}``
+        Thin wrapper over :func:`.peaks.track_flux_peaks` — see there for the
+        full flat kwarg surface (``n_sigma``, ``signal_var``, and the
+        :func:`scqat.tools.peak_fit.fit_peaks` knobs such as ``prominence`` and
+        ``max_peaks``; unknown names raise before any per-slice fit) and the
+        result contract. By default each flux slice is capped to its 4 most
+        prominent peaks; pass ``max_peaks=None`` to keep every peak above the
+        prominence threshold.
         """
-        n_sigma = float(kwargs.pop("n_sigma", 3.0))
-        # Default cap: keep each flux slice's 4 most-prominent peaks (headroom over the
-        # typical 1-2 real transitions). setdefault preserves an explicit max_peaks=None opt-out.
-        kwargs.setdefault("max_peaks", 4)
-        signal_var = kwargs.get("signal_var", None)
-
-        ds = dataset
-        if signal_var is None and "IQdata" not in ds:
-            if "I" in ds and "Q" in ds:
-                ds = ds.assign(IQdata=ds["I"] + 1j * ds["Q"])
-            else:
-                raise ValueError(
-                    "QubitSpectroscopyFluxEstimator needs an 'IQdata' variable, both 'I' and "
-                    "'Q', or a real 'signal_var'."
-                )
-
-        flux = ds.coords["flux_bias"].values.astype(float)
-        detuning = ds.coords["detuning"].values.astype(float)
-        has_full_freq = "full_freq" in ds.coords
-
-        single = QubitSpectroscopyEstimator()
-        # Flat point-cloud of all peaks found across all flux slices.
-        pk_flux_idx, pk_flux = [], []
-        pk_detuning, pk_full_freq, pk_fwhm, pk_amplitude = [], [], [], []
-        for k in range(len(flux)):
-            sl = ds.isel(flux_bias=k)
-            try:
-                r = single.extract_parameters(sl, **kwargs)
-            except Exception:
-                continue
-            for pk in r.get("peaks", []):
-                pk_flux_idx.append(k)
-                pk_flux.append(float(flux[k]))
-                pk_detuning.append(float(pk["detuning"]))
-                pk_fwhm.append(float(pk["fwhm"]))
-                pk_amplitude.append(float(pk["amplitude"]))
-                pk_full_freq.append(
-                    float(pk["full_freq"]) if (has_full_freq and "full_freq" in pk) else np.nan
-                )
-
-        peak_flux_index = np.asarray(pk_flux_idx, dtype=int)
-        peak_flux = np.asarray(pk_flux, dtype=float)
-        peak_detuning = np.asarray(pk_detuning, dtype=float)
-        peak_fwhm = np.asarray(pk_fwhm, dtype=float)
-        peak_amplitude = np.asarray(pk_amplitude, dtype=float)
-        peak_full_freq = np.asarray(pk_full_freq, dtype=float)
-        n_peaks = peak_detuning.size
-
-        # (1) Strict window enforcement: the fitted peak centre must lie inside the
-        # swept detuning window.
-        det_lo, det_hi = float(detuning.min()), float(detuning.max())
-        in_window = (
-            np.isfinite(peak_detuning) & (peak_detuning > det_lo) & (peak_detuning < det_hi)
-            if n_peaks else np.zeros(0, dtype=bool)
-        )
-
-        # (2) Robust outlier rejection on the pooled peak width and amplitude.
-        outlier_fwhm, fwhm_med, fwhm_mad = mad_outliers(peak_fwhm, in_window, n_sigma)
-        outlier_amp, amp_med, amp_mad = mad_outliers(np.abs(peak_amplitude), in_window, n_sigma)
-        outlier = in_window & (outlier_fwhm | outlier_amp)
-        good = in_window & ~outlier
-
-        amplitude_map = self._signal_map(ds, signal_var)
-
-        results: Dict[str, Any] = {
-            "flux_bias": flux,
-            "detuning": detuning,
-            "peak_flux": peak_flux,
-            "peak_flux_index": peak_flux_index,
-            "peak_detuning": peak_detuning,
-            "peak_fwhm": peak_fwhm,
-            "peak_amplitude": peak_amplitude,
-            "in_window": in_window,
-            "outlier": outlier,
-            "good": good,
-            "fwhm_median": fwhm_med,
-            "fwhm_mad": fwhm_mad,
-            "peak_amplitude_median": amp_med,
-            "peak_amplitude_mad": amp_mad,
-            "amplitude_map": amplitude_map,
-            "n_flux": int(len(flux)),
-            "n_peaks": int(n_peaks),
-            "n_in_window": int(in_window.sum()),
-            "n_good": int(good.sum()),
-            "n_outlier": int(outlier.sum()),
-        }
-        if has_full_freq:
-            results["full_freq"] = ds.coords["full_freq"].values.ravel().astype(float)
-            results["peak_full_freq"] = peak_full_freq
-
-        return results
+        return track_flux_peaks(dataset, **kwargs)
 
     # ------------------------------------------------------------------
     # Metadata + plot data
@@ -212,38 +84,7 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
     ) -> Optional[xr.Dataset]:
         """Bundle the 2-D signal map and the peak point-cloud (with good/outlier
         masks) into one self-sufficient Dataset."""
-        flux = np.asarray(results["flux_bias"], dtype=float)
-        detuning = np.asarray(results["detuning"], dtype=float)
-        amplitude = np.asarray(results["amplitude_map"], dtype=float)
-        n_peaks = int(results["n_peaks"])
-
-        data_vars: Dict[str, Any] = {
-            "amplitude": (("flux_bias", "detuning"), amplitude),
-            "peak_flux": ("peak", np.asarray(results["peak_flux"], float)),
-            "peak_detuning": ("peak", np.asarray(results["peak_detuning"], float)),
-            "peak_fwhm": ("peak", np.asarray(results["peak_fwhm"], float)),
-            "peak_amplitude": ("peak", np.asarray(results["peak_amplitude"], float)),
-            "good": ("peak", np.asarray(results["good"], bool)),
-            "outlier": ("peak", np.asarray(results["outlier"], bool)),
-        }
-        coords: Dict[str, Any] = {
-            "flux_bias": flux, "detuning": detuning, "peak": np.arange(n_peaks),
-        }
-        attrs: Dict[str, Any] = {
-            "n_flux": int(results["n_flux"]),
-            "n_peaks": n_peaks,
-            "n_good": int(results["n_good"]),
-            "n_outlier": int(results["n_outlier"]),
-        }
-
-        if "full_freq" in results:
-            coords["full_freq"] = ("detuning", np.asarray(results["full_freq"], float))
-            data_vars["peak_full_freq"] = ("peak", np.asarray(results["peak_full_freq"], float))
-            attrs["has_full_freq"] = 1
-        else:
-            attrs["has_full_freq"] = 0
-
-        return xr.Dataset(data_vars, coords=coords, attrs=attrs)
+        return flux_cloud_plotdata(results)
 
     # ------------------------------------------------------------------
     # Visualization

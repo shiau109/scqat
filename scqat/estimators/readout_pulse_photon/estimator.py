@@ -4,8 +4,8 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 
-from scqat.core.base_estimator import BaseEstimator
-from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
+from scqat.core.base_estimator import BaseEstimator, with_iqdata
+from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks
 from scqat.estimators.readout_pulse_photon.visualization import (
     plot_raw_2d_with_peaks,
     plot_photon_vs_delay,
@@ -22,8 +22,9 @@ class ReadoutPulsePhotonEstimator(BaseEstimator):
         - Coordinate:  the delay axis named by :attr:`time_coord`
           (default ``delay_time``)
 
-    For each delay slice the qubit line is located by reusing
-    :class:`QubitSpectroscopyEstimator` on ``|IQdata - ref|`` (peak detuning).
+    For each delay slice the qubit line is located by the family-shared
+    per-trace reduction :func:`scqat.tools.peak_fit.fit_peaks` on
+    ``|IQdata - ref|`` with ``max_peaks=1`` (peak detuning).
     With ``chi_eff`` the detuning is converted to an intra-resonator photon
     number ``n = detuning / chi_eff`` (``chi_eff = 2*chi``); the photon-number
     trace vs delay shows the resonator filling/ring-down, and a steady-state
@@ -36,14 +37,6 @@ class ReadoutPulsePhotonEstimator(BaseEstimator):
     time_coord: str = "delay_time"
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _with_iqdata(dataset: xr.Dataset) -> xr.Dataset:
-        if "IQdata" in dataset:
-            return dataset
-        if "I" in dataset and "Q" in dataset:
-            return dataset.assign(IQdata=dataset["I"] + 1j * dataset["Q"])
-        raise ValueError("Readout-pulse photon requires an 'IQdata' variable, or both 'I' and 'Q'.")
-
     def _check_data(self, dataset: xr.Dataset) -> None:
         if self.time_coord not in dataset.coords:
             raise ValueError(f"Readout-pulse photon requires a '{self.time_coord}' coordinate.")
@@ -62,31 +55,42 @@ class ReadoutPulsePhotonEstimator(BaseEstimator):
             steady_state_window (tuple[float, float]): (t_lo, t_hi) delay range to
                 average for a steady-state value (default: none).
             time_coord (str): Override the delay coordinate name.
-            ref, prominence, fit_window_factor: forwarded to QubitSpectroscopyEstimator.
+            ref, prominence, fit_window_factor, ...: knobs of
+                :func:`scqat.tools.peak_fit.fit_peaks` (``max_peaks`` excluded —
+                this analysis pins ``max_peaks=1``). Unknown names raise before
+                any per-slice fit.
 
         Returns a dict: time_coord, delay_times, peak_detuning, photon_number,
         has_photon, chi_eff, steady_state_window, steady_state_value.
         """
-        time_coord = kwargs.get("time_coord", self.time_coord)
-        chi_eff = kwargs.get("chi_eff", None)
-        window = kwargs.get("steady_state_window", None)
-        qs_kwargs = {k: v for k, v in kwargs.items()
-                     if k in ("ref", "prominence", "fit_window_factor")}
+        time_coord = kwargs.pop("time_coord", self.time_coord)
+        chi_eff = kwargs.pop("chi_eff", None)
+        window = kwargs.pop("steady_state_window", None)
+        # Flat surface, validated up front: everything left must be a fit_peaks
+        # knob, and max_peaks is pinned to 1 (exactly one qubit line expected).
+        unknown = set(kwargs) - (PEAK_KNOBS - {"max_peaks"})
+        if unknown:
+            raise ValueError(
+                f"Unknown keyword argument(s) {sorted(unknown)} for "
+                f"ReadoutPulsePhotonEstimator; valid: "
+                f"{sorted((PEAK_KNOBS - {'max_peaks'}) | {'time_coord', 'chi_eff', 'steady_state_window'})} "
+                f"(max_peaks is pinned to 1 here)"
+            )
 
-        ds = self._with_iqdata(dataset)
+        ds = with_iqdata(dataset)
         delays = np.asarray(ds.coords[time_coord].values, dtype=float)
+        detuning = np.asarray(ds.coords["detuning"].values, dtype=float)
+        iq_map = ds["IQdata"].transpose(time_coord, "detuning").values
 
-        qs = QubitSpectroscopyEstimator()
         peak_det = np.full(delays.shape, np.nan)
-        for i, t in enumerate(ds.coords[time_coord].values):
-            sub = ds.sel({time_coord: t})
+        for i in range(len(delays)):
             try:
-                res = qs.extract_parameters(sub, max_peaks=1, **qs_kwargs)
-                peaks = res.get("peaks", [])
-                if peaks:
-                    peak_det[i] = float(peaks[0]["detuning"])
+                res = fit_peaks(detuning, iq_map[i], max_peaks=1, **kwargs)
             except Exception:
-                pass
+                continue  # fit-domain failure only: kwargs were validated up front
+            peaks = res["peaks"]
+            if peaks:
+                peak_det[i] = float(peaks[0]["detuning"])
 
         has_photon = chi_eff is not None
         photon = (peak_det / 1e6) / float(chi_eff) if has_photon else np.full(delays.shape, np.nan)
@@ -117,7 +121,7 @@ class ReadoutPulsePhotonEstimator(BaseEstimator):
         one self-sufficient Dataset so the figures redraw from the saved
         ``*_plotdata.nc`` alone."""
         time_coord = results["time_coord"]
-        ds = self._with_iqdata(dataset)
+        ds = with_iqdata(dataset)
         detuning = np.asarray(ds.coords["detuning"].values, dtype=float)
         raw = np.abs(ds["IQdata"].transpose(time_coord, "detuning").values)
 

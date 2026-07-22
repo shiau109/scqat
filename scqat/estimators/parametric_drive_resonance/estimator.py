@@ -10,11 +10,10 @@ peak/dip in frequency whose position drifts with the drive amplitude.
 This mirrors
 :class:`~scqat.estimators.qubit_spectroscopy_flux.QubitSpectroscopyFluxEstimator`
 with the axis roles ``flux_bias → drive_amp`` and
-``detuning → driving_frequency``: for every ``drive_amp`` slice the
-estimator delegates to
-:class:`~scqat.estimators.qubit_spectroscopy.QubitSpectroscopyEstimator` (peak
-detection + single-Lorentzian fit per peak) and collects every detected peak as
-a **point-cloud** ``(drive_amp, frequency, fwhm, amplitude)``.
+``detuning → driving_frequency``: every ``drive_amp`` slice is fitted by the
+family-shared per-trace reduction :func:`scqat.tools.peak_fit.fit_peaks`,
+pooled by the generic map tracker :func:`scqat.tools.peak_map.track_peaks`
+into a **point-cloud** ``(drive_amp, frequency, fwhm, amplitude)``.
 
 Cleaning: a peak is kept (``good``) when its centre lies strictly inside the
 swept frequency window and its ``fwhm`` / ``|amplitude|`` are not robust
@@ -39,9 +38,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
-from scqat.core.base_estimator import BaseEstimator
-from scqat.estimators.qubit_spectroscopy import QubitSpectroscopyEstimator
-from scqat.tools.robust import mad_outliers
+from scqat.core.base_estimator import BaseEstimator, with_iqdata
+from scqat.tools.peak_fit import validate_peak_kwargs
+from scqat.tools.peak_map import track_peaks
 from scqat.estimators.parametric_drive_resonance.visualization import plot_parametric_map
 
 
@@ -61,12 +60,6 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
                     f"ParametricDriveResonanceEstimator requires a '{coord}' coordinate."
                 )
 
-    @staticmethod
-    def _signal_map(ds: xr.Dataset, signal_var: Optional[str]) -> np.ndarray:
-        """2-D signal magnitude oriented (drive_amp, driving_frequency)."""
-        var = signal_var if signal_var is not None else "IQdata"
-        return np.abs(ds[var].transpose("drive_amp", "driving_frequency").values)
-
     # ------------------------------------------------------------------
     # Core extraction
     # ------------------------------------------------------------------
@@ -75,22 +68,22 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
         Fit and collect every parametric-resonance peak in every
         ``drive_amp`` slice.
 
-        Each slice (with ``driving_frequency`` renamed to ``detuning``) is handed
-        to ``QubitSpectroscopyEstimator.extract_parameters``; ``kwargs`` such as
-        ``prominence`` and ``max_peaks`` are forwarded to it. By default each
-        slice is capped to its 4 most prominent peaks (``max_peaks=4``); pass
+        Every slice is fitted by :func:`scqat.tools.peak_fit.fit_peaks` and
+        pooled by :func:`scqat.tools.peak_map.track_peaks`; unknown keyword
+        names raise before any per-slice fit. By default each slice is capped
+        to its 4 most prominent peaks (``max_peaks=4``); pass
         ``max_peaks=None`` to keep every peak above the prominence threshold.
 
         Keyword arguments
         -----------------
         n_sigma : float, optional
             Robust-sigma threshold for the width / amplitude outlier test
-            (default 3.0). Not forwarded to the per-slice estimator.
+            (default 3.0).
         signal_var : str, optional
             Data variable holding the real signal (auto-detected as ``signal``
             or ``state`` when omitted; otherwise the IQ path is used).
-        max_peaks : int or None, optional
-            Per-amplitude cap forwarded to the single-slice estimator. Default 4.
+        prominence, max_peaks, ... :
+            Knobs of :func:`scqat.tools.peak_fit.fit_peaks`.
 
         Returns
         -------
@@ -102,93 +95,63 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
             n_amp, n_peaks, n_in_window, n_good, n_outlier}``
         """
         n_sigma = float(kwargs.pop("n_sigma", 3.0))
+        signal_var = kwargs.pop("signal_var", None)
+        try:
+            validate_peak_kwargs(kwargs)
+        except ValueError as err:
+            raise ValueError(
+                f"ParametricDriveResonanceEstimator: {err} "
+                f"(own keyword-only tunables: n_sigma, signal_var)"
+            ) from None
         # Default cap: keep each amplitude slice's 4 most-prominent peaks.
         kwargs.setdefault("max_peaks", 4)
 
         # Resolve the real signal variable; state-discriminated runs store P(|1>).
-        signal_var = kwargs.get("signal_var", None)
         if signal_var is None:
             for cand in ("signal", "state"):
                 if cand in dataset.data_vars:
                     signal_var = cand
-                    kwargs["signal_var"] = signal_var
                     break
 
-        ds = dataset
-        if signal_var is None and "IQdata" not in ds:
-            if "I" in ds and "Q" in ds:
-                ds = ds.assign(IQdata=ds["I"] + 1j * ds["Q"])
-            else:
+        if signal_var is not None:
+            ds = dataset
+            signal_map = ds[signal_var].transpose("drive_amp", "driving_frequency").values
+        else:
+            if "IQdata" not in dataset and not ("I" in dataset and "Q" in dataset):
                 raise ValueError(
                     "ParametricDriveResonanceEstimator needs a real 'signal'/'state' "
                     "variable, an 'IQdata' variable, or both 'I' and 'Q'."
                 )
+            ds = with_iqdata(dataset)
+            signal_map = ds["IQdata"].transpose("drive_amp", "driving_frequency").values
 
         amp = ds.coords["drive_amp"].values.astype(float)
         freq = ds.coords["driving_frequency"].values.astype(float)
 
-        single = QubitSpectroscopyEstimator()
-        # Flat point-cloud of all peaks found across all amplitude slices.
-        pk_amp_idx, pk_amp = [], []
-        pk_freq, pk_fwhm, pk_amplitude = [], [], []
-        for k in range(len(amp)):
-            # The single-slice estimator expects a 'detuning' coordinate.
-            sl = ds.isel(drive_amp=k).rename({"driving_frequency": "detuning"})
-            try:
-                r = single.extract_parameters(sl, **kwargs)
-            except Exception:
-                continue
-            for pk in r.get("peaks", []):
-                pk_amp_idx.append(k)
-                pk_amp.append(float(amp[k]))
-                pk_freq.append(float(pk["detuning"]))
-                pk_fwhm.append(float(pk["fwhm"]))
-                pk_amplitude.append(float(pk["amplitude"]))
+        cloud = track_peaks(amp, freq, signal_map, n_sigma=n_sigma, **kwargs)
 
-        peak_amp_index = np.asarray(pk_amp_idx, dtype=int)
-        peak_drive_amp = np.asarray(pk_amp, dtype=float)
-        peak_frequency = np.asarray(pk_freq, dtype=float)
-        peak_fwhm = np.asarray(pk_fwhm, dtype=float)
-        peak_amplitude = np.asarray(pk_amplitude, dtype=float)
-        n_peaks = peak_frequency.size
-
-        # (1) Strict window enforcement: the fitted centre must lie inside the
-        # swept frequency window.
-        f_lo, f_hi = float(freq.min()), float(freq.max())
-        in_window = (
-            np.isfinite(peak_frequency) & (peak_frequency > f_lo) & (peak_frequency < f_hi)
-            if n_peaks else np.zeros(0, dtype=bool)
-        )
-
-        # (2) Robust outlier rejection on the pooled peak width and amplitude.
-        outlier_fwhm, fwhm_med, fwhm_mad = mad_outliers(peak_fwhm, in_window, n_sigma)
-        outlier_amp, amp_med, amp_mad = mad_outliers(np.abs(peak_amplitude), in_window, n_sigma)
-        outlier = in_window & (outlier_fwhm | outlier_amp)
-        good = in_window & ~outlier
-
-        amplitude_map = self._signal_map(ds, signal_var)
-
+        # Relabel the generic tracker keys into the parametric vocabulary.
         return {
-            "drive_amp": amp,
-            "driving_frequency": freq,
-            "peak_drive_amp": peak_drive_amp,
-            "peak_amp_index": peak_amp_index,
-            "peak_frequency": peak_frequency,
-            "peak_fwhm": peak_fwhm,
-            "peak_amplitude": peak_amplitude,
-            "in_window": in_window,
-            "outlier": outlier,
-            "good": good,
-            "fwhm_median": fwhm_med,
-            "fwhm_mad": fwhm_mad,
-            "peak_amplitude_median": amp_med,
-            "peak_amplitude_mad": amp_mad,
-            "amplitude_map": amplitude_map,
-            "n_amp": int(len(amp)),
-            "n_peaks": int(n_peaks),
-            "n_in_window": int(in_window.sum()),
-            "n_good": int(good.sum()),
-            "n_outlier": int(outlier.sum()),
+            "drive_amp": cloud["x"],
+            "driving_frequency": cloud["y"],
+            "peak_drive_amp": cloud["peak_x"],
+            "peak_amp_index": cloud["peak_x_index"],
+            "peak_frequency": cloud["peak_y"],
+            "peak_fwhm": cloud["peak_fwhm"],
+            "peak_amplitude": cloud["peak_amplitude"],
+            "in_window": cloud["in_window"],
+            "outlier": cloud["outlier"],
+            "good": cloud["good"],
+            "fwhm_median": cloud["fwhm_median"],
+            "fwhm_mad": cloud["fwhm_mad"],
+            "peak_amplitude_median": cloud["peak_amplitude_median"],
+            "peak_amplitude_mad": cloud["peak_amplitude_mad"],
+            "amplitude_map": np.abs(signal_map),
+            "n_amp": cloud["n_x"],
+            "n_peaks": cloud["n_peaks"],
+            "n_in_window": cloud["n_in_window"],
+            "n_good": cloud["n_good"],
+            "n_outlier": cloud["n_outlier"],
         }
 
     # ------------------------------------------------------------------

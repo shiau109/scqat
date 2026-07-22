@@ -1,11 +1,11 @@
 """
 Qubit Spectroscopy vs Flux — Full Analysis (composite)
 ======================================================
-Two-stage qubit-flux analysis that chains an existing estimator and an existing
-(but previously unconsumed) fitter, and owns the canonical combined figure:
+Two-stage qubit-flux analysis that chains the flux stage functions and an
+existing fitter, and owns the canonical combined figure:
 
-  1. :class:`~scqat.estimators.qubit_spectroscopy_flux.QubitSpectroscopyFluxEstimator`
-     turns the 2-D ``(flux_bias, detuning)`` map into a peak **point-cloud**
+  1. :func:`scqat.estimators.qubit_spectroscopy_flux.track_flux_peaks` turns
+     the 2-D ``(flux_bias, detuning)`` map into a peak **point-cloud**
      (several transitions may coexist per flux slice), then
   2. one peak per flux slice is assigned to the 0-1 branch (``branch`` strategy),
      and the branch is fitted with :class:`~scqat.tools.fit_transmon_freq_flux.
@@ -43,7 +43,11 @@ import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator
-from scqat.estimators.qubit_spectroscopy_flux import QubitSpectroscopyFluxEstimator
+from scqat.estimators.qubit_spectroscopy_flux import (
+    check_flux_dataset,
+    flux_cloud_plotdata,
+    track_flux_peaks,
+)
 from scqat.tools.fit_transmon_freq_flux import FitTransmonFrequencyFlux
 
 from scqat.estimators.qubit_flux_arch.visualization import plot_arch
@@ -61,7 +65,7 @@ class QubitFluxArchEstimator(BaseEstimator):
     # Validation
     # ------------------------------------------------------------------
     def _check_data(self, dataset: xr.Dataset) -> None:
-        QubitSpectroscopyFluxEstimator()._check_data(dataset)
+        check_flux_dataset(dataset)
         if "full_freq" not in dataset.coords:
             raise ValueError(
                 "QubitFluxArchEstimator requires the absolute 'full_freq' coordinate — "
@@ -90,14 +94,16 @@ class QubitFluxArchEstimator(BaseEstimator):
             Robust residual-rejection threshold between the two arch fits
             (default 3.0).
         signal_var, prominence, max_peaks, n_sigma, ...
-            Forwarded to the stage-1 point-cloud estimator.
+            Forwarded to the stage-1 tracker
+            :func:`~scqat.estimators.qubit_spectroscopy_flux.track_flux_peaks`
+            (unknown names raise before any per-slice fit).
         """
         branch = str(kwargs.pop("branch", "strongest"))
         ec_ghz = float(kwargs.pop("ec_ghz", 0.2))
         fit_d = bool(kwargs.pop("fit_d", False))
         arch_n_sigma = float(kwargs.pop("arch_n_sigma", 3.0))
 
-        cloud = QubitSpectroscopyFluxEstimator().extract_parameters(dataset, **kwargs)
+        cloud = track_flux_peaks(dataset, **kwargs)
 
         # ---- branch selection: one good peak per flux slice --------------
         good = np.asarray(cloud["good"], dtype=bool)
@@ -205,7 +211,7 @@ class QubitFluxArchEstimator(BaseEstimator):
         """Stage-1 plot data (map + point-cloud) merged with the selected branch
         points and the dense arch curve; arch scalars as attrs."""
         cloud, arch = results["point_cloud"], results["arch"]
-        merged = QubitSpectroscopyFluxEstimator().build_plot_data(dataset, cloud)
+        merged = flux_cloud_plotdata(cloud)
         merged.attrs["arch_success"] = int(bool(arch["success"]))
         merged.attrs["branch"] = arch["branch"]
         if arch["n_used"]:
