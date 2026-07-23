@@ -152,6 +152,23 @@ class TestQubitSpectroscopyEstimator:
         assert res2["ref_source"] == "supplied"
         assert res2["ref_iq"] == 0.1 + 0.2j
 
+    def test_stored_ground_becomes_radial_ref(self):
+        """ref_pos_* variables riding the dataset make the stored ground blob the
+        radial reference (ref_source='stored'); an explicit ref kwarg still wins."""
+        ds = _make_ds([(0e6, 0.9, 2e6)])
+        ds["ref_pos_g_i"], ds["ref_pos_g_q"] = 0.0, 0.0  # the fixture's baseline
+        ds["ref_pos_e_i"], ds["ref_pos_e_q"] = 0.9, 0.0
+        est = QubitSpectroscopyEstimator()
+        results = est.extract_parameters(ds)
+        assert results["ref_source"] == "stored"
+        assert results["ref_iq"] == 0.0 + 0.0j
+        assert len(results["peaks"]) == 1  # the line survives the stored reference
+        pd = est.build_plot_data(ds, results)
+        assert pd.attrs["ref_source"] == "stored"
+        # explicit ref beats the stored point
+        res2 = est.extract_parameters(ds, ref=0.1 + 0.2j)
+        assert res2["ref_source"] == "supplied"
+
 
 class TestPeakMerging:
     """De-duplication of near-coincident Lorentzian fits (the duplicate-peak fix)."""

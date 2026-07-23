@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 
-from scqat.core.base_estimator import BaseEstimator, reduced_signal, with_iqdata
+from scqat.core.base_estimator import POS_ATTRS, BaseEstimator, reduced_signal, with_iqdata
 from scqat.tools.ramsey_fit import fit_ramsey
 from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
@@ -67,6 +67,10 @@ class RamseyEstimator(BaseEstimator):
         results['signal'] = np.asarray(sig.values, dtype=float)
         results['reduction_method'] = sig.attrs.get('reduction_method')
         results['reduction_angle'] = sig.attrs.get('reduction_angle')
+        # the stored |0>/|1> centroids the axis came from (absent otherwise)
+        for key in POS_ATTRS:
+            if key in sig.attrs:
+                results[key] = float(sig.attrs[key])
         return results
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
@@ -97,6 +101,10 @@ class RamseyEstimator(BaseEstimator):
         # 0.0 is a legitimate angle (axis on I) — only None becomes NaN
         attrs['reduction_angle'] = (float(results['reduction_angle'])
                                     if results.get('reduction_angle') is not None else float('nan'))
+        # the stored |0>/|1> centroids (drawn by the shared IQ-plane panel)
+        for key in POS_ATTRS:
+            if results.get(key) is not None:
+                attrs[key] = float(results[key])
 
         data_vars = {
             'signal': ('idle_time', signal),

@@ -140,3 +140,26 @@ class TestPowerRabiEstimator:
         assert results["reduction_angle"] == 0.0
         pd = est.build_plot_data(ds, results)
         assert pd.attrs["reduction_angle"] == 0.0
+
+    def test_stored_positions_resolve_axis(self, tmp_path):
+        """ref_pos_* variables riding the dataset resolve the axis (method
+        'positions'), stamp the blob centers into results + plotdata, and the
+        iq_plane panel draws the two stored blobs."""
+        factor_pi, theta = 0.8, 0.7
+        ds = _make_ds_iq(factor_pi=factor_pi, theta=theta)
+        pos0 = 0.5 - 0.2j                      # the fixture's ground center
+        pos1 = pos0 + 3.0 * np.exp(1j * theta)  # + sep * e^{i theta}
+        ds["ref_pos_g_i"], ds["ref_pos_g_q"] = float(pos0.real), float(pos0.imag)
+        ds["ref_pos_e_i"], ds["ref_pos_e_q"] = float(pos1.real), float(pos1.imag)
+        est = PowerRabiEstimator()
+        results, figs = est.analyze(ds, output_dir=str(tmp_path))
+        assert results["success"] is True
+        assert results["opt_amp_prefactor"] == pytest.approx(factor_pi, rel=0.07)
+        assert results["reduction_method"] == "positions"
+        assert results["pos_g_i"] == pytest.approx(pos0.real)
+        pd = est.load_plot_data(str(tmp_path))
+        assert pd.attrs["reduction_method"] == "positions"
+        assert pd.attrs["pos_e_q"] == pytest.approx(pos1.imag)
+        labels = [t.get_text() for t in figs["iq_plane"].axes[0].get_legend().get_texts()]
+        assert "|0> position (stored)" in labels and "|1> position (stored)" in labels
+        plt.close("all")

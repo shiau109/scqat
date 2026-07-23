@@ -34,8 +34,12 @@ import numpy as np
 import xarray as xr
 
 from scqat.core.base_estimator import with_iqdata
+from scqat.tools.iq_reduce import ground_ref
 from scqat.tools.peak_fit import validate_peak_kwargs
 from scqat.tools.peak_map import track_peaks
+
+#: valid reference scopes for the per-slice radial reduction
+REF_SCOPES = ("per_slice", "global")
 
 
 def check_flux_dataset(dataset: xr.Dataset) -> None:
@@ -52,6 +56,7 @@ def track_flux_peaks(
     *,
     n_sigma: float = 3.0,
     signal_var: Optional[str] = None,
+    ref_scope: str = "per_slice",
     **peak_knobs,
 ) -> Dict[str, Any]:
     """Fit and collect every qubit peak in every ``flux_bias`` slice.
@@ -71,6 +76,16 @@ def track_flux_peaks(
     signal_var : str, optional
         Real data variable to fit instead of ``|IQdata - ref|``
         (e.g. ``"state"``).
+    ref_scope : {"per_slice", "global"}
+        Scope of the radial reference. ``"per_slice"`` (default, the safe
+        choice): each flux row uses its own complex median — required when the
+        readout condition moves with flux (DC-held bias: the resonator is
+        pulled during readout, so the ground point traces a path). ``"global"``:
+        ONE complex median of the whole 2-D map — valid and more stable when
+        the probe pulses flux only during the drive and reads out at idle every
+        slice (the ground point is common; the median pools n_flux x more
+        samples). Complex input only; a supplied ``ref`` knob overrides both
+        scopes (every slice uses it verbatim).
     **peak_knobs
         Knobs of :func:`~scqat.tools.peak_fit.fit_peaks` (``prominence``,
         ``max_peaks``, ...) — validated BEFORE the slice loop; unknown names
@@ -88,12 +103,16 @@ def track_flux_peaks(
     check_flux_dataset(dataset)
     # Fail loudly BEFORE any per-slice fit — a typo'd knob must never be
     # swallowed by the per-slice fallback.
+    if ref_scope not in REF_SCOPES:
+        raise ValueError(
+            f"track_flux_peaks: unknown ref_scope {ref_scope!r}; valid: {REF_SCOPES}"
+        )
     try:
         validate_peak_kwargs(peak_knobs)
     except ValueError as err:
         raise ValueError(
             f"track_flux_peaks: {err} (own keyword-only tunables: n_sigma, "
-            f"signal_var)"
+            f"signal_var, ref_scope)"
         ) from None
     # Default cap: keep each flux slice's 4 most-prominent peaks (headroom over
     # the typical 1-2 real transitions). setdefault preserves an explicit
@@ -101,6 +120,11 @@ def track_flux_peaks(
     peak_knobs.setdefault("max_peaks", 4)
 
     if signal_var is not None:
+        if ref_scope == "global":
+            raise ValueError(
+                "track_flux_peaks: ref_scope='global' needs complex IQ input — "
+                "signal_var forces a real, already-reduced signal."
+            )
         signal_map = dataset[signal_var].transpose("flux_bias", "detuning").values
         ds = dataset
     else:
@@ -111,6 +135,14 @@ def track_flux_peaks(
             )
         ds = with_iqdata(dataset)
         signal_map = ds["IQdata"].transpose("flux_bias", "detuning").values
+        if ref_scope == "global" and peak_knobs.get("ref") is None:
+            # ONE reference for the whole map: the complex median over every
+            # (flux, detuning) point. `ref` is a valid fit_peaks knob, so it
+            # flows through track_peaks into every per-row fit and each row's
+            # echoed ref_iq becomes this same constant.
+            peak_knobs["ref"] = ground_ref(
+                np.real(signal_map).ravel(), np.imag(signal_map).ravel()
+            )
 
     flux = ds.coords["flux_bias"].values.astype(float)
     detuning = ds.coords["detuning"].values.astype(float)
@@ -141,12 +173,14 @@ def track_flux_peaks(
         "peak_amplitude_median": cloud["peak_amplitude_median"],
         "peak_amplitude_mad": cloud["peak_amplitude_mad"],
         "amplitude_map": np.abs(signal_map),
-        # the per-slice REDUCED signal the peaks were actually fitted on
-        # (|IQ - median| per flux row) — the display-honest background
+        # the REDUCED signal the peaks were actually fitted on (|IQ - ref| per
+        # flux row) — the display-honest background
         "reduced_map": cloud["reduced_map"],
-        # per-slice radial references (the ground point moves with flux)
+        # the radial reference per flux row: the per-slice medians, or the one
+        # global reference echoed by every row (ref_scope == "global")
         "ref_i": cloud["ref_i"],
         "ref_q": cloud["ref_q"],
+        "ref_scope": ref_scope,
         "n_flux": cloud["n_x"],
         "n_peaks": cloud["n_peaks"],
         "n_in_window": cloud["n_in_window"],
@@ -193,6 +227,9 @@ def flux_cloud_plotdata(results: Dict[str, Any]) -> xr.Dataset:
         "n_peaks": n_peaks,
         "n_good": int(results["n_good"]),
         "n_outlier": int(results["n_outlier"]),
+        # reference-scope provenance for the shared IQ-plane panel (absent in
+        # results only for pre-ref_scope payloads -> per-slice rendering)
+        "ref_scope": str(results.get("ref_scope", "per_slice")),
     }
 
     if "full_freq" in results:

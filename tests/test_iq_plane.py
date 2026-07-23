@@ -65,3 +65,36 @@ def test_missing_iq_vars():
     assert not has_iq_plane(pd)
     with pytest.raises(ValueError):
         plot_iq_plane(pd)
+
+
+def test_axial_positions_draw_two_stored_blobs():
+    """When the axis came from the stored |0>/|1> centroids (pos_* attrs), the
+    panel draws both blob positions + the g->e axis."""
+    g = 0.4 + 0.1j
+    e = g + 3.0 * np.exp(1j * 1.1)
+    pd = _axial_pd()
+    pd.attrs.update(
+        reduction_method="positions", reduction_angle=float(-np.angle(e - g)),
+        pos_g_i=float(g.real), pos_g_q=float(g.imag),
+        pos_e_i=float(e.real), pos_e_q=float(e.imag),
+    )
+    fig = plot_iq_plane(pd)
+    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert "|0> position (stored)" in labels
+    assert "|1> position (stored)" in labels
+    assert "axial axis (positions)" in labels
+    plt.close(fig)
+
+
+def test_global_map_ref_draws_single_point_and_titles_scope():
+    """ref_scope='global' renders ONE reference star (not a degenerate per-slice
+    trajectory) and says so in the title; absent attr keeps per-slice rendering."""
+    pd = _map_pd()
+    pd.attrs["ref_scope"] = "global"
+    pd["ref_i"].values[:] = 0.25  # a global ref is one constant echoed per slice
+    pd["ref_q"].values[:] = -0.5
+    fig = plot_iq_plane(pd)
+    assert "global" in fig.axes[0].get_title()
+    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert "global radial ref (median)" in labels
+    plt.close(fig)

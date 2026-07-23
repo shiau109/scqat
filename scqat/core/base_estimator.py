@@ -55,6 +55,46 @@ def with_iqdata(dataset: xr.Dataset) -> xr.Dataset:
     )
 
 
+#: The per-target stored-reference variables an acquisition layer (SCQO) may attach
+#: to a dataset: the calibrated |0>/|1> blob centers measured by single_shot_readout,
+#: in acquisition-frame units. Scalars once the target dim is split off.
+REF_POS_VARS = ("ref_pos_g_i", "ref_pos_g_q", "ref_pos_e_i", "ref_pos_e_q")
+
+#: The provenance attrs :func:`reduced_signal` stamps when the axis came from
+#: positions — estimators copy these into results/plot_data so the shared IQ-plane
+#: panel can draw the two blobs.
+POS_ATTRS = ("pos_g_i", "pos_g_q", "pos_e_i", "pos_e_q")
+
+
+def stored_positions(dataset: xr.Dataset) -> Optional[np.ndarray]:
+    """The stored ``|0>``/``|1>`` IQ centroids as complex ``[g, e]``, or ``None``.
+
+    Reads the four :data:`REF_POS_VARS` the acquisition layer attached (see SCQO's
+    ``ref_pos_*`` variables); returns ``None`` unless all four are present and
+    finite. They are the preferred axial reference: measured, with a deterministic
+    axis direction (g low, e high) — unlike PCA, whose sign is a heuristic.
+    """
+    vals = []
+    for name in REF_POS_VARS:
+        if name not in dataset:
+            return None
+        try:
+            v = float(np.asarray(dataset[name].values).item())
+        except (TypeError, ValueError):
+            return None
+        vals.append(v)
+    if not all(math.isfinite(v) for v in vals):
+        return None
+    g_i, g_q, e_i, e_q = vals
+    return np.array([complex(g_i, g_q), complex(e_i, e_q)])
+
+
+def stored_ground(dataset: xr.Dataset) -> Optional[complex]:
+    """The stored ``|0>`` centroid alone (the radial reference), or ``None``."""
+    pos = stored_positions(dataset)
+    return None if pos is None else complex(pos[0])
+
+
 def reduced_signal(dataset: xr.Dataset, **axial_kwargs) -> xr.DataArray:
     """Resolve a coherent-drive estimator's real 1-D fit signal from the dataset.
 
@@ -69,14 +109,23 @@ def reduced_signal(dataset: xr.Dataset, **axial_kwargs) -> xr.DataArray:
 
     The ``target``/``qubit`` dim is expected already removed (one sweep dim remains).
     ``axial_kwargs`` (``angle`` / ``positions`` / ``pca_sign``) select the projection
-    axis. The returned ``DataArray`` carries ``reduction_method`` and
-    ``reduction_angle`` in ``.attrs`` for provenance.
+    axis; when neither ``angle`` nor ``positions`` is given but the dataset carries
+    the stored blob centers (:func:`stored_positions`), those centers become the
+    axis — the priority chain is explicit kwarg -> stored positions -> PCA. The
+    returned ``DataArray`` carries ``reduction_method`` / ``reduction_angle`` (and,
+    when the axis came from positions, ``pos_g_i``/``pos_g_q``/``pos_e_i``/``pos_e_q``)
+    in ``.attrs`` for provenance.
     """
     if "signal" in dataset.data_vars:
         return dataset["signal"].squeeze().assign_attrs(
             reduction_method="signal", reduction_angle=float("nan")
         )
-    from scqat.tools.iq_reduce import axial, axis_angle
+    from scqat.tools.iq_reduce import _as_complex_positions, axial, axis_angle
+
+    if axial_kwargs.get("angle") is None and axial_kwargs.get("positions") is None:
+        stored = stored_positions(dataset)
+        if stored is not None:
+            axial_kwargs = {**axial_kwargs, "positions": stored}
 
     iq = with_iqdata(dataset)["IQdata"].squeeze()
     dim = iq.dims[0]
@@ -90,9 +139,16 @@ def reduced_signal(dataset: xr.Dataset, **axial_kwargs) -> xr.DataArray:
     else:
         method = "pca"
     a = axis_angle(I, Q, angle=axial_kwargs.get("angle"), positions=axial_kwargs.get("positions"))
+    attrs = {"reduction_method": method, "reduction_angle": float(a)}
+    if method == "positions":
+        # package-private normalizer shared with axial() — after axial() succeeded
+        # the positions are guaranteed to normalize to exactly [g, e]
+        p0, p1 = _as_complex_positions(axial_kwargs["positions"])[:2]
+        attrs.update(pos_g_i=float(p0.real), pos_g_q=float(p0.imag),
+                     pos_e_i=float(p1.real), pos_e_q=float(p1.imag))
     return xr.DataArray(
         reduced, coords={dim: iq.coords[dim]}, dims=[dim], name="signal",
-        attrs={"reduction_method": method, "reduction_angle": float(a)},
+        attrs=attrs,
     )
 
 

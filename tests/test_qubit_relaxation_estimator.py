@@ -79,3 +79,21 @@ class TestQubitRelaxationEstimator:
     def test_check_data_rejects_missing(self):
         with pytest.raises(ValueError):
             QubitRelaxationEstimator().analyze(xr.Dataset({"other": ("x", [1.0])}, coords={"x": [0.0]}))
+
+    def test_stored_positions_resolve_axis(self):
+        """ref_pos_* variables resolve the axis deterministically (method
+        'positions') and the blob centers reach the plotdata attrs."""
+        t1, theta = 40e-6, 1.2
+        ds = _make_decay_iq(t1=t1, theta=theta)
+        pos0 = 1.0 - 0.5j                      # the fixture's ground center
+        pos1 = pos0 + 3.0 * np.exp(1j * theta)  # + sep * e^{i theta}
+        ds["ref_pos_g_i"], ds["ref_pos_g_q"] = float(pos0.real), float(pos0.imag)
+        ds["ref_pos_e_i"], ds["ref_pos_e_q"] = float(pos1.real), float(pos1.imag)
+        est = QubitRelaxationEstimator()
+        results = est.extract_parameters(ds)
+        assert results["success"]
+        assert results["t1"] == pytest.approx(t1, rel=0.05)
+        assert results["reduction_method"] == "positions"
+        pd = est.build_plot_data(ds, results)
+        assert pd.attrs["reduction_method"] == "positions"
+        assert pd.attrs["pos_e_i"] == pytest.approx(pos1.real)

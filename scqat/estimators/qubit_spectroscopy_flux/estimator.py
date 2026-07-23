@@ -63,7 +63,8 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
         Fit and collect every qubit peak in every ``flux_bias`` slice.
 
         Thin wrapper over :func:`.peaks.track_flux_peaks` — see there for the
-        full flat kwarg surface (``n_sigma``, ``signal_var``, and the
+        full flat kwarg surface (``n_sigma``, ``signal_var``, ``ref_scope``
+        [per_slice | global radial reference], and the
         :func:`scqat.tools.peak_fit.fit_peaks` knobs such as ``prominence`` and
         ``max_peaks``; unknown names raise before any per-slice fit) and the
         result contract. By default each flux slice is capped to its 4 most

@@ -7,13 +7,15 @@ actually used, so the pre-processing is visible per run (the companion of the
 
 * **radial** experiments (spectroscopy family): the reference *point*
   (``|IQ - ref|`` is the fitted signal) — a star, labeled with its source
-  (auto median vs supplied);
-* **axial** experiments (power_rabi / ramsey / T1 / echo): the projection *axis*
-  through the cloud with its positive direction, labeled with how the axis was
-  resolved (pca / angle / positions);
+  (auto median vs stored blob center vs supplied);
+* **axial** experiments (power_rabi / ramsey / T1 / echo): the projection *axis*,
+  labeled with how it was resolved (pca / angle / positions). When the axis came
+  from the stored ``|0>``/``|1>`` centroids (``pos_*`` attrs), the two blob
+  positions are drawn as g/e stars with the g->e direction;
 * **2-D maps** (vs flux): all slices colored by the slow axis, plus the
-  per-slice reference trajectory (the ground point moves with flux — the reason
-  the reference is per-slice).
+  reference — the per-slice trajectory when the ground point moves with the
+  slow axis (DC-held flux), or ONE global point when ``attrs["ref_scope"]`` is
+  ``"global"`` (pulsed flux: every slice reads out at idle).
 
 This is a plain shared FUNCTION consumed by several estimators' figure steps
 (function-level sharing is what the estimator-layering rule permits; it lives
@@ -44,9 +46,11 @@ def has_iq_plane(plot_data: xr.Dataset) -> bool:
 
 def _reduction_kind(plot_data: xr.Dataset) -> str:
     """Which reference geometry the reduction used: ``"radial"`` (a point),
-    ``"radial-per-slice"`` (a point per slow-axis slice), ``"axial"`` (an axis),
-    or ``""`` (bare cloud, nothing resolvable)."""
+    ``"radial-per-slice"`` / ``"radial-global"`` (a 2-D map's per-slice vs single
+    reference), ``"axial"`` (an axis), or ``""`` (bare cloud, nothing resolvable)."""
     if plot_data["iq_i"].ndim == 2:
+        if str(plot_data.attrs.get("ref_scope", "")) == "global":
+            return "radial-global"
         return "radial-per-slice"
     attrs = plot_data.attrs
     if "ref_iq_real" in attrs and "ref_iq_imag" in attrs:
@@ -61,6 +65,7 @@ def _reduction_kind(plot_data: xr.Dataset) -> str:
 _KIND_TITLES = {
     "radial": "IQ plane — RADIAL reduction: signal = |IQ - ref|",
     "radial-per-slice": "IQ plane — RADIAL reduction (per slice): signal = |IQ - ref(slice)|",
+    "radial-global": "IQ plane — RADIAL reduction (global ref): signal = |IQ - ref|",
     "axial": "IQ plane — AXIAL reduction: signal = projection onto the |0>-|1> axis",
 }
 
@@ -121,6 +126,21 @@ def _draw_1d(ax, fig, plot_data: xr.Dataset, iq_i: xr.DataArray, iq_q: xr.DataAr
     angle = float(attrs.get("reduction_angle", np.nan))
     method = str(attrs.get("reduction_method", ""))
     if np.isfinite(angle) and method and method != "signal":
+        pos = [float(attrs.get(k, np.nan))
+               for k in ("pos_g_i", "pos_g_q", "pos_e_i", "pos_e_q")]
+        if np.all(np.isfinite(pos)):
+            # the axis came from the stored |0>/|1> centroids: draw both blob
+            # positions and the g->e segment (its direction IS the +projection)
+            g, e = np.array(pos[:2]), np.array(pos[2:])
+            ax.plot([g[0], e[0]], [g[1], e[1]], "--", color="red", lw=1.4,
+                    label=f"axial axis ({method})")
+            ax.plot(*g, "*", color="tab:green", markersize=15, mec="black",
+                    label="|0> position (stored)")
+            ax.plot(*e, "*", color="tab:red", markersize=15, mec="black",
+                    label="|1> position (stored)")
+            ax.annotate("", xy=tuple(e), xytext=tuple(g),
+                        arrowprops=dict(arrowstyle="->", color="red", lw=1.4))
+            return
         # axial: the projection AXIS through the cloud, positive direction marked.
         # axial() returns Re(z * e^{i*a}) so the +projection direction in the IQ
         # plane is e^{-i*a} = (cos a, -sin a).
@@ -153,7 +173,14 @@ def _draw_2d(ax, fig, plot_data: xr.Dataset, iq_i: xr.DataArray, iq_q: xr.DataAr
         ri = plot_data["ref_i"].values.astype(float)
         rq = plot_data["ref_q"].values.astype(float)
         ok = np.isfinite(ri) & np.isfinite(rq)
-        if ok.any():
+        if not ok.any():
+            return
+        if str(plot_data.attrs.get("ref_scope", "")) == "global":
+            # one shared reference for the whole map (pulsed flux: every slice
+            # reads out at idle) — a single star, not a degenerate trajectory
+            ax.plot(ri[ok][:1], rq[ok][:1], "*", color="red", markersize=15,
+                    mec="black", label="global radial ref (median)")
+        else:
             ax.plot(ri[ok], rq[ok], "-", color="red", lw=1.0, alpha=0.7)
             ax.plot(ri[ok], rq[ok], "*", color="red", markersize=10, mec="black",
                     label="per-slice radial ref (median)")

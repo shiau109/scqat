@@ -10,8 +10,12 @@ estimator only resolves the dataset into arrays, forwards its flat kwarg
 surface, and owns the artifacts (metadata / plot data / figure).
 
 When a complex ``ref`` is provided, the signal is ``|IQdata - ref|``.
-Otherwise the reference is auto-estimated as the median of the complex
-IQ data (robust for spectroscopy sweeps where most points are off-resonance).
+Otherwise, if the dataset carries the stored ground-blob center (the
+``ref_pos_*`` variables an acquisition layer attached — see
+:func:`scqat.core.base_estimator.stored_ground`), that measured point is the
+reference; else it is auto-estimated as the median of the complex IQ data
+(robust for spectroscopy sweeps where most points are off-resonance). The
+resolved choice is stamped as ``ref_source`` (supplied / stored / median).
 
 Expected xarray.Dataset contract
 ---------------------------------
@@ -32,7 +36,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
-from scqat.core.base_estimator import BaseEstimator, with_iqdata
+from scqat.core.base_estimator import BaseEstimator, stored_ground, with_iqdata
 from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.qubit_spectroscopy.visualization import plot_spectrum
@@ -111,10 +115,18 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         else:
             signal = with_iqdata(dataset)["IQdata"].values.ravel()
 
+        # provenance of the radial reference — priority: a supplied IQ point ->
+        # the stored ground-blob center riding the dataset -> the complex median
+        # (meaningful only for complex input)
+        ref_source = "supplied" if kwargs.get("ref") is not None else "median"
+        if signal_var is None and kwargs.get("ref") is None:
+            stored = stored_ground(dataset)
+            if stored is not None:
+                kwargs["ref"] = stored
+                ref_source = "stored"
+
         results = fit_peaks(detuning, signal, full_freq=full_freq, **kwargs)
-        # provenance of the radial reference: a supplied IQ point vs the
-        # auto-estimated complex median (meaningful only for complex input)
-        results["ref_source"] = "supplied" if kwargs.get("ref") is not None else "median"
+        results["ref_source"] = ref_source
         return results
 
     # ------------------------------------------------------------------

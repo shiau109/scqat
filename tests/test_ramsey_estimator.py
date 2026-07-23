@@ -173,3 +173,21 @@ class TestRamseyEstimator:
         assert isinstance(figs["time_domain"], plt.Figure)
         assert isinstance(figs["fft_spectrum"], plt.Figure)
         plt.close("all")
+
+    def test_stored_positions_resolve_axis(self):
+        """ref_pos_* variables resolve the axis deterministically (method
+        'positions') and the blob centers reach the plotdata attrs."""
+        theta = 0.6
+        ds = _make_single_iq(f=0.0025, tau=1000.0, theta=theta)
+        pos0 = 0.3 - 0.7j                      # the fixture's ground center
+        pos1 = pos0 + 3.0 * np.exp(1j * theta)  # + sep * e^{i theta}
+        ds["ref_pos_g_i"], ds["ref_pos_g_q"] = float(pos0.real), float(pos0.imag)
+        ds["ref_pos_e_i"], ds["ref_pos_e_q"] = float(pos1.real), float(pos1.imag)
+        est = RamseyEstimator()
+        res = est.extract_parameters(ds)
+        assert res["success"] is True
+        assert res["f_1"] == pytest.approx(0.0025, rel=0.1)
+        assert res["reduction_method"] == "positions"
+        pd = est.build_plot_data(ds, res)
+        assert pd.attrs["reduction_method"] == "positions"
+        assert pd.attrs["pos_g_q"] == pytest.approx(pos0.imag)

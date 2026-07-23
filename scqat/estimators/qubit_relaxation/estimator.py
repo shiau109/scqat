@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from scqat.core.base_estimator import BaseEstimator, reduced_signal, with_iqdata
+from scqat.core.base_estimator import POS_ATTRS, BaseEstimator, reduced_signal, with_iqdata
 from scqat.tools.fit_exp_decay import FitExponentialDecay
 from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
 
@@ -59,7 +59,7 @@ class QubitRelaxationEstimator(BaseEstimator):
         fit_result = FitExponentialDecay(da).fit()
         t1 = float(fit_result.params["tau"].value)
         t_span = float(da["x"].values[-1] - da["x"].values[0])
-        return {
+        results = {
             "t1": t1,
             "t1_stderr": float(fit_result.params["tau"].stderr or np.nan),
             "amplitude": float(fit_result.params["a"].value),
@@ -72,6 +72,11 @@ class QubitRelaxationEstimator(BaseEstimator):
             "reduction_angle": sig.attrs.get("reduction_angle"),
             "best_fit": np.asarray(fit_result.best_fit, dtype=float),
         }
+        # the stored |0>/|1> centroids the axis came from (absent otherwise)
+        for key in POS_ATTRS:
+            if key in sig.attrs:
+                results[key] = float(sig.attrs[key])
+        return results
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in results.items() if k not in {"best_fit", "signal"}}
@@ -89,20 +94,21 @@ class QubitRelaxationEstimator(BaseEstimator):
             iq = with_iqdata(dataset)["IQdata"].squeeze().values
             data_vars["iq_i"] = ("wait_time", np.real(iq).astype(float))
             data_vars["iq_q"] = ("wait_time", np.imag(iq).astype(float))
-        return xr.Dataset(
-            data_vars,
-            coords={"wait_time": wait},
-            attrs={
-                "t1": results["t1"],
-                "amplitude": results["amplitude"],
-                "offset": results["offset"],
-                "success": int(bool(results["success"])),
-                "reduction_method": str(results.get("reduction_method", "signal")),
-                # 0.0 is a legitimate angle (axis on I) — only None becomes NaN
-                "reduction_angle": (float(results["reduction_angle"])
-                                    if results.get("reduction_angle") is not None else float("nan")),
-            },
-        )
+        attrs = {
+            "t1": results["t1"],
+            "amplitude": results["amplitude"],
+            "offset": results["offset"],
+            "success": int(bool(results["success"])),
+            "reduction_method": str(results.get("reduction_method", "signal")),
+            # 0.0 is a legitimate angle (axis on I) — only None becomes NaN
+            "reduction_angle": (float(results["reduction_angle"])
+                                if results.get("reduction_angle") is not None else float("nan")),
+        }
+        # the stored |0>/|1> centroids (drawn by the shared IQ-plane panel)
+        for key in POS_ATTRS:
+            if results.get(key) is not None:
+                attrs[key] = float(results[key])
+        return xr.Dataset(data_vars, coords={"wait_time": wait}, attrs=attrs)
 
     def generate_figures(
         self,

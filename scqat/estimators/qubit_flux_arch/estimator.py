@@ -94,10 +94,11 @@ class QubitFluxArchEstimator(BaseEstimator):
         arch_n_sigma : float, optional
             Robust residual-rejection threshold between the two arch fits
             (default 3.0).
-        signal_var, prominence, max_peaks, n_sigma, ...
+        signal_var, ref_scope, prominence, max_peaks, n_sigma, ...
             Forwarded to the stage-1 tracker
             :func:`~scqat.estimators.qubit_spectroscopy_flux.track_flux_peaks`
-            (unknown names raise before any per-slice fit).
+            (unknown names raise before any per-slice fit; ``ref_scope``
+            selects the per_slice vs global radial reference).
         """
         branch = str(kwargs.pop("branch", "strongest"))
         ec_ghz = float(kwargs.pop("ec_ghz", 0.2))
@@ -216,6 +217,7 @@ class QubitFluxArchEstimator(BaseEstimator):
             "n_flux": int(cloud["n_flux"]),
             "n_peaks": int(cloud["n_peaks"]),
             "n_good": int(cloud["n_good"]),
+            "ref_scope": str(cloud.get("ref_scope", "per_slice")),
             "branch": arch["branch"],
             "ec_ghz": arch["ec_ghz"],
             "n_selected": int(arch["n_selected"]),

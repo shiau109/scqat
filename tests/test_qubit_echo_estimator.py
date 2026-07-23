@@ -78,3 +78,21 @@ class TestQubitEchoEstimator:
     def test_check_data_rejects_missing(self):
         with pytest.raises(ValueError):
             QubitEchoEstimator().analyze(xr.Dataset({"other": ("x", [1.0])}, coords={"x": [0.0]}))
+
+    def test_stored_positions_resolve_axis(self):
+        """ref_pos_* variables resolve the axis deterministically (method
+        'positions') and the blob centers reach the plotdata attrs."""
+        t2e, theta = 50e-6, 0.9
+        ds = _make_decay_iq(t2e=t2e, theta=theta)
+        pos0 = -0.4 + 0.9j                     # the fixture's ground center
+        pos1 = pos0 + 3.0 * np.exp(1j * theta)  # + sep * e^{i theta}
+        ds["ref_pos_g_i"], ds["ref_pos_g_q"] = float(pos0.real), float(pos0.imag)
+        ds["ref_pos_e_i"], ds["ref_pos_e_q"] = float(pos1.real), float(pos1.imag)
+        est = QubitEchoEstimator()
+        results = est.extract_parameters(ds)
+        assert results["success"]
+        assert results["t2_echo"] == pytest.approx(t2e, rel=0.05)
+        assert results["reduction_method"] == "positions"
+        pd = est.build_plot_data(ds, results)
+        assert pd.attrs["reduction_method"] == "positions"
+        assert pd.attrs["pos_g_i"] == pytest.approx(pos0.real)
