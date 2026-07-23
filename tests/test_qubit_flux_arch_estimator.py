@@ -72,8 +72,68 @@ class TestQubitFluxArchEstimator:
         assert "qubit_flux_arch_metadata.json" in names
         assert "qubit_flux_arch_plotdata.nc" in names
         assert "qubit_flux_arch.png" in names
+        # complex input -> the shared IQ-plane panel rides along
+        assert "qubit_flux_arch_iq_plane.png" in names
 
     def test_requires_full_freq(self):
         ds = _make_map(n_flux=8).drop_vars("full_freq")
         with pytest.raises(ValueError, match="full_freq"):
             QubitFluxArchEstimator().analyze(ds)
+
+    def test_gentle_top_recovers_when_period_far_exceeds_span(self):
+        """The bring-up window case (modeled on the real 5Q4C run): only the
+        GENTLE TOP of a period~1 V arch inside a +-0.1 V / 200 MHz window. The
+        curvature-based period seed must land the right basin — the old
+        period=span seed converged to a wrong basin with an off-window top."""
+        ec, ej, offset, period = 0.2, 17.8, 0.013, 0.96
+        flux = np.linspace(-0.1, 0.1, 11)
+        f01_now = 5.1364e9
+        full = np.linspace(f01_now - 100e6, f01_now + 100e6, 201)
+        rng = np.random.default_rng(11)
+        amp = np.zeros((flux.size, full.size))
+        for k, fb in enumerate(flux):
+            q = (fb - offset) / period
+            f01 = (np.sqrt(8 * ec * ej * abs(np.cos(np.pi * q))) - ec) * 1e9
+            amp[k] += 1.0 / (1.0 + ((full - f01) / (6e6 / 2)) ** 2)
+        amp += rng.normal(0, 0.02, size=amp.shape)
+        ds = xr.Dataset(
+            {"I": (("flux_bias", "detuning"), amp),
+             "Q": (("flux_bias", "detuning"), np.zeros_like(amp))},
+            coords={"flux_bias": flux, "detuning": full - f01_now,
+                    "full_freq": ("detuning", full)},
+        )
+        arch = QubitFluxArchEstimator().extract_parameters(ds)["arch"]
+        assert arch["success"]
+        assert arch["sweet_spot_flux"] == pytest.approx(offset, abs=0.01)
+        assert arch["ej_sum_ghz"] == pytest.approx(ej, rel=0.05)
+        # the top was observed inside the window and the curve tracks the points
+        assert full.min() <= arch["f01_max_hz"] <= full.max()
+        assert arch["rms_residual_hz"] < 0.25 * (full.max() - full.min())
+
+    def test_off_window_top_fails_the_gate(self):
+        """Flank-only data: the arch top was never observed (it sits above the
+        swept frequency window), so however well the optimizer converges the
+        result must be gated FAILED — extrapolated Ej/f01_max are untrustworthy."""
+        flux = np.linspace(0.13, 0.33, 11)  # one descending flank of the arch
+        full = np.linspace(4.6e9, 5.5e9, 201)  # window far below f01_max ~ 6.125 GHz
+        lo = 5.0e9
+        rng = np.random.default_rng(5)
+        amp = np.zeros((flux.size, full.size))
+        for k, fb in enumerate(flux):
+            f01 = _f01_ghz(fb) * 1e9
+            amp[k] += 1.0 / (1.0 + ((full - f01) / (12e6 / 2)) ** 2)
+        amp += rng.normal(0, 0.02, size=amp.shape)
+        ds = xr.Dataset(
+            {"I": (("flux_bias", "detuning"), amp),
+             "Q": (("flux_bias", "detuning"), np.zeros_like(amp))},
+            coords={"flux_bias": flux, "detuning": full - lo,
+                    "full_freq": ("detuning", full)},
+        )
+        est = QubitFluxArchEstimator()
+        results = est.extract_parameters(ds)
+        arch = results["arch"]
+        assert arch["n_selected"] >= 5  # the flank line itself was found
+        assert not arch["success"]  # ...but the top was never measured
+        meta = est.extract_metadata(results)
+        for key in ("rms_residual_hz", "freq_window_lo_hz", "freq_window_hi_hz"):
+            assert key in meta

@@ -59,6 +59,21 @@ def _make_relaxation(tau=600.0, a=0.4, c=0.5, noise=2e-3, seed=2, n=201, t_max=2
     return xr.Dataset({"signal": ("idle_time", signal)}, coords={"idle_time": t})
 
 
+def _make_single_iq(f=0.0025, tau=1000.0, theta=0.6, sep=3.0, noise=2e-3, seed=0,
+                    n=201, t_max=2000.0):
+    """Single damped-sine Ramsey placed in the IQ plane at readout rotation ``theta``."""
+    t = _idle(n, t_max)
+    P = 0.5 + 0.5 * np.exp(-t / tau) * np.sin(2 * np.pi * f * t)
+    d = sep * np.exp(1j * theta)
+    pos0 = 0.3 - 0.7j
+    rng = np.random.default_rng(seed)
+    z = pos0 + P * d + noise * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+    return xr.Dataset(
+        {"I": ("idle_time", np.real(z)), "Q": ("idle_time", np.imag(z))},
+        coords={"idle_time": t},
+    )
+
+
 class TestRamseyEstimator:
 
     def test_imports_match(self):
@@ -90,6 +105,14 @@ class TestRamseyEstimator:
         assert res["model_type"] == "relaxation"
         assert res["f_1"] == 0.0
         assert res["tau_1"] == pytest.approx(600.0, rel=0.25)
+
+    @pytest.mark.parametrize("theta", [0.0, 0.8, -1.7])
+    def test_single_model_from_iq(self, theta):
+        # Recover the fringe frequency from raw I/Q at any readout rotation.
+        res = RamseyEstimator().extract_parameters(_make_single_iq(f=0.0025, tau=1000.0, theta=theta))
+        assert res["model_type"] == "single"
+        assert res["f_1"] == pytest.approx(0.0025, rel=0.1)
+        assert res["reduction_method"] == "pca"
 
     def test_force_model_overrides_selection(self):
         single_ds = _make_single()

@@ -132,9 +132,25 @@ class TestQubitSpectroscopyEstimator:
 
         assert (tmp_path / "qubit_spectroscopy_metadata.json").exists()
         assert (tmp_path / "qubit_spectroscopy_plotdata.nc").exists()
-        assert set(figs) == {"spectrum"}
+        # complex input -> the shared IQ-plane panel rides along
+        assert set(figs) == {"spectrum", "iq_plane"}
         assert isinstance(figs["spectrum"], plt.Figure)
+        assert (tmp_path / "qubit_spectroscopy_iq_plane.png").exists()
         plt.close("all")
+
+    def test_iq_plane_plot_data_fields(self):
+        ds = _make_ds([(0e6, 0.9, 2e6)])
+        est = QubitSpectroscopyEstimator()
+        results = est.extract_parameters(ds)
+        assert results["ref_source"] == "median"
+        pd = est.build_plot_data(ds, results)
+        assert pd["iq_i"].dims == ("detuning",) and pd["iq_q"].dims == ("detuning",)
+        assert pd.attrs["ref_source"] == "median"
+        assert "ref_iq_real" in pd.attrs and "ref_iq_imag" in pd.attrs
+        # supplied reference is stamped as such
+        res2 = est.extract_parameters(ds, ref=0.1 + 0.2j)
+        assert res2["ref_source"] == "supplied"
+        assert res2["ref_iq"] == 0.1 + 0.2j
 
 
 class TestPeakMerging:

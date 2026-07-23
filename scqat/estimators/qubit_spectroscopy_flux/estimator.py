@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator
+from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.qubit_spectroscopy_flux.peaks import (
     check_flux_dataset,
     flux_cloud_plotdata,
@@ -75,8 +76,9 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
     # Metadata + plot data
     # ------------------------------------------------------------------
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Persist the peak point-cloud + stats; drop the bulky 2-D map and axes."""
-        drop = {"amplitude_map", "detuning", "full_freq"}
+        """Persist the peak point-cloud + stats; drop the bulky 2-D maps and axes."""
+        drop = {"amplitude_map", "reduced_map", "iq_i_map", "iq_q_map",
+                "detuning", "full_freq"}
         return {k: v for k, v in results.items() if k not in drop}
 
     def build_plot_data(
@@ -96,8 +98,12 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
         plot_data: Optional[xr.Dataset] = None,
         **kwargs,
     ) -> Dict[str, plt.Figure]:
-        """Single figure: the 2-D signal map over (flux, frequency) with every
-        kept qubit peak overlaid and outliers marked."""
+        """The 2-D signal map over (flux, frequency) with every kept qubit peak
+        overlaid and outliers marked, plus the shared IQ-plane panel (raw cloud
+        + per-slice references) when the input carried complex IQ."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {"qubit_spectroscopy_flux": plot_flux_map(plot_data)}
+        figs = {"qubit_spectroscopy_flux": plot_flux_map(plot_data)}
+        if has_iq_plane(plot_data):
+            figs["iq_plane"] = plot_iq_plane(plot_data)
+        return figs

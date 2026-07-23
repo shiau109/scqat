@@ -37,9 +37,10 @@ DS = load(DATA)
 
 # %% Per-experiment glue — prep (raw -> estimator input)
 def prep(sq: xr.Dataset) -> xr.Dataset:
-    # PowerRabiEstimator fits the 'signal' variable over the 'amp_prefactor' coord.
-    # The node stores raw I/Q; use I as the signal (matching the node's analyse_data).
-    return sq.rename({"I": "signal"})
+    # PowerRabiEstimator now reduces the raw I/Q to the signed axial projection onto the
+    # |0>-|1> axis (robust to the readout rotation, unlike the old raw-I quadrature);
+    # pass I/Q straight through over the 'amp_prefactor' coord.
+    return sq
 
 
 # %% (A) RE-FIT + REPLOT — regenerate the estimator's amplitude figures from saved raw

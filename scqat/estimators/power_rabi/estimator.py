@@ -4,8 +4,10 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 
-from scqat.core.base_estimator import BaseEstimator
+from scqat.core.base_estimator import BaseEstimator, reduced_signal, with_iqdata
 from scqat.tools.fit_cosine import FitCosine
+from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
+from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.power_rabi.visualization import plot_amplitude_fit
 
 
@@ -14,7 +16,9 @@ class PowerRabiEstimator(BaseEstimator):
     Analyzes power-Rabi data to extract the drive-amplitude prefactor of a pi pulse.
 
     Expects an xarray.Dataset with:
-        - Variable: 'signal'
+        - Variables: complex ``IQdata`` (or both ``I`` and ``Q``) — reduced to the
+          signed axial projection onto the |0>-|1> axis — OR a pre-reduced real
+          ``signal`` (an already-discriminated state/population).
         - Coordinate: 'amp_prefactor'  (dimensionless multiplier of the current pulse
           amplitude, i.e. the QUA ``amplitude_scale`` sweep)
 
@@ -28,8 +32,12 @@ class PowerRabiEstimator(BaseEstimator):
     estimator_name = "power_rabi"
 
     def _check_data(self, dataset: xr.Dataset) -> None:
-        if "signal" not in dataset:
-            raise ValueError("Power-Rabi analysis requires a 'signal' variable in the dataset.")
+        has_iq = "IQdata" in dataset.data_vars or ("I" in dataset.data_vars and "Q" in dataset.data_vars)
+        if "signal" not in dataset.data_vars and not has_iq:
+            raise ValueError(
+                "Power-Rabi analysis requires a 'signal' variable, or complex 'IQdata', "
+                "or both 'I' and 'Q'."
+            )
         if "amp_prefactor" not in dataset.coords:
             raise ValueError("Power-Rabi analysis requires an 'amp_prefactor' coordinate in the dataset.")
 
@@ -37,11 +45,19 @@ class PowerRabiEstimator(BaseEstimator):
         """
         Fit the power-Rabi oscillation and extract the pi-pulse amplitude prefactor.
 
+        Kwargs — flat and fully owned; unknown names raise:
+            angle, positions, pca_sign
+                IQ->1-D axial-reduction knobs (see :func:`scqat.tools.iq_reduce.axial`);
+                ignored when the dataset already carries a real ``signal``.
+
         Returns a dict with:
-            a, f, phi, c, opt_amp_prefactor, success, best_fit, fit_report.
+            a, f, phi, c, opt_amp_prefactor, success, signal, reduction_method,
+            reduction_angle, best_fit, fit_report.
         """
+        validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
         # Prepare a DataArray with an 'x' coordinate for the FitCosine fitter.
-        fit_data = dataset["signal"].rename({"amp_prefactor": "x"}).squeeze()
+        sig = reduced_signal(dataset, **kwargs)
+        fit_data = sig.rename({"amp_prefactor": "x"})
 
         # FitCosine bounds the amplitude a >= 0, so a single phi=0 seed can get trapped
         # at a flat (a~0) fit for qubits whose readout *rises* from zero amplitude (which
@@ -87,13 +103,16 @@ class PowerRabiEstimator(BaseEstimator):
             "c": p["c"],
             "opt_amp_prefactor": float(opt_amp_prefactor),
             "success": success,
+            "signal": np.asarray(sig.values, dtype=float),
+            "reduction_method": sig.attrs.get("reduction_method"),
+            "reduction_angle": sig.attrs.get("reduction_angle"),
             "best_fit": fit_result.best_fit,
             "fit_report": fit_result.fit_report(),
         }
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Persist the fit parameters and optimal prefactor; drop the diagnostic arrays."""
-        drop = {"best_fit", "fit_report"}
+        drop = {"best_fit", "fit_report", "signal"}
         return {k: v for k, v in results.items() if k not in drop}
 
     def build_plot_data(
@@ -105,7 +124,7 @@ class PowerRabiEstimator(BaseEstimator):
         no recomputation.
         """
         amp_prefactor = np.asarray(dataset.coords["amp_prefactor"].values, dtype=float)
-        signal = np.asarray(dataset["signal"].squeeze().values, dtype=float)
+        signal = np.asarray(results["signal"], dtype=float)
         best_fit = np.asarray(results["best_fit"], dtype=float)
 
         attrs = {
@@ -115,13 +134,24 @@ class PowerRabiEstimator(BaseEstimator):
             "c": float(results["c"]),
             "opt_amp_prefactor": float(results["opt_amp_prefactor"]),
             "success": int(bool(results["success"])),
+            "reduction_method": str(results.get("reduction_method", "signal")),
+            # 0.0 is a legitimate angle (axis on I) — only None becomes NaN
+            "reduction_angle": (float(results["reduction_angle"])
+                                if results.get("reduction_angle") is not None else float("nan")),
         }
 
+        data_vars = {
+            "signal": ("amp_prefactor", signal),
+            "best_fit": ("amp_prefactor", best_fit),
+        }
+        # the raw IQ cloud for the shared IQ-plane panel (absent on pre-reduced input)
+        if "IQdata" in dataset.data_vars or ("I" in dataset.data_vars and "Q" in dataset.data_vars):
+            iq = with_iqdata(dataset)["IQdata"].squeeze().values
+            data_vars["iq_i"] = ("amp_prefactor", np.real(iq).astype(float))
+            data_vars["iq_q"] = ("amp_prefactor", np.imag(iq).astype(float))
+
         return xr.Dataset(
-            {
-                "signal": ("amp_prefactor", signal),
-                "best_fit": ("amp_prefactor", best_fit),
-            },
+            data_vars,
             coords={"amp_prefactor": amp_prefactor},
             attrs=attrs,
         )
@@ -138,4 +168,7 @@ class PowerRabiEstimator(BaseEstimator):
         ``analyze()``."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {"amplitude": plot_amplitude_fit(plot_data)}
+        figs = {"amplitude": plot_amplitude_fit(plot_data)}
+        if has_iq_plane(plot_data):
+            figs["iq_plane"] = plot_iq_plane(plot_data)
+        return figs

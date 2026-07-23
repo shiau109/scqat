@@ -46,6 +46,7 @@ from scipy.signal import find_peaks
 import xarray as xr
 
 from .fit_lorentzian import FitLorentzian, lorentzian
+from .iq_reduce import ground_ref, radial
 
 #: caller-selectable knobs of :func:`fit_peaks` (everything after ``full_freq``)
 #: — the single source of truth dict-collecting callers validate against.
@@ -187,12 +188,10 @@ def fit_peaks(
     # --- Resolve the 1-D fitted signal ---
     signal = np.asarray(signal).ravel()
     if np.iscomplexobj(signal):
-        if ref is not None:
-            ref_iq = complex(ref)
-        else:
-            # Auto-estimate: median of the complex IQ cloud
-            ref_iq = complex(np.median(signal.real), np.median(signal.imag))
-        signal = np.abs(signal - ref_iq)
+        # Radial reduction: distance from the off-resonance/ground cluster (the
+        # complex median when no ref given). See scqat.tools.iq_reduce.
+        ref_iq = complex(ref) if ref is not None else ground_ref(signal.real, signal.imag)
+        signal = radial(signal.real, signal.imag, ref=ref_iq)
     else:
         signal = signal.astype(float)
         ref_iq = None

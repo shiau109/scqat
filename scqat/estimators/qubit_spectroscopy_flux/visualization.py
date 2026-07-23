@@ -8,9 +8,11 @@ recalculation.
 plot_data layout
 ----------------
 coords : ``flux_bias``, ``detuning``, ``peak`` (+ optional ``full_freq``)
-vars   : ``amplitude`` (flux_bias, detuning); per-peak ``peak_flux`` /
-         ``peak_detuning`` / ``peak_fwhm`` / ``peak_amplitude`` / ``good`` /
-         ``outlier`` (+ optional ``peak_full_freq``)
+vars   : ``reduced`` + ``amplitude`` (flux_bias, detuning) — the background is
+         ``reduced`` (the per-slice fitted signal; ``amplitude`` = raw |IQ| kept
+         for reference and as the fallback for pre-``reduced`` plotdata);
+         per-peak ``peak_flux`` / ``peak_detuning`` / ``peak_fwhm`` /
+         ``peak_amplitude`` / ``good`` / ``outlier`` (+ optional ``peak_full_freq``)
 attrs  : ``n_flux``, ``n_peaks``, ``n_good``, ``n_outlier``, ``has_full_freq``
 """
 
@@ -22,7 +24,11 @@ def plot_flux_map(plot_data: xr.Dataset) -> plt.Figure:
     """The 2-D signal map over (flux, frequency) with every kept qubit peak
     overlaid and outliers marked, drawn entirely from ``plot_data``."""
     flux = plot_data.coords["flux_bias"].values.astype(float)
-    amplitude = plot_data["amplitude"].values  # (flux, detuning)
+    # Background = the per-slice REDUCED signal the peaks were fitted on; raw
+    # "amplitude" only as fallback for plotdata saved before the reduced map
+    # existed (immutable run data).
+    background = plot_data["reduced"] if "reduced" in plot_data else plot_data["amplitude"]
+    amplitude = background.values  # (flux, detuning)
     peak_flux = plot_data["peak_flux"].values.astype(float)
     good = plot_data["good"].values.astype(bool)
     outlier = plot_data["outlier"].values.astype(bool)

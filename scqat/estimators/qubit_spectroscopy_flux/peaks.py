@@ -82,7 +82,7 @@ def track_flux_peaks(
         ``{flux_bias, detuning, full_freq?, peak_flux, peak_flux_index,
         peak_detuning, peak_full_freq?, peak_fwhm, peak_amplitude,
         in_window, outlier, good, fwhm_median, fwhm_mad,
-        peak_amplitude_median, peak_amplitude_mad, amplitude_map,
+        peak_amplitude_median, peak_amplitude_mad, amplitude_map, reduced_map,
         n_flux, n_peaks, n_in_window, n_good, n_outlier}``
     """
     check_flux_dataset(dataset)
@@ -141,6 +141,12 @@ def track_flux_peaks(
         "peak_amplitude_median": cloud["peak_amplitude_median"],
         "peak_amplitude_mad": cloud["peak_amplitude_mad"],
         "amplitude_map": np.abs(signal_map),
+        # the per-slice REDUCED signal the peaks were actually fitted on
+        # (|IQ - median| per flux row) — the display-honest background
+        "reduced_map": cloud["reduced_map"],
+        # per-slice radial references (the ground point moves with flux)
+        "ref_i": cloud["ref_i"],
+        "ref_q": cloud["ref_q"],
         "n_flux": cloud["n_x"],
         "n_peaks": cloud["n_peaks"],
         "n_in_window": cloud["n_in_window"],
@@ -150,6 +156,11 @@ def track_flux_peaks(
     if full_freq is not None:
         results["full_freq"] = cloud["full_freq"]
         results["peak_full_freq"] = cloud["peak_full_freq"]
+
+    # the raw IQ cloud for the shared IQ-plane panel (complex input only)
+    if np.iscomplexobj(signal_map):
+        results["iq_i_map"] = np.real(signal_map).astype(float)
+        results["iq_q_map"] = np.imag(signal_map).astype(float)
 
     return results
 
@@ -165,6 +176,8 @@ def flux_cloud_plotdata(results: Dict[str, Any]) -> xr.Dataset:
 
     data_vars: Dict[str, Any] = {
         "amplitude": (("flux_bias", "detuning"), amplitude),
+        "reduced": (("flux_bias", "detuning"),
+                    np.asarray(results["reduced_map"], dtype=float)),
         "peak_flux": ("peak", np.asarray(results["peak_flux"], float)),
         "peak_detuning": ("peak", np.asarray(results["peak_detuning"], float)),
         "peak_fwhm": ("peak", np.asarray(results["peak_fwhm"], float)),
@@ -188,5 +201,14 @@ def flux_cloud_plotdata(results: Dict[str, Any]) -> xr.Dataset:
         attrs["has_full_freq"] = 1
     else:
         attrs["has_full_freq"] = 0
+
+    # the raw IQ cloud + per-slice references for the shared IQ-plane panel
+    if "iq_i_map" in results:
+        data_vars["iq_i"] = (("flux_bias", "detuning"),
+                             np.asarray(results["iq_i_map"], dtype=float))
+        data_vars["iq_q"] = (("flux_bias", "detuning"),
+                             np.asarray(results["iq_q_map"], dtype=float))
+        data_vars["ref_i"] = ("flux_bias", np.asarray(results["ref_i"], dtype=float))
+        data_vars["ref_q"] = ("flux_bias", np.asarray(results["ref_q"], dtype=float))
 
     return xr.Dataset(data_vars, coords=coords, attrs=attrs)

@@ -10,6 +10,16 @@ from .function_fitting import FunctionFitting, register_fitter, get_fitter
 from .dip_fit import DIP_KNOBS, DIP_METHODS, fit_dip, validate_dip_kwargs
 from .peak_fit import PEAK_KNOBS, fit_peaks, validate_peak_kwargs
 from .peak_map import track_peaks
+from .iq_reduce import (
+    AXIAL_KNOBS,
+    IQ_REDUCE_KNOBS,
+    RADIAL_KNOBS,
+    axial,
+    axis_angle,
+    ground_ref,
+    radial,
+    validate_iq_reduce_kwargs,
+)
 from .discriminate import (
     DISCRIMINATE_KNOBS,
     discriminate_states,

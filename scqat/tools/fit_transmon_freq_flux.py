@@ -41,11 +41,42 @@ class FitTransmonFrequencyFlux(FunctionFitting):
     def guess(self):
         x = self.x
         y = self.y
-        # Data-driven guesses: the arch spans ~one period, and the frequency
-        # maximum (sweet spot) sits at the flux offset.
+        # Data-driven guesses: the frequency maximum (sweet spot) sits at the flux
+        # offset, and Ej_sum inverts the arch top exactly: f_max = sqrt(8*Ec*Ej) - Ec
+        # => Ej = (f_max + Ec)^2 / (8*Ec).
         span = float(np.max(x) - np.min(x))
-        period_guess = span if span > 0 else 1.0
         offset_guess = float(x[int(np.argmax(y))])
+        f_max = float(np.max(y))
+        ej_sum_guess = (f_max + self.Ec_design) ** 2 / (8.0 * self.Ec_design)
+
+        # Period seed from the local curvature of the arch TOP: expanding the model
+        # around the sweet spot, f(x) ~ f_max - (f_max+Ec)*(pi/P)^2*(x-x0)^2/2, so a
+        # parabola fit y ~ a*(x-x0)^2 + f0 gives P = pi*sqrt((f0+Ec)/(2*|a|)). When
+        # only the gentle top is inside the sweep (the common bring-up window) the
+        # true period is far LARGER than the swept span, and seeding period=span
+        # drops lmfit into a wrong basin (an oscillating arch through a gentle arc).
+        # The seed is used ONLY in the top-only regime. Its tell-tale: the minimum
+        # sits at a sweep EDGE. A deep INTERIOR minimum means a valley (half-period
+        # point) is inside the window — the sweep spans a full arch feature, the
+        # local-curvature expansion is invalid, and the span seed is the right one.
+        period_guess = span if span > 0 else 1.0
+        if x.size >= 5 and span > 0:
+            order = np.argsort(x)
+            y_sorted = y[order]
+            y_range = float(np.max(y) - np.min(y))
+            imin = int(np.argmin(y_sorted))
+            deep_interior_min = (
+                0 < imin < y_sorted.size - 1
+                and y_sorted[imin] < min(y_sorted[0], y_sorted[-1]) - 0.1 * y_range
+            )
+            try:
+                a = float(np.polyfit(x, y, 2)[0])
+            except Exception:
+                a = np.nan
+            if np.isfinite(a) and a < 0 and y_range > 0 and not deep_interior_min:
+                period_curv = float(np.pi * np.sqrt((f_max + self.Ec_design) / (2.0 * abs(a))))
+                if np.isfinite(period_curv) and period_curv > 0:
+                    period_guess = period_curv
 
         Ec_dict = dict(value=self.Ec_design, vary=False)
         period_dict = dict(value=period_guess, min=0.0)
@@ -53,7 +84,6 @@ class FitTransmonFrequencyFlux(FunctionFitting):
         offset_dict = dict(value=offset_guess,
                            min=offset_guess - period_guess / 2,
                            max=offset_guess + period_guess / 2)
-        ej_sum_guess = float(np.max(y ** 2 / self.Ec_design / 8.0))
         ej_sum_dict = dict(value=ej_sum_guess, min=0.0)
 
         self.params = self.model.make_params(

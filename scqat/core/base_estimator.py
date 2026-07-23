@@ -55,6 +55,47 @@ def with_iqdata(dataset: xr.Dataset) -> xr.Dataset:
     )
 
 
+def reduced_signal(dataset: xr.Dataset, **axial_kwargs) -> xr.DataArray:
+    """Resolve a coherent-drive estimator's real 1-D fit signal from the dataset.
+
+    Two acquisition modes, one contract:
+
+    * If the probe already reduced to a real ``signal`` (the qubit was discriminated
+      on the FPGA and the population/state was averaged), return it verbatim.
+    * Otherwise the dataset carries complex IQ (``IQdata``, or ``I``/``Q``): return
+      the signed **axial** projection onto the ``|0>-|1>`` axis
+      (:func:`scqat.tools.iq_reduce.axial`) — robust to the readout rotation, unlike a
+      single raw quadrature.
+
+    The ``target``/``qubit`` dim is expected already removed (one sweep dim remains).
+    ``axial_kwargs`` (``angle`` / ``positions`` / ``pca_sign``) select the projection
+    axis. The returned ``DataArray`` carries ``reduction_method`` and
+    ``reduction_angle`` in ``.attrs`` for provenance.
+    """
+    if "signal" in dataset.data_vars:
+        return dataset["signal"].squeeze().assign_attrs(
+            reduction_method="signal", reduction_angle=float("nan")
+        )
+    from scqat.tools.iq_reduce import axial, axis_angle
+
+    iq = with_iqdata(dataset)["IQdata"].squeeze()
+    dim = iq.dims[0]
+    I = np.real(iq.values)
+    Q = np.imag(iq.values)
+    reduced = axial(I, Q, **axial_kwargs)
+    if axial_kwargs.get("angle") is not None:
+        method = "angle"
+    elif axial_kwargs.get("positions") is not None:
+        method = "positions"
+    else:
+        method = "pca"
+    a = axis_angle(I, Q, angle=axial_kwargs.get("angle"), positions=axial_kwargs.get("positions"))
+    return xr.DataArray(
+        reduced, coords={dim: iq.coords[dim]}, dims=[dim], name="signal",
+        attrs={"reduction_method": method, "reduction_angle": float(a)},
+    )
+
+
 class BaseEstimator(ABC):
     """
     Abstract base class for scqat experimental/simulation estimators.

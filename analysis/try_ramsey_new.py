@@ -40,11 +40,10 @@ DS = load(DATA)
 
 # %% Per-experiment glue — prep (raw -> estimator input)
 def prep(sq: xr.Dataset) -> xr.Dataset:
-    # RamseyEstimator fits the 'signal' variable over the 'idle_time' coord. The node
-    # stores raw I/Q, or 'state' when state discrimination is on; use I as the signal
-    # (or state), matching LCH_Ramsey.analyse_data.
-    if "I" in sq:
-        return sq.rename({"I": "signal"})
+    # RamseyEstimator reduces raw I/Q to the signed axial projection onto the |0>-|1>
+    # axis (robust to the readout rotation); pass I/Q straight through over 'idle_time'.
+    # When state discrimination was on, the node stores a real 'state' population -> feed
+    # it as the estimator's pre-reduced 'signal', matching LCH_Ramsey.analyse_data.
     if "state" in sq:
         return sq.rename({"state": "signal"})
     return sq

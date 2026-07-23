@@ -15,10 +15,14 @@ swept ``y`` window and its ``fwhm`` / ``|amplitude|`` are not robust
 
 Result contract
 ---------------
-``{x, y, full_freq?, peak_x, peak_x_index, peak_y, peak_full_freq?, peak_fwhm,
-peak_amplitude, in_window, outlier, good, fwhm_median, fwhm_mad,
-peak_amplitude_median, peak_amplitude_mad, n_x, n_peaks, n_in_window, n_good,
-n_outlier}`` — the ``peak_*`` arrays are one flat point-cloud over all rows.
+``{x, y, reduced_map, ref_i, ref_q, full_freq?, peak_x, peak_x_index, peak_y,
+peak_full_freq?, peak_fwhm, peak_amplitude, in_window, outlier, good,
+fwhm_median, fwhm_mad, peak_amplitude_median, peak_amplitude_mad, n_x, n_peaks,
+n_in_window, n_good, n_outlier}`` — the ``peak_*`` arrays are one flat
+point-cloud over all rows; ``reduced_map (n_x, n_y)`` is the per-row REDUCED
+signal actually fitted (``|IQ - ref|`` for complex rows; NaN rows where the
+per-row fit raised); ``ref_i``/``ref_q (n_x,)`` are the per-row radial
+references (NaN for real-signal or failed rows).
 """
 
 from typing import Any, Dict, Optional
@@ -74,7 +78,13 @@ def track_peaks(
     signal_map = np.asarray(signal_map)
     has_full_freq = full_freq is not None
 
-    # Flat point-cloud of all peaks found across all rows.
+    # Flat point-cloud of all peaks found across all rows, plus the per-row
+    # REDUCED signal (what fit_peaks actually fitted: |IQ - ref| for complex rows,
+    # the real trace as-is otherwise) — the display-honest background map — and
+    # the per-row radial reference (NaN for real-signal rows / failed rows).
+    reduced_map = np.full((len(x), len(y)), np.nan, dtype=float)
+    ref_i = np.full(len(x), np.nan, dtype=float)
+    ref_q = np.full(len(x), np.nan, dtype=float)
     pk_x_idx, pk_x = [], []
     pk_y, pk_full_freq, pk_fwhm, pk_amplitude = [], [], [], []
     for k in range(len(x)):
@@ -82,6 +92,10 @@ def track_peaks(
             r = fit_peaks(y, signal_map[k], full_freq=full_freq, **peak_knobs)
         except Exception:
             continue  # fit-domain failure only: kwargs were validated up front
+        reduced_map[k] = np.asarray(r["signal"], dtype=float)
+        if r["ref_iq"] is not None:
+            ref_i[k] = float(np.real(r["ref_iq"]))
+            ref_q[k] = float(np.imag(r["ref_iq"]))
         for pk in r["peaks"]:
             pk_x_idx.append(k)
             pk_x.append(float(x[k]))
@@ -117,6 +131,9 @@ def track_peaks(
     results: Dict[str, Any] = {
         "x": x,
         "y": y,
+        "reduced_map": reduced_map,
+        "ref_i": ref_i,
+        "ref_q": ref_q,
         "peak_x": peak_x,
         "peak_x_index": peak_x_index,
         "peak_y": peak_y,

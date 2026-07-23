@@ -35,6 +35,19 @@ def test_tracks_drifting_ridge():
         assert yi == pytest.approx(np.interp(xi, x, centres), abs=1e6)
     # Row indices map back into x.
     np.testing.assert_allclose(x[r["peak_x_index"]], r["peak_x"])
+    # The per-row REDUCED signal (what fit_peaks fitted) is stacked for display,
+    # and each complex row carries its radial reference.
+    assert r["reduced_map"].shape == (len(x), len(y))
+    assert np.isfinite(r["reduced_map"]).all()
+    assert np.isfinite(r["ref_i"]).all() and np.isfinite(r["ref_q"]).all()
+
+
+def test_real_rows_have_no_ref():
+    """A real (already-reduced) signal map has no radial reference to report."""
+    x, y, signal_map, _ = _ridge_map(n_x=4)
+    r = track_peaks(x, y, np.abs(signal_map), max_peaks=1)
+    assert r["reduced_map"].shape == (4, len(y))
+    assert np.isnan(r["ref_i"]).all() and np.isnan(r["ref_q"]).all()
 
 
 def test_full_freq_threading():

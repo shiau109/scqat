@@ -34,6 +34,7 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
 from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks
+from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.qubit_spectroscopy.visualization import plot_spectrum
 
 
@@ -110,7 +111,11 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         else:
             signal = with_iqdata(dataset)["IQdata"].values.ravel()
 
-        return fit_peaks(detuning, signal, full_freq=full_freq, **kwargs)
+        results = fit_peaks(detuning, signal, full_freq=full_freq, **kwargs)
+        # provenance of the radial reference: a supplied IQ point vs the
+        # auto-estimated complex median (meaningful only for complex input)
+        results["ref_source"] = "supplied" if kwargs.get("ref") is not None else "median"
+        return results
 
     # ------------------------------------------------------------------
     # Metadata + plot data
@@ -121,6 +126,7 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         drop_peak = {"fit_x", "fit_y"}
         return {
             "ref_iq": results.get("ref_iq"),
+            "ref_source": results.get("ref_source"),
             "inverted": results["inverted"],
             "peaks": [
                 {k: v for k, v in pk.items() if k not in drop_peak}
@@ -152,6 +158,13 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         if ref_iq is not None:
             attrs["ref_iq_real"] = float(np.real(ref_iq))
             attrs["ref_iq_imag"] = float(np.imag(ref_iq))
+            attrs["ref_source"] = str(results.get("ref_source", "median"))
+
+        # the raw IQ cloud for the shared IQ-plane panel (complex input only)
+        if "IQdata" in dataset.data_vars or ("I" in dataset.data_vars and "Q" in dataset.data_vars):
+            iq = with_iqdata(dataset)["IQdata"].values.ravel()
+            data_vars["iq_i"] = ("detuning", np.real(iq).astype(float))
+            data_vars["iq_q"] = ("detuning", np.imag(iq).astype(float))
 
         if "full_freq" in dataset.coords:
             data_vars["full_freq"] = (
@@ -198,4 +211,7 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         """
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {"spectrum": plot_spectrum(plot_data)}
+        figs = {"spectrum": plot_spectrum(plot_data)}
+        if has_iq_plane(plot_data):
+            figs["iq_plane"] = plot_iq_plane(plot_data)
+        return figs

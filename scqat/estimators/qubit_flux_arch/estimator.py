@@ -43,6 +43,7 @@ import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator
+from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.qubit_spectroscopy_flux import (
     check_flux_dataset,
     flux_cloud_plotdata,
@@ -156,25 +157,48 @@ class QubitFluxArchEstimator(BaseEstimator):
             flux_lo = float(np.min(cloud["flux_bias"]))
             flux_hi = float(np.max(cloud["flux_bias"]))
             span = flux_hi - flux_lo
+            # The swept ABSOLUTE frequency window: the arch top must have been
+            # observed inside it (small extrapolation margin) — a top far outside
+            # the window was never measured and cannot be trusted, however well
+            # the optimizer "converged" (a wrong-basin fit reports exactly that).
+            freq_window_lo = float(np.min(cloud["full_freq"]))
+            freq_window_hi = float(np.max(cloud["full_freq"]))
+            freq_span = freq_window_hi - freq_window_lo
+            f01_max_hz = f01_max_ghz * 1e9
+            # The fitted curve must actually track the branch points: a wrong
+            # basin misses them by >> the swept span (unweighted redchi is
+            # unit-dependent and useless as a gate).
+            resid_ghz = y_ghz - fitter.model.eval(result.params, x=x)
+            rms_residual_hz = float(np.sqrt(np.mean(resid_ghz[used] ** 2)) * 1e9)
             arch.update(
                 {
                     "sweet_spot_flux": offset,
                     "flux_period": period,
                     "ej_sum_ghz": ej_sum,
                     "asymmetry_d": d,
-                    "f01_max_hz": f01_max_ghz * 1e9,
+                    "f01_max_hz": f01_max_hz,
                     "offset_stderr": float(result.params["offset"].stderr or np.nan),
                     "period_stderr": float(result.params["period"].stderr or np.nan),
                     "ej_sum_stderr_ghz": float(result.params["Ej_sum"].stderr or np.nan),
                     "redchi": float(result.redchi),
+                    "rms_residual_hz": rms_residual_hz,
+                    "freq_window_lo_hz": freq_window_lo,
+                    "freq_window_hi_hz": freq_window_hi,
                     "n_used": int(used.sum()),
                     "sel_flux": x, "sel_freq_hz": freq_hz[sel_arr], "sel_used": used,
-                    # physical gates: converged, positive scales, sweet spot not
-                    # absurdly far outside the swept window
+                    # physical gates — the arch TOP must have been OBSERVED, in
+                    # both axes: converged, positive scales, sweet spot inside the
+                    # swept flux window (+10% margin), arch top inside the swept
+                    # FREQUENCY window (+15% margin), and the curve tracking the
+                    # points (RMS residual <= span/4). Flank-only or wrong-basin
+                    # fits extrapolate the top — untrustworthy however well the
+                    # optimizer "converged".
                     "success": bool(result.success)
                     and period > 0
                     and ej_sum > 0
-                    and (flux_lo - span) < offset < (flux_hi + span),
+                    and (flux_lo - 0.1 * span) <= offset <= (flux_hi + 0.1 * span)
+                    and freq_window_lo <= f01_max_hz <= freq_window_hi + 0.15 * freq_span
+                    and rms_residual_hz <= 0.25 * freq_span,
                 }
             )
             fit_flux = np.linspace(flux_lo, flux_hi, 201)
@@ -200,7 +224,8 @@ class QubitFluxArchEstimator(BaseEstimator):
         }
         for key in ("sweet_spot_flux", "flux_period", "ej_sum_ghz", "asymmetry_d",
                     "f01_max_hz", "offset_stderr", "period_stderr",
-                    "ej_sum_stderr_ghz", "redchi"):
+                    "ej_sum_stderr_ghz", "redchi", "rms_residual_hz",
+                    "freq_window_lo_hz", "freq_window_hi_hz"):
             if key in arch:
                 meta[key] = float(arch[key])
         return meta
@@ -239,4 +264,7 @@ class QubitFluxArchEstimator(BaseEstimator):
     ) -> Dict[str, plt.Figure]:
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {"qubit_flux_arch": plot_arch(plot_data)}
+        figs = {"qubit_flux_arch": plot_arch(plot_data)}
+        if has_iq_plane(plot_data):
+            figs["iq_plane"] = plot_iq_plane(plot_data)
+        return figs

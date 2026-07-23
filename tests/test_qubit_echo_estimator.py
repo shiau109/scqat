@@ -16,6 +16,23 @@ def _make_decay(t2e=50e-6, a=0.8, c=0.1, n=101, t_max=250e-6, noise_std=0.0):
     return xr.Dataset({"signal": ("idle_time", y)}, coords={"idle_time": t})
 
 
+def _make_decay_iq(t2e=50e-6, theta=0.9, n=101, t_max=250e-6, sep=3.0, c_frac=0.1,
+                   noise_std=0.0, seed=13):
+    """Echo decay placed in the IQ plane at readout rotation ``theta``."""
+    t = np.linspace(0.0, t_max, n)
+    P = c_frac + (1.0 - c_frac) * np.exp(-t / t2e)
+    d = sep * np.exp(1j * theta)
+    pos0 = -0.4 + 0.9j
+    z = pos0 + P * d
+    if noise_std > 0:
+        rng = np.random.default_rng(seed)
+        z = z + noise_std * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+    return xr.Dataset(
+        {"I": ("idle_time", np.real(z)), "Q": ("idle_time", np.imag(z))},
+        coords={"idle_time": t},
+    )
+
+
 class TestQubitEchoEstimator:
     def test_noiseless_recovery(self):
         t2e = 50e-6
@@ -32,6 +49,16 @@ class TestQubitEchoEstimator:
         )
         assert results["success"]
         assert results["t2_echo"] == pytest.approx(t2e, rel=0.15)
+
+    @pytest.mark.parametrize("theta", [0.3, 1.4, -2.0])
+    def test_recovery_from_iq(self, theta):
+        t2e = 50e-6
+        results, _ = QubitEchoEstimator().analyze(
+            _make_decay_iq(t2e=t2e, theta=theta), skip_figures=True
+        )
+        assert results["success"]
+        assert results["t2_echo"] == pytest.approx(t2e, rel=0.05)
+        assert results["reduction_method"] == "pca"
 
     def test_metadata_drops_arrays(self):
         est = QubitEchoEstimator()
