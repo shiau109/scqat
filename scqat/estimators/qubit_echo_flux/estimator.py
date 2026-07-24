@@ -22,15 +22,15 @@ class QubitEchoFluxEstimator(BaseEstimator):
             raise ValueError("T2 echo vs flux estimator requires a 'signal' data variable")
         if "wait_time" not in dataset.coords:
             raise ValueError("T2 echo vs flux estimator requires a 'wait_time' coordinate (seconds)")
-        if "flux_amp" not in dataset.coords:
-            raise ValueError("T2 echo vs flux estimator requires a 'flux_amp' coordinate")
+        if "flux_bias" not in dataset.coords:
+            raise ValueError("T2 echo vs flux estimator requires a 'flux_bias' coordinate (V)")
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
-        flux_amps = dataset["flux_amp"].values
+        flux_biases = dataset["flux_bias"].values
         wait_times = dataset["wait_time"].values
         signal = dataset["signal"].values
         
-        n_flux = len(flux_amps)
+        n_flux = len(flux_biases)
         t2_arr = np.zeros(n_flux)
         t2_stderr_arr = np.zeros(n_flux)
         amp_arr = np.zeros(n_flux)
@@ -87,7 +87,7 @@ class QubitEchoFluxEstimator(BaseEstimator):
             best_fit[idx, :] = fit_curve
             
         return {
-            "flux_amp": flux_amps.tolist(),
+            "flux_bias": flux_biases.tolist(),
             "t2_echo": t2_arr.tolist(),
             "t2_echo_stderr": t2_stderr_arr.tolist(),
             "amplitude": amp_arr.tolist(),
@@ -104,12 +104,12 @@ class QubitEchoFluxEstimator(BaseEstimator):
     ) -> Optional[xr.Dataset]:
         return xr.Dataset(
             {
-                "signal": (("flux_amp", "wait_time"), np.asarray(dataset["signal"].values, dtype=float)),
-                "best_fit": (("flux_amp", "wait_time"), np.asarray(results["best_fit"], dtype=float)),
-                "t2_echo": ("flux_amp", np.asarray(results["t2_echo"], dtype=float)),
+                "signal": (("flux_bias", "wait_time"), np.asarray(dataset["signal"].values, dtype=float)),
+                "best_fit": (("flux_bias", "wait_time"), np.asarray(results["best_fit"], dtype=float)),
+                "t2_echo": ("flux_bias", np.asarray(results["t2_echo"], dtype=float)),
             },
             coords={
-                "flux_amp": np.asarray(dataset["flux_amp"].values, dtype=float),
+                "flux_bias": np.asarray(dataset["flux_bias"].values, dtype=float),
                 "wait_time": np.asarray(dataset["wait_time"].values, dtype=float),
             },
         )
