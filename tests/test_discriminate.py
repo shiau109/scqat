@@ -37,11 +37,11 @@ def test_two_blob_training_recovers_truth():
 
     mean = np.asarray(r["trained_paras"]["mean"])
     # Each true centre is identified by one trained centre (order-free match).
-    # Centres are PINNED at the per-state histogram maxima (vary=False in the
-    # GMM), so their accuracy is bin/noise-limited ~1 sigma — the contract is
-    # "right blob", not sub-bin precision (blob separation here is 6 sigma).
+    # The coarse-histogram-argmax seed is refined onto each blob's density peak by
+    # mean-shift, so the centre is now SUB-sigma accurate (was bin-limited ~1 sigma
+    # when the seed was frozen). Symmetric Gaussian blobs => peak == truth.
     d = np.linalg.norm(mean[:, None, :] - centers[None, :, :], axis=-1)
-    assert d.min(axis=0).max() < 1.5
+    assert d.min(axis=0).max() < 0.4
     assert r["trained_paras"]["std"] == pytest.approx(sigma, rel=0.3)
 
     # Confusion diagonal ~ 1 - mislabel; labels/outliers per-shot shaped.
@@ -56,6 +56,46 @@ def test_two_blob_training_recovers_truth():
     # (inflated a little by the bin-limited pinned centre).
     assert np.all(r["outlier_probability"] < 0.10)
     assert np.all(np.isfinite(r["norm_res"]))
+
+
+def _skewed_blobs(n_shot=2000, sep=6.0, sigma=1.0, tail_frac=0.25,
+                  tail_shift=(0.0, 2.5), seed=0):
+    """Two prepared states, each a dense Gaussian CORE at its centre plus a
+    low-density TAIL offset perpendicular to the g->e axis (models T1 smear /
+    |2> leakage). The core peak sits at the centre; the sample centroid is pulled
+    toward the tail — so mode != centroid, the case that separates the two."""
+    rng = np.random.default_rng(seed)
+    centers = np.array([[0.0, 0.0], [sep, 0.0]])
+    I = np.empty((2, n_shot))
+    Q = np.empty((2, n_shot))
+    for s in range(2):
+        is_tail = rng.random(n_shot) < tail_frac
+        cx = centers[s, 0] + np.where(is_tail, tail_shift[0], 0.0)
+        cy = centers[s, 1] + np.where(is_tail, tail_shift[1], 0.0)
+        I[s] = cx + sigma * rng.standard_normal(n_shot)
+        Q[s] = cy + sigma * rng.standard_normal(n_shot)
+    return I, Q, centers, sigma
+
+
+def test_mode_refine_finds_peak_not_tail():
+    """A skewed blob (dense core + low-density tail): the trained centre must land
+    on the core density PEAK (mode), not drift toward the tail like the centroid
+    would. This is the fix for the coarse-argmax seed being frozen off the peak."""
+    I, Q, centers, sigma = _skewed_blobs()
+    r = discriminate_states(I, Q)
+    mean = np.asarray(r["trained_paras"]["mean"])
+
+    order = np.argmin(np.linalg.norm(mean[:, None, :] - centers[None, :, :], axis=-1), axis=0)
+    for s in range(2):
+        refined = mean[order[s]]
+        centroid = np.array([I[s].mean(), Q[s].mean()])
+        peak = centers[s]
+        # mean-shift lands on the core peak...
+        assert np.linalg.norm(refined - peak) < 0.4 * sigma
+        # ...and is meaningfully closer to it than the tail-pulled centroid
+        assert np.linalg.norm(refined - peak) < np.linalg.norm(centroid - peak)
+        # sanity: the tail really does displace the centroid (mode != centroid here)
+        assert abs(centroid[1] - peak[1]) > 0.4 * sigma
 
 
 def test_direct_counts_fixed_shape_when_a_center_captures_nothing():

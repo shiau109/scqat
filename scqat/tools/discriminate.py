@@ -9,11 +9,12 @@ than one estimator lives in tools/"), it lives here — estimators compose it,
 they never call each other.
 
 Pipeline (single method): robust (MAD) per-state blob width -> 2-D histogram
-binning -> global 2-D multi-Gaussian fit
-(:class:`scqat.tools.fit_gaussian2d.FitMultiGaussian2D`; centres seeded from
-the per-state density maxima, or pinned by ``user_mean``/``user_std``) ->
-per-state amplitude refit -> nearest-centre shot assignment -> confusion
-fractions + n-sigma outlier tagging.
+binning -> centres seeded from the per-state density maxima then refined onto
+each blob's density PEAK by nearest-centre-confined mean-shift (:func:`_mode_refine`;
+skipped when ``user_mean`` pins the centres) -> global 2-D multi-Gaussian fit
+(:class:`scqat.tools.fit_gaussian2d.FitMultiGaussian2D`; centres pinned, one
+shared width + per-Gaussian amplitude vary) -> per-state amplitude refit ->
+nearest-centre shot assignment -> confusion fractions + n-sigma outlier tagging.
 
 Result contract
 ---------------
@@ -108,6 +109,57 @@ def _bin_histograms(I: np.ndarray, Q: np.ndarray, user_std: Optional[float]):
     return density, xcenters, ycenters, np.array(mean_init), std_init
 
 
+def _mode_refine(pts: np.ndarray, center: np.ndarray, bandwidth: float,
+                 n_iter: int = 50, tol: float = 1e-3) -> np.ndarray:
+    """Gaussian mean-shift: climb from ``center`` to the local density PEAK of
+    ``pts``.
+
+    Each step moves to the Gaussian-kernel-weighted mean
+    ``sum(w_i * pts_i) / sum(w_i)`` with ``w_i = exp(-|pts_i - c|**2 / 2h**2)``.
+    Because the kernel falls off with distance, a low-density tail (readout T1
+    smear, |2> leakage) is down-weighted and the fixed point is the MODE, not the
+    centroid — the accurate density peak, robust to skew. ``pts`` is ``(N, 2)``;
+    ``bandwidth`` is the blob width (the robust sigma). Returns ``center``
+    unchanged for an empty ``pts`` (a centre that captured no shot)."""
+    c = np.asarray(center, dtype=float)
+    if pts.shape[0] == 0:
+        return c
+    h2 = 2.0 * bandwidth ** 2
+    for _ in range(n_iter):
+        w = np.exp(-((pts - c) ** 2).sum(axis=1) / h2)
+        total = w.sum()
+        if total == 0:
+            break
+        nxt = (w[:, None] * pts).sum(axis=0) / total
+        if np.hypot(*(nxt - c)) < tol * bandwidth:
+            c = nxt
+            break
+        c = nxt
+    return c
+
+
+def _refine_centres(I: np.ndarray, Q: np.ndarray, seed: np.ndarray,
+                    bandwidth: float, n_pass: int = 2) -> np.ndarray:
+    """Move each seed centre onto its blob's density peak (mean-shift), keeping
+    the blobs separate via nearest-centre hard assignment.
+
+    Mean-shift on the POOLED shots would let two close (~2 sigma) centres collapse
+    onto one merged mode; assigning each shot to its nearest centre first confines
+    each mean-shift to its own blob. Two passes (reassign after moving) remove the
+    small assignment-boundary bias. Auto-seed path only — a pinned ``user_mean`` is
+    never refined."""
+    pts = np.column_stack([I.ravel(), Q.ravel()])
+    centres = np.asarray(seed, dtype=float).copy()
+    for _ in range(n_pass):
+        dist = np.stack([np.hypot(pts[:, 0] - c[0], pts[:, 1] - c[1]) for c in centres])
+        label = dist.argmin(axis=0)
+        centres = np.array([
+            _mode_refine(pts[label == k], centres[k], bandwidth)
+            for k in range(len(centres))
+        ])
+    return centres
+
+
 def _gmm_fit(density: np.ndarray, x: np.ndarray, y: np.ndarray,
              mean: Sequence, std: float):
     """One constrained multi-Gaussian fit: centres pinned, one shared width."""
@@ -167,6 +219,15 @@ def discriminate_states(
 
     # 1. Bin into per-state 2-D histograms (+ centre/width seeds)
     density, hist_x, hist_y, mean_init, std_init = _bin_histograms(I, Q, user_std)
+
+    # 1b. Refine the coarse-histogram-argmax seed onto each blob's density PEAK
+    # (mean-shift). The seed is quantized to a ~sigma/3 bin and, with overlapping
+    # or skewed blobs, lands a fraction of sigma off the true peak; the GMM fit
+    # below pins the centres, so without this step that error is frozen into the
+    # reported mean (and, downstream, the stored readout reference + discriminator
+    # rotation). A user-pinned centre is taken verbatim (no refinement).
+    if user_mean is None:
+        mean_init = _refine_centres(I, Q, mean_init, user_std if user_std else std_init)
 
     # 2. Train the global GMM model
     if user_mean is not None and user_std is not None:
