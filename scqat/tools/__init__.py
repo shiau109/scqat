@@ -25,6 +25,7 @@ from .discriminate import (
     discriminate_states,
     validate_discriminate_kwargs,
 )
+from .ge_discriminator import compute_ge_discriminator
 from .ramsey_fit import RAMSEY_MODELS, fit_ramsey
 from . import fit_abscos  # noqa: F401
 from . import fit_cosine  # noqa: F401
