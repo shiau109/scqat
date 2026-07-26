@@ -274,7 +274,7 @@ Who consumes each tool (re-check with `grep -rl "tools.<x>" scqat/estimators/`):
 | `discriminate` | qubit_tomography, readout_fidelity, state_discrimination |
 | `hankel_analysis` | none — workflows only; `tests/test_hankel_analysis.py` alone |
 
-**Coverage gap — do not paper over it.** 9 of 28 estimators are imported by NO test, by module
+**Coverage gap — do not paper over it.** 9 of 27 estimators are imported by NO test, by module
 path or exported class: `ac_stark_shift`, `charge_gate_ramsey`, `qubit_decoherence`,
 `qubit_drag_equator`, `qubit_drag_alternating`, `qubit_sqrb`, `readout_pulse_photon`,
 `single_state_outlier`, `zz_interaction`. If the edit is in one of them, say so plainly instead of
@@ -286,7 +286,7 @@ promotion checklist already requires "`simulate()` implemented → offline end-t
 — name-matching `ls tests/` is NOT enough (`test_fit_qubit_decoherence.py` tests the *fitter*,
 not the estimator; `test_qubit_tomography.py` imports only the class name).
 
-The **full suite** (`uv run --extra dev pytest -q`, ~102 s / 283 tests) is for cutting a release or
+The **full suite** (`uv run --extra dev pytest -q`, ~53 s / 296 tests) is for cutting a release or
 a shared-core edit (row 5). Otherwise **report the exact command run** and offer the full-suite
 command rather than spending the time unasked.
 
