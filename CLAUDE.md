@@ -248,6 +248,48 @@ All fitters inherit from `FunctionFitting` (in
 4. Write `pytest` tests in `tests/` for the new fitter (estimator-level tests are
    optional).
 
+### Testing discipline — run only what the edit can break
+Command (from `D:\github\scqat`): `uv run --extra dev pytest tests/test_ramsey_estimator.py -q`.
+**`--extra dev` is required** — pytest is an optional-dependency extra, so bare `uv run pytest`
+dies with `Failed to spawn: pytest`. Tests are named after what they test, so selection is by
+**file name**, not `-k`. The blast radius follows the import arrow (rule 3): an estimator edit is
+local; a `tools/` edit reaches every family that imports it.
+
+| Edited | Run |
+|---|---|
+| `estimators/<name>/` | `tests/test_<name>_estimator.py` (naming varies — also `test_qubit_tomography.py`, `test_resonator_spectroscopy_flux_composite.py`) |
+| a `methods/` strategy or a `METHODS` registry | that estimator's test file (it holds the cross-method agreement test, **Multi-method** rule 6) **+ SCQO's `tests/test_estimator_method_sync.py`** — the mirrored Literal lives in the *other* repo and nothing else catches the drift |
+| `tools/<x>.py` | `tests/test_<x>.py` **+ every consuming family's test file** (below) |
+| estimator↔tool structure (new subpackage, moved import) | add `tests/test_no_estimator_layering.py` — the static capstone for "estimators never call estimators" |
+| `core/base_estimator.py`, `tools/function_fitting.py`, `estimators/__init__.py` | **full suite** — the `analyze()` orchestrator, the `FunctionFitting` base of every fitter, and the aggregate import touch everything |
+
+Who consumes each tool (re-check with `grep -rl "tools.<x>" scqat/estimators/`):
+
+| tool | consuming estimator families |
+|---|---|
+| `dip_fit` | resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power |
+| `peak_fit` | ac_stark_shift, parametric_drive_resonance, qubit_spectroscopy, qubit_spectroscopy_flux, readout_pulse_photon |
+| `peak_map` | parametric_drive_resonance, qubit_spectroscopy_flux (+ `tests/test_flux_ref_scope.py`, which covers `track_flux_peaks`) |
+| `iq_reduce` | power_rabi, qubit_echo, qubit_relaxation, qubit_spectroscopy_flux, ramsey (+ `tests/test_stored_positions.py`, the `reduced_signal` priority chain) |
+| `discriminate` | qubit_tomography, readout_fidelity, state_discrimination |
+| `hankel_analysis` | none — workflows only; `tests/test_hankel_analysis.py` alone |
+
+**Coverage gap — do not paper over it.** 9 of 28 estimators are imported by NO test, by module
+path or exported class: `ac_stark_shift`, `charge_gate_ramsey`, `qubit_decoherence`,
+`qubit_drag_equator`, `qubit_drag_alternating`, `qubit_sqrb`, `readout_pulse_photon`,
+`single_state_outlier`, `zz_interaction`. If the edit is in one of them, say so plainly instead of
+reporting a targeted run as though it proved something. **This is deliberate, not neglect:** these
+are not yet part of the scqo system, and each gets its tests when it is promoted in — SCQO's
+promotion checklist already requires "`simulate()` implemented → offline end-to-end test in
+`tests/`". Do not open a campaign to backfill them. Re-derive the list with:
+`for e in $(ls scqat/estimators/ | grep -v '\.py\|__'); do ... grep -rlE "estimators\.$e\b|\b<Class>\b" tests/; done`
+— name-matching `ls tests/` is NOT enough (`test_fit_qubit_decoherence.py` tests the *fitter*,
+not the estimator; `test_qubit_tomography.py` imports only the class name).
+
+The **full suite** (`uv run --extra dev pytest -q`, ~102 s / 283 tests) is for cutting a release or
+a shared-core edit (row 5). Otherwise **report the exact command run** and offer the full-suite
+command rather than spending the time unasked.
+
 ## Offline analysis on saved data (`analysis/`)
 Iterate on estimators against **real saved runs** (`ds_raw.h5` / `plotdata_*.h5` produced by a
 driver such as LCHQM) without re-running hardware. The reusable engine is
