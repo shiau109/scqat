@@ -6,7 +6,8 @@ import numpy as np
 from scipy.optimize import curve_fit
 import xarray as xr
 
-from scqat.core.base_estimator import BaseEstimator
+from scqat.core.base_estimator import BaseEstimator, reduced_signal
+from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
 from scqat.estimators.qubit_deterministic_benchmarking.visualization import plot_deterministic_benchmarking
 
 
@@ -14,44 +15,84 @@ def damped_cosine_zero_phase(n, A, gamma, omega, C):
     return A * np.exp(-gamma * n) * np.cos(omega * n) + C
 
 
+def _oriented_unit(trace: np.ndarray) -> np.ndarray:
+    """One trace rescaled to [0, 1] and oriented so N=0 sits at the MAXIMUM.
+
+    The sequence starts in |0>, so the zero-repetition point is an extremum by
+    construction. :func:`damped_cosine_zero_phase` fixes ``phi = 0`` and the fit
+    bounds ``A >= 0``, so the model can only describe a trace that starts HIGH —
+    orienting here is what stops the fit collapsing onto the flat ``A ~ 0`` bound.
+    (``PowerRabiEstimator`` hits the same ``a >= 0`` trap and solves it by fitting
+    both phase seeds; here the physics pins the phase, so orientation is the fix.)
+    """
+    lo, hi = float(np.min(trace)), float(np.max(trace))
+    span = hi - lo
+    if span <= 1e-12:
+        return np.full_like(trace, 0.5, dtype=float)
+    unit = (trace - lo) / span
+    return unit if unit[0] >= 0.5 else 1.0 - unit
+
+
 class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
-    """Estimate pulse amplitude scaling factor using zero-phase damped cosine fit."""
+    """Estimate pulse amplitude scaling factor using zero-phase damped cosine fit.
+
+    Expects an xarray.Dataset with:
+        - Variables: complex ``IQdata`` (or both ``I`` and ``Q``) — reduced to the
+          signed axial projection onto the |0>-|1> axis — OR a pre-reduced real
+          ``signal`` (an already-discriminated state/population).
+        - Coordinate: ``repetition`` (gate repetition count N), optionally
+          ``amp_factor`` (amplitude scaling sweep).
+    """
 
     estimator_name = "qubit_deterministic_benchmarking"
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         if "repetition" not in dataset.coords:
             raise ValueError("Deterministic benchmarking estimator requires a 'repetition' coordinate")
+        has_iq = "IQdata" in dataset.data_vars or ("I" in dataset.data_vars and "Q" in dataset.data_vars)
+        if "signal" not in dataset.data_vars and not has_iq:
+            raise ValueError(
+                "Deterministic benchmarking analysis requires a 'signal' variable, or "
+                "complex 'IQdata', or both 'I' and 'Q'."
+            )
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
+        """Fit the repetition trace at each amplitude factor.
+
+        Kwargs — flat and fully owned; unknown names raise:
+            angle, positions, pca_sign
+                IQ->1-D axial-reduction knobs (see :func:`scqat.tools.iq_reduce.axial`);
+                ignored when the dataset already carries a real ``signal``.
+        """
+        validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
         reps = np.asarray(dataset["repetition"].values, dtype=float)
-        if "amp_factor" in dataset.coords:
-            amp_factors = np.asarray(dataset["amp_factor"].values, dtype=float)
+
+        # Raw I is NOT the signal: the readout blobs sit at an arbitrary rotation in
+        # the IQ plane, so reducing onto the |0>-|1> axis is what makes the trace mean
+        # "population" at all. `reduced_signal` passes a pre-reduced `signal` through
+        # untouched and axially reduces I/Q otherwise.
+        #
+        # It is 1-D by construction (it takes `iq.dims[0]` as THE sweep axis), and this
+        # is the first estimator with a 2-D sweep — so reduce ONE repetition trace at a
+        # time instead of widening shared core. `_oriented_unit` rescales each trace
+        # independently anyway, so a per-trace reduction axis costs nothing here.
+        if "amp_factor" in dataset.dims:
+            amp_factors = np.asarray(dataset["amp_factor"].values, dtype=float).reshape(-1)
+            slices = [dataset.isel(amp_factor=j) for j in range(amp_factors.size)]
         else:
-            amp_factors = np.array([1.0])
+            # amp_factor absent, or already squeezed to a scalar coord
+            amp_factors = (
+                np.atleast_1d(np.asarray(dataset["amp_factor"].values, dtype=float))
+                if "amp_factor" in dataset.coords
+                else np.array([1.0])
+            )
+            slices = [dataset]
 
-        if "state" in dataset.data_vars:
-            raw_data = dataset["state"].values
-            unit_str = "P0"
-
-            def to_pz(arr):
-                m = np.mean(arr)
-                if m < 0.0 or m > 1.0:
-                    return np.clip(1.0 - arr, 0.0, 1.0)
-                return np.clip(arr, 0.0, 1.0)
-        else:
-            var_name = "I" if "I" in dataset.data_vars else list(dataset.data_vars.keys())[0]
-            raw_data = dataset[var_name].values
-            unit_str = var_name
-
-            def to_pz(arr):
-                d_min, d_max = np.min(arr), np.max(arr)
-                return (arr - d_min) / (d_max - d_min) if d_max > d_min else np.full_like(arr, 0.5)
-
-        if raw_data.ndim == 1:
-            pz_data = to_pz(raw_data)[np.newaxis, :]
-        else:
-            pz_data = np.array([to_pz(raw_data[i]) for i in range(len(amp_factors))])
+        unit_str = "P0"
+        pz_data = np.array([
+            _oriented_unit(np.asarray(reduced_signal(s, **kwargs).values, dtype=float))
+            for s in slices
+        ])
 
         num_amps = len(amp_factors)
         omegas, signed_omegas, gammas, fit_curves = [], [], [], []
