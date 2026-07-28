@@ -29,6 +29,41 @@ from scqat.estimators.qubit_relaxation_flux import QubitRelaxationFluxEstimator
 from scqat.estimators.qubit_echo_flux import QubitEchoFluxEstimator
 from scqat.estimators.qubit_drag_equator import QubitDragEquatorEstimator
 from scqat.estimators.qubit_drag_alternating import QubitDragAlternatingEstimator
+from scqat.estimators.qubit_deterministic_benchmarking import QubitDeterministicBenchmarkingEstimator
+
+__all__ = [
+    "QubitDecoherenceEstimator",
+    "StateDiscriminationEstimator",
+    "RamseyEstimator",
+    "QubitRelaxationEstimator",
+    "QubitEchoEstimator",
+    "PowerRabiEstimator",
+    "ChargeGateRamseyEstimator",
+    "SingleStateOutlierEstimator",
+    "QubitSpectroscopyEstimator",
+    "QubitSpectroscopyFluxEstimator",
+    "QubitFluxArchEstimator",
+    "ResonatorSpectroscopyEstimator",
+    "ResonatorSpectroscopyPowerEstimator",
+    "ResonatorSpectroscopyFluxEstimator",
+    "ZZInteractionEchoEstimator",
+    "ReadoutFidelityEstimator",
+    "ReadoutPowerFidelityEstimator",
+    "ReadoutFreqFidelityEstimator",
+    "AcStarkShiftEstimator",
+    "ReadoutPulsePhotonEstimator",
+    "ParametricDriveDecoherenceEstimator",
+    "ParametricDriveResonanceEstimator",
+    "SwapOscillationEstimator",
+    "QubitTomographyEstimator",
+    "QubitSQRBEstimator",
+    "QubitRelaxationFluxEstimator",
+    "QubitEchoFluxEstimator",
+    "QubitDragEquatorEstimator",
+    "QubitDragAlternatingEstimator",
+    "QubitDeterministicBenchmarkingEstimator",
+]
+
 
 
 
