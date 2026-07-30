@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from scqat.core.base_estimator import BaseEstimator
 from scqat.tools.discriminate import DISCRIMINATE_KNOBS, discriminate_states
 from scqat.estimators.state_discrimination import state_iq_arrays
+from scqat.estimators._twin_axis import TWIN_KNOBS, twin_values
 from scqat.estimators.readout_fidelity.visualization import (
     plot_outlier_vs_sweep,
     plot_std_vs_sweep,
@@ -52,6 +53,11 @@ class ReadoutFidelityEstimator(BaseEstimator):
     estimator_name = "readout_fidelity"
     sweep_coord: Optional[str] = None  # subclasses set this; or pass sweep_coord kwarg
     fidelity_floor: float = 0.5  # below this the best point is flagged unsuccessful
+    #: optional companion scale for the swept axis — a coordinate over the same
+    #: points plus its label, drawn as a secondary axis (see
+    #: :mod:`scqat.estimators._twin_axis`). Overridable per call via kwargs.
+    twin_coord: Optional[str] = None
+    twin_label: Optional[str] = None
 
     # ------------------------------------------------------------------
     def _resolve_coord(self, kwargs: Dict[str, Any]) -> str:
@@ -83,18 +89,24 @@ class ReadoutFidelityEstimator(BaseEstimator):
                 :func:`scqat.tools.discriminate.discriminate_states`.
             outliers_threshold (float): Selection constraint consumed by
                 :class:`ReadoutPowerFidelityEstimator` (accepted, unused here).
+            twin_coord, twin_label: optional companion scale for the swept axis
+                (see :mod:`scqat.estimators._twin_axis`) — a coordinate over the
+                same points plus its axis label. Absent/non-finite/non-monotone is
+                simply not drawn.
 
         Returns the sweep axis, per-sweep arrays, and the best point:
             sweep_coord (name), sweep_values (S,),
             std (S,), mean (S, center, iq), p_outlier (S, prepared_state),
             norm_res (S, prepared_state), gaussian_norms (S, prepared_state, gauss),
             direct_counts (S, prepared_state, count), fidelity (S,), snr (S,),
-            failed (S,), best_index, best_sweep_value, best_fidelity, success.
+            failed (S,), best_index, best_sweep_value, best_fidelity, success —
+            plus twin_values / twin_label / best_twin_value when a drawable
+            companion scale was supplied.
         """
         coord = self._resolve_coord(kwargs)
         # Fail loudly BEFORE any per-slice fit — a typo'd knob must never be
-        # swallowed by the per-slice try/except.
-        valid = DISCRIMINATE_KNOBS | {'sweep_coord', 'outliers_threshold'}
+        # swallowed by the per-slice try/except. Unioned, never loosened.
+        valid = DISCRIMINATE_KNOBS | {'sweep_coord', 'outliers_threshold'} | TWIN_KNOBS
         unknown = set(kwargs) - valid
         if unknown:
             raise ValueError(
@@ -147,6 +159,21 @@ class ReadoutFidelityEstimator(BaseEstimator):
         }
         results['snr'] = self._snr_curve(results['mean'], results['std'])
         self._set_best(results, **kwargs)
+
+        # the optional companion scale. Indexed identically to sweep_values, so the
+        # answer needs a lookup, not an interpolation. Keys are absent entirely when
+        # it is not drawable, so consumers test with `if key in results`.
+        twin = twin_values(dataset, coord, kwargs.get('twin_coord', self.twin_coord))
+        if twin is not None:
+            results['twin_values'] = twin
+            results['twin_label'] = str(
+                kwargs.get('twin_label', self.twin_label)
+                or kwargs.get('twin_coord', self.twin_coord)
+            )
+            idx = results.get('best_index')
+            results['best_twin_value'] = (
+                float(twin[idx]) if idx is not None else None
+            )
         return results
 
     @staticmethod
@@ -223,7 +250,13 @@ class ReadoutFidelityEstimator(BaseEstimator):
             'sweep_coord', 'sweep_values', 'fidelity', 'snr',
             'best_index', 'best_sweep_value', 'best_fidelity', 'success',
         )
-        return {k: results.get(k) for k in keep}
+        metadata = {k: results.get(k) for k in keep}
+        # the answer in the companion scale rides along; the per-point twin array
+        # stays out, like the other bulky per-slice arrays
+        for key in ('twin_label', 'best_twin_value'):
+            if key in results:
+                metadata[key] = results[key]
+        return metadata
 
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
@@ -278,6 +311,13 @@ class ReadoutFidelityEstimator(BaseEstimator):
         if results.get('best_sweep_value') is not None:
             attrs['best_sweep_value'] = float(results['best_sweep_value'])
             attrs['best_fidelity'] = float(results['best_fidelity'])
+        # the companion scale + its label, so every sweep figure can draw the
+        # secondary axis from plot_data ALONE (the self-enforcing rule)
+        if results.get('twin_values') is not None:
+            data_vars['twin'] = (coord, np.asarray(results['twin_values'], dtype=float))
+            attrs['twin_label'] = str(results.get('twin_label', ''))
+            if results.get('best_twin_value') is not None:
+                attrs['best_twin_value'] = float(results['best_twin_value'])
         return xr.Dataset(data_vars, coords=coords, attrs=attrs)
 
     def generate_figures(

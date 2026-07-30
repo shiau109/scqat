@@ -163,3 +163,30 @@ class TestPowerRabiEstimator:
         labels = [t.get_text() for t in figs["iq_plane"].axes[0].get_legend().get_texts()]
         assert "|0> position (stored)" in labels and "|1> position (stored)" in labels
         plt.close("all")
+
+
+def test_an_unbracketed_optimum_is_not_a_success():
+    """The pi point must sit STRICTLY INSIDE the swept window.
+
+    ``opt_amp_prefactor`` is an argmax over the swept array, so when the true pi
+    lies beyond the window the argmax pins to the last point and the fit looks
+    fine. Reporting that as a success hands the caller the window EDGE dressed up
+    as a calibration. (This replaced a hardcoded ``0 < opt < 2``, which happened
+    to be the same test only for a 0..2 window.)
+    """
+    # true pi at 2.4, window stops at 1.5: the population is still rising there,
+    # so the argmax pins to the last swept point
+    ds = _make_ds(factor_pi=2.4, amp_min=0.0, amp_max=1.5, n=120)
+    results = PowerRabiEstimator().extract_parameters(ds)
+    assert results["opt_amp_prefactor"] == pytest.approx(1.5, abs=1e-9)
+    assert results["success"] is False
+
+
+def test_a_bracketed_optimum_off_the_old_hardcoded_range_still_succeeds():
+    """The old gate hardcoded ``opt < 2``, so a window that legitimately extends
+    past 2 could not report success no matter how clean the fit. The window is
+    the authority now, not a constant."""
+    ds = _make_ds(factor_pi=2.4, amp_min=0.0, amp_max=3.0, n=200)
+    results = PowerRabiEstimator().extract_parameters(ds)
+    assert results["opt_amp_prefactor"] == pytest.approx(2.4, abs=0.05)
+    assert results["success"] is True

@@ -8,6 +8,7 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, reduced_signal
 from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
+from scqat.estimators._twin_axis import twin_at, twin_values
 from scqat.estimators.qubit_deterministic_benchmarking.visualization import plot_deterministic_benchmarking
 
 
@@ -41,10 +42,15 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
           signed axial projection onto the |0>-|1> axis — OR a pre-reduced real
           ``signal`` (an already-discriminated state/population).
         - Coordinate: ``repetition`` (gate repetition count N), optionally
-          ``amp_factor`` (amplitude scaling sweep).
+          ``amp_prefactor`` (amplitude scaling sweep).
     """
 
     estimator_name = "qubit_deterministic_benchmarking"
+
+    #: optional companion scale for the amplitude axis — a coordinate over the same
+    #: points plus its label (see :mod:`scqat.estimators._twin_axis`).
+    twin_coord: Optional[str] = None
+    twin_label: Optional[str] = None
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         if "repetition" not in dataset.coords:
@@ -63,7 +69,15 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
             angle, positions, pca_sign
                 IQ->1-D axial-reduction knobs (see :func:`scqat.tools.iq_reduce.axial`);
                 ignored when the dataset already carries a real ``signal``.
+            twin_coord, twin_label
+                optional companion scale for the amplitude axis (see
+                :mod:`scqat.estimators._twin_axis`). The single-amplitude mode has no
+                axis to draw, so it is simply not drawn there.
         """
+        # popped BEFORE the reduction check: these are this estimator's own knobs, and
+        # AXIAL_KNOBS is shared by five families
+        twin_coord = kwargs.pop("twin_coord", self.twin_coord)
+        twin_label = kwargs.pop("twin_label", self.twin_label)
         validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
         reps = np.asarray(dataset["repetition"].values, dtype=float)
 
@@ -76,14 +90,14 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
         # is the first estimator with a 2-D sweep — so reduce ONE repetition trace at a
         # time instead of widening shared core. `_oriented_unit` rescales each trace
         # independently anyway, so a per-trace reduction axis costs nothing here.
-        if "amp_factor" in dataset.dims:
-            amp_factors = np.asarray(dataset["amp_factor"].values, dtype=float).reshape(-1)
-            slices = [dataset.isel(amp_factor=j) for j in range(amp_factors.size)]
+        if "amp_prefactor" in dataset.dims:
+            amp_prefactors = np.asarray(dataset["amp_prefactor"].values, dtype=float).reshape(-1)
+            slices = [dataset.isel(amp_prefactor=j) for j in range(amp_prefactors.size)]
         else:
-            # amp_factor absent, or already squeezed to a scalar coord
-            amp_factors = (
-                np.atleast_1d(np.asarray(dataset["amp_factor"].values, dtype=float))
-                if "amp_factor" in dataset.coords
+            # amp_prefactor absent, or already squeezed to a scalar coord
+            amp_prefactors = (
+                np.atleast_1d(np.asarray(dataset["amp_prefactor"].values, dtype=float))
+                if "amp_prefactor" in dataset.coords
                 else np.array([1.0])
             )
             slices = [dataset]
@@ -94,11 +108,11 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
             for s in slices
         ])
 
-        num_amps = len(amp_factors)
+        num_amps = len(amp_prefactors)
         omegas, signed_omegas, gammas, fit_curves = [], [], [], []
         reps_fine = np.linspace(reps.min(), reps.max(), 200)
 
-        for i_a, a_val in enumerate(amp_factors):
+        for i_a, a_val in enumerate(amp_prefactors):
             pz_curve = pz_data[i_a]
             p0_guess = [0.45, 0.01, 0.05, 0.5]
             try:
@@ -125,11 +139,11 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
                 gammas.append(0.0)
                 fit_curves.append([0.5] * len(reps_fine))
 
-        if num_amps > 1 and len(set(amp_factors)) > 1:
+        if num_amps > 1 and len(set(amp_prefactors)) > 1:
             try:
-                poly = np.polyfit(amp_factors, signed_omegas, 1)
+                poly = np.polyfit(amp_prefactors, signed_omegas, 1)
                 k_slope, b_intercept = poly[0], poly[1]
-                a_opt = float(-b_intercept / k_slope) if abs(k_slope) > 1e-6 else float(amp_factors[np.argmin(omegas)])
+                a_opt = float(-b_intercept / k_slope) if abs(k_slope) > 1e-6 else float(amp_prefactors[np.argmin(omegas)])
             except Exception:
                 a_opt = 1.0
         else:
@@ -137,9 +151,9 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
 
         a_opt = float(np.clip(a_opt, 0.5, 1.5))
 
-        return {
+        results = {
             "opt_factor": a_opt,
-            "amp_factors": amp_factors.tolist(),
+            "amp_prefactors": amp_prefactors.tolist(),
             "repetitions": reps.tolist(),
             "reps_fine": reps_fine.tolist(),
             "omegas": omegas,
@@ -148,17 +162,29 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
             "fit_curves": fit_curves,
             "unit": unit_str,
         }
+        # the optional companion scale — absent entirely when undrawable, which
+        # includes the single-amplitude mode (one point is not an axis)
+        twin = twin_values(dataset, "amp_prefactor", twin_coord)
+        if twin is not None:
+            results["twin_values"] = twin
+            results["twin_label"] = str(twin_label or twin_coord)
+            results["opt_twin_value"] = twin_at(amp_prefactors, twin, a_opt)
+        return results
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        metadata = {
             "opt_factor": results["opt_factor"],
             "unit": results["unit"],
         }
+        for key in ("twin_label", "opt_twin_value"):
+            if key in results:
+                metadata[key] = results[key]
+        return metadata
 
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
-        amp_factors = np.asarray(results["amp_factors"], dtype=float)
+        amp_prefactors = np.asarray(results["amp_prefactors"], dtype=float)
         reps_fine = np.asarray(results["reps_fine"], dtype=float)
         reps = np.asarray(results["repetitions"], dtype=float)
 
@@ -167,27 +193,35 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
 
         ds = xr.Dataset(
             {
-                "pz": (("amp_factor", "repetition"), pz_data),
-                "fit_pz": (("amp_factor", "repetition_fine"), fit_curves),
-                "omega": ("amp_factor", np.asarray(results["omegas"], dtype=float)),
+                "pz": (("amp_prefactor", "repetition"), pz_data),
+                "fit_pz": (("amp_prefactor", "repetition_fine"), fit_curves),
+                "omega": ("amp_prefactor", np.asarray(results["omegas"], dtype=float)),
             },
             coords={
-                "amp_factor": amp_factors,
+                "amp_prefactor": amp_prefactors,
                 "repetition": reps,
                 "repetition_fine": reps_fine,
             },
             attrs={"unit": results["unit"], "opt_factor": results["opt_factor"]},
         )
 
-        if len(amp_factors) > 1:
+        # the companion scale + its label, so the figure draws the secondary axis
+        # from plot_data ALONE (the self-enforcing rule)
+        if results.get("twin_values") is not None:
+            ds["twin"] = ("amp_prefactor", np.asarray(results["twin_values"], dtype=float))
+            ds.attrs["twin_label"] = str(results.get("twin_label", ""))
+            ds.attrs["opt_twin_value"] = float(
+                results.get("opt_twin_value", float("nan")))
+
+        if len(amp_prefactors) > 1:
             a_opt = results["opt_factor"]
-            a_fine = np.linspace(min(amp_factors.min(), a_opt - 0.02), max(amp_factors.max(), a_opt + 0.02), 100)
+            a_fine = np.linspace(min(amp_prefactors.min(), a_opt - 0.02), max(amp_prefactors.max(), a_opt + 0.02), 100)
             try:
-                signed_omegas = [w if a >= 1.0 else -w for w, a in zip(results["omegas"], amp_factors)]
-                poly = np.polyfit(amp_factors, signed_omegas, 1)
+                signed_omegas = [w if a >= 1.0 else -w for w, a in zip(results["omegas"], amp_prefactors)]
+                poly = np.polyfit(amp_prefactors, signed_omegas, 1)
                 fit_w = np.abs(poly[0] * a_fine + poly[1])
-                ds["fit_omega_fine"] = ("amp_factor_fine", fit_w)
-                ds.coords["amp_factor_fine"] = a_fine
+                ds["fit_omega_fine"] = ("amp_prefactor_fine", fit_w)
+                ds.coords["amp_prefactor_fine"] = a_fine
             except Exception:
                 pass
 

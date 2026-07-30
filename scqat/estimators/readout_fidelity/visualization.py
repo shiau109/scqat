@@ -15,16 +15,28 @@ vars   : ``std`` (sweep), ``fidelity`` (sweep), ``snr`` (sweep), ``mean`` (sweep
          ``gaussian_norms`` (sweep, prepared_state, gauss),
          ``direct_counts`` (sweep, prepared_state, count)
 attrs  : ``sweep_coord``, and (when a best point was found) ``best_sweep_value`` /
-         ``best_fidelity``
+         ``best_fidelity``; with a companion scale, also ``twin`` (sweep) as a
+         variable plus ``twin_label`` / ``best_twin_value``
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+from scqat.estimators._twin_axis import add_twin_axis
+
 
 def _sweep(plot_data):
     coord = plot_data.attrs['sweep_coord']
     return coord, plot_data.coords[coord].values
+
+
+def _add_twin(ax, plot_data, sweep):
+    """Draw the companion scale as a secondary top axis, when one was supplied.
+    A figure must never fail over a decoration, so an absent twin is a no-op."""
+    if 'twin' not in plot_data:
+        return
+    add_twin_axis(ax, sweep, plot_data['twin'].values,
+                  str(plot_data.attrs.get('twin_label', '')))
 
 
 def plot_std_vs_sweep(plot_data):
@@ -36,6 +48,7 @@ def plot_std_vs_sweep(plot_data):
     ax.set_ylabel('GMM std', fontsize=14)
     ax.set_title('State-discrimination std vs sweep')
     ax.grid(True, alpha=0.3)
+    _add_twin(ax, plot_data, sweep)
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -50,6 +63,7 @@ def plot_snr_vs_sweep(plot_data):
     ax.set_ylabel('SNR (separation / σ)', fontsize=14)
     ax.set_title('Readout SNR vs sweep')
     ax.grid(True, alpha=0.3)
+    _add_twin(ax, plot_data, sweep)
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -131,14 +145,19 @@ def plot_fidelity_vs_sweep(plot_data):
 
     best = plot_data.attrs.get('best_sweep_value')
     if best is not None:
-        ax.axvline(best, color='red', ls=':', lw=1.5,
-                   label=f'best {coord}={best:.4g}')
+        # state the answer in both frames when a companion scale is present
+        twin_best = plot_data.attrs.get('best_twin_value')
+        label = f'best {coord}={best:.4g}'
+        if twin_best is not None:  # the twin label already names the scale on the axis
+            label += f' (abs {twin_best:.4g})'
+        ax.axvline(best, color='red', ls=':', lw=1.5, label=label)
 
     ax.set_xlabel(coord, fontsize=14)
     ax.set_ylabel('Fidelity (correct assignment)', fontsize=14)
     ax.set_title('Readout fidelity vs sweep')
     ax.legend()
     ax.grid(True, alpha=0.3)
+    _add_twin(ax, plot_data, sweep)
     fig.tight_layout()
     plt.close(fig)
     return fig

@@ -32,14 +32,14 @@ A_IDEAL = 1.012
 K_RAD = np.pi  # rotation error per unit amplitude-factor error, per gate
 
 
-def _pz(reps, amp_factors, *, a_ideal=A_IDEAL, decay=4e-3, rising=False):
+def _pz(reps, amp_prefactors, *, a_ideal=A_IDEAL, decay=4e-3, rising=False):
     """Ground-population traces, one row per amplitude factor.
 
     ``rising=False`` starts HIGH at N=0 (P0 convention). ``rising=True`` is the
     inverted readout sign — the case the orientation step exists to absorb.
     """
     rows = []
-    for a in amp_factors:
+    for a in amp_prefactors:
         omega = K_RAD * (float(a) - a_ideal)
         trace = 0.5 + 0.45 * np.exp(-decay * reps) * np.cos(omega * reps)
         rows.append(1.0 - trace if rising else trace)
@@ -50,8 +50,8 @@ def _signal_ds(*, n_amp=11, rising=False, a_ideal=A_IDEAL):
     reps = np.arange(0, 102, 2).astype(float)
     amp = np.linspace(0.9, 1.1, n_amp)
     return xr.Dataset(
-        {"signal": (("amp_factor", "repetition"), _pz(reps, amp, a_ideal=a_ideal, rising=rising))},
-        coords={"amp_factor": amp, "repetition": reps},
+        {"signal": (("amp_prefactor", "repetition"), _pz(reps, amp, a_ideal=a_ideal, rising=rising))},
+        coords={"amp_prefactor": amp, "repetition": reps},
     )
 
 
@@ -68,9 +68,9 @@ def _iq_ds(*, n_amp=11, theta=0.7, seed=0):
     noise = rng.normal(0, 2e-3, mixed.shape) + 1j * rng.normal(0, 2e-3, mixed.shape)
     iq = mixed + noise
     return xr.Dataset(
-        {"I": (("amp_factor", "repetition"), iq.real),
-         "Q": (("amp_factor", "repetition"), iq.imag)},
-        coords={"amp_factor": amp, "repetition": reps},
+        {"I": (("amp_prefactor", "repetition"), iq.real),
+         "Q": (("amp_prefactor", "repetition"), iq.imag)},
+        coords={"amp_prefactor": amp, "repetition": reps},
     )
 
 

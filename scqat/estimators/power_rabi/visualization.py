@@ -7,12 +7,16 @@ and draws without any recalculation.
 plot_data layout
 ----------------
 coords : ``amp_prefactor``
-vars   : ``signal`` (amp_prefactor), ``best_fit`` (amp_prefactor)
-attrs  : ``a``, ``f``, ``phi``, ``c``, ``opt_amp_prefactor``, ``success``
+vars   : ``signal`` (amp_prefactor), ``best_fit`` (amp_prefactor),
+         optional ``twin`` (amp_prefactor) — a companion scale for the same points
+attrs  : ``a``, ``f``, ``phi``, ``c``, ``opt_amp_prefactor``, ``success``;
+         with a twin, also ``twin_label`` and ``opt_twin_value``
 """
 
 import matplotlib.pyplot as plt
 import xarray as xr
+
+from scqat.estimators._twin_axis import add_twin_axis
 
 
 def plot_amplitude_fit(plot_data: xr.Dataset) -> plt.Figure:
@@ -52,6 +56,15 @@ def plot_amplitude_fit(plot_data: xr.Dataset) -> plt.Figure:
     ax.set_ylabel("Signal", fontsize=16)
     ax.xaxis.set_tick_params(labelsize=12)
     ax.yaxis.set_tick_params(labelsize=12)
+
+    # the same sweep in the caller's companion scale (e.g. absolute amplitude),
+    # drawn on top so the primary reading and the marker keep their meaning
+    if "twin" in plot_data:
+        add_twin_axis(
+            ax, amp_prefactor, plot_data["twin"].values,
+            str(plot_data.attrs.get("twin_label", "")),
+        )
+
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -62,6 +75,11 @@ def _build_param_text(attrs: dict) -> str:
     parameters stored in ``plot_data.attrs``."""
     lines = [
         f"opt prefactor = {attrs.get('opt_amp_prefactor', float('nan')):.4g}",
+    ]
+    if "opt_twin_value" in attrs:  # the same answer in the companion scale,
+        # which the secondary axis already names — keep the box narrow
+        lines.append(f"opt abs = {attrs['opt_twin_value']:.4g}")
+    lines += [
         f"a = {attrs.get('a', float('nan')):.4g}",
         f"f = {attrs.get('f', float('nan')):.4g}",
         f"ϕ = {attrs.get('phi', float('nan')):.4g}",
