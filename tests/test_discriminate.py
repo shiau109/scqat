@@ -123,6 +123,38 @@ def test_user_pinned_model_skips_training():
     assert r["direct_counts"][1, 1] > 0.9
 
 
+def _ground_only(n_shot=4000, sep=6.0, sigma=1.0, population=0.03, seed=5):
+    """ONE prepared state (the ground state) whose cloud carries a small
+    residual population in the excited blob — the thermal-population case."""
+    rng = np.random.default_rng(seed)
+    centers = np.array([[0.0, 0.0], [sep, 0.0]])
+    excited = rng.random(n_shot) < population
+    c = np.where(excited[:, None], centers[1], centers[0])
+    I = (c[:, 0] + sigma * rng.standard_normal(n_shot))[None, :]
+    Q = (c[:, 1] + sigma * rng.standard_normal(n_shot))[None, :]
+    return I, Q, centers, sigma, float(np.mean(excited))
+
+
+def test_pinned_centers_without_user_std_keep_all_centers():
+    """Pinning MORE centres than there are prepared states: one ground-state
+    cloud against a stored g/e reference. Every pinned centre must survive into
+    ``trained_paras`` (unpacking n_state of them used to drop |e> silently), and
+    both the counted and the fitted residual population must come back."""
+    I, Q, centers, sigma, planted = _ground_only()
+    r = discriminate_states(I, Q, user_mean=centers.tolist())   # NO user_std
+
+    mean = np.asarray(r["trained_paras"]["mean"])
+    assert mean.shape == (2, 2)
+    np.testing.assert_allclose(mean, centers)
+    # width comes from this run's own shots (MAD), not a pinned value
+    assert r["trained_paras"]["std"] == pytest.approx(sigma, rel=0.3)
+
+    assert r["direct_counts"].shape == (1, 2)
+    assert r["gaussian_norms"].shape == (1, 2)
+    assert r["direct_counts"][0, 1] == pytest.approx(planted, abs=0.015)
+    assert r["gaussian_norms"][0, 1] == pytest.approx(planted, abs=0.015)
+
+
 def test_validation_fails_loudly():
     with pytest.raises(ValueError, match="outlier_sgima"):
         validate_discriminate_kwargs({"outlier_sgima": 3})   # deliberate typo

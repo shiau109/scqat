@@ -26,6 +26,28 @@ def state_iq_arrays(dataset: xr.Dataset) -> Tuple[np.ndarray, np.ndarray]:
     return I, Q
 
 
+def _axis_limits(values: np.ndarray, centres: np.ndarray,
+                 margin: float) -> Tuple[float, float]:
+    """One shared plot axis: the pooled 5-sigma shot spread, WIDENED to hold
+    every trained centre plus ``margin``.
+
+    The pooled spread alone is dominated by the blob SEPARATION only while the
+    prepared states are comparably populated. When one state holds nearly every
+    shot — a ground-state-only thermal-population run, where the minority blob
+    is the whole measurement — it collapses to the blob WIDTH and crops that
+    blob out of the figure, hiding the evidence for the reported population.
+    ``margin`` should cover the n-sigma circles the figures draw (3 sigma).
+
+    Limits only ever GROW here, so a balanced run keeps the window it had.
+    """
+    low = float(values.mean() - 5 * values.std())
+    high = float(values.mean() + 5 * values.std())
+    if len(centres):
+        low = min(low, float(np.min(centres) - margin))
+        high = max(high, float(np.max(centres) + margin))
+    return low, high
+
+
 class StateDiscriminationEstimator(BaseEstimator):
     """
     Analyzes I/Q plane data for superconducting qubit state discrimination
@@ -103,7 +125,9 @@ class StateDiscriminationEstimator(BaseEstimator):
         Bundle everything the four figures need into one Dataset: raw I/Q with
         per-shot state labels and outlier masks, the binned density and fit
         residue per state, the trained GMM mean/std, and the per-state count /
-        norm / outlier summaries. Shared I/Q axis limits (5σ) live in ``.attrs``.
+        norm / outlier summaries. Shared I/Q axis limits live in ``.attrs``
+        (:func:`_axis_limits` — the 5σ shot spread, widened to keep every trained
+        centre and its circles in frame).
         """
         hist = results['hist_dataset']
         states = hist['prepared_state'].values
@@ -122,9 +146,8 @@ class StateDiscriminationEstimator(BaseEstimator):
         outlier_prob = np.asarray(results['outlier_probability'], dtype=float)
         norm_res = np.asarray(results['norm_res'], dtype=float)
 
-        all_I, all_Q = I_arr.ravel(), Q_arr.ravel()
-        lim_I = (float(all_I.mean() - 5 * all_I.std()), float(all_I.mean() + 5 * all_I.std()))
-        lim_Q = (float(all_Q.mean() - 5 * all_Q.std()), float(all_Q.mean() + 5 * all_Q.std()))
+        lim_I = _axis_limits(I_arr.ravel(), mean[:, 0], 4 * float(trained['std']))
+        lim_Q = _axis_limits(Q_arr.ravel(), mean[:, 1], 4 * float(trained['std']))
 
         return xr.Dataset(
             {

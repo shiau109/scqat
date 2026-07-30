@@ -207,6 +207,9 @@ def discriminate_states(
     user_mean : sequence of (I, Q) pairs, optional
         Pin the GMM centres instead of seeding them from the per-state density
         maxima. Together with ``user_std`` this skips the global fit entirely.
+        The number of centres need not equal ``n_prepared_state`` — pinning a
+        stored g/e reference while preparing only the ground state gives
+        ``(n_state, n_center) == (1, 2)`` outputs.
     user_std : float, optional
         Pin the shared Gaussian width (also sets the histogram bin size).
     outlier_sigma : float, optional
@@ -236,12 +239,16 @@ def discriminate_states(
             "covariance": user_std ** 2, "amp": np.ones(len(user_mean)),
         }
     else:
+        # The centres actually fitted — NOT n_state. A pinned ``user_mean`` may
+        # carry more centres than there are prepared states (one prepared state
+        # against a stored g/e reference is the thermal-population case), and
+        # unpacking only n_state of them silently drops the rest.
+        centres = mean_init if user_mean is None else np.asarray(user_mean, dtype=float)
         fit_result = _gmm_fit(
-            np.sum(density, axis=0), hist_x, hist_y,
-            mean_init if user_mean is None else user_mean,
+            np.sum(density, axis=0), hist_x, hist_y, centres,
             user_std if user_std else std_init,
         )
-        trained_paras = _gmm_params(fit_result, len(mean_init))
+        trained_paras = _gmm_params(fit_result, len(centres))
 
     # 3. Fit individual prepared states (amplitudes against the trained model)
     fitted_paras: List[Dict[str, Any]] = []
