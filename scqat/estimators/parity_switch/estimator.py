@@ -180,6 +180,11 @@ class ParitySwitchEstimator(BaseEstimator):
         # switching fraction, which is what the guard reads). ~0.5 is HEALTHY:
         # it just says the chip sits in each parity about half the time.
         results["p_parity_odd"] = float(np.mean(parity)) if parity.size else float("nan")
+        # the RAW READOUT's mean — a third fraction, and a different one again:
+        # the readout is the running XOR, so this is not the parity level and
+        # not a population. Reported because it is the readable check on
+        # readout balance.
+        results["p_state_high"] = float(np.mean(trace))
 
         # the readout's own spectrum, kept for the diagnostic figure ONLY and
         # deliberately never fitted — it is the integrated telegraph, so a
@@ -253,7 +258,7 @@ class ParitySwitchEstimator(BaseEstimator):
             k: results[k]
             for k in ("parity_rate_hz", "psd_corner_hz", "psd_amplitude",
                       "psd_white_floor", "n_transitions", "p_switch",
-                      "p_high", "p_parity_odd", "psd_freq_min_hz",
+                      "p_high", "p_parity_odd", "p_state_high", "psd_freq_min_hz",
                       "psd_freq_max_hz", "psd_contrast", "corner_margin_low",
                       "dt_s", "state_source", "method")
             if k in results

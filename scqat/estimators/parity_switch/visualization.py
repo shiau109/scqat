@@ -26,7 +26,13 @@ vars   : ``state`` (shot_idx, 0/1), ``parity`` (pair_idx, 0/1),
          optional ``iq_i`` / ``iq_q`` (iq_idx — the shared IQ-plane panel)
 attrs  : ``parity_rate_hz``, ``psd_corner_hz``, ``psd_amplitude``,
          ``psd_white_floor``, ``n_transitions``, ``p_switch``, ``p_high``,
-         ``p_parity_odd``, ``success``, ``dt_s``, ``state_source``
+         ``p_parity_odd``, ``p_state_high``, ``success``, ``dt_s``,
+         ``state_source``
+
+Three level-fractions appear here and they are NOT interchangeable:
+``p_parity_odd`` (== ``p_high``) is the PARITY's level, ~0.5 on a healthy run;
+``p_state_high`` is the raw READOUT's mean; ``p_switch`` is how often the parity
+CHANGES. Only the last says anything about the rate.
 """
 
 import matplotlib.pyplot as plt
@@ -39,9 +45,9 @@ import xarray as xr
 _LOW_MARGIN_ADVISORY = 5.0
 
 #: points drawn in the time-domain snippets. A full run is ~1e6 shots; past a
-#: few thousand markers the panel saturates regardless of marker size, and the
-#: PSD figure is the quantitative view anyway.
-_TRACE_SNIPPET = 2000
+#: thousand markers the panel saturates regardless of marker size, and the PSD
+#: figure is the quantitative view anyway.
+_TRACE_SNIPPET = 1000
 
 _SCATTER = dict(s=4, alpha=0.5, edgecolors="none")
 
@@ -69,13 +75,24 @@ def plot_trace(plot_data: xr.Dataset) -> plt.Figure:
     ax.scatter(t[:n] * 1e3, state[:n], **_SCATTER)
 
     attrs = plot_data.attrs
-    _annotate(ax, [
+    lines = [
         f"shot period = {float(attrs.get('dt_s', float('nan'))) * 1e6:.4g} us",
         f"shots = {state.size}",
-    ])
+    ]
+    # the mean over the WHOLE trace, not just the window drawn — it is the
+    # statistic, and a window-local mean would move as the snippet changed
+    mean = float(attrs.get("p_state_high", float("nan")))
+    if np.isfinite(mean):
+        ax.axhline(mean, color="tab:orange", linestyle="--", linewidth=1.2,
+                   label=f"mean = {mean:.4g} (all {state.size} shots)")
+        ax.legend(fontsize=9, loc="center right")
+        lines.append(f"mean readout = {mean:.4g}")
+    _annotate(ax, lines)
     ax.set_yticks([0, 1])
     ax.set_yticklabels(["|0>", "|1>"])
-    ax.set_ylim(-0.3, 1.3)
+    # headroom for the annotation box: at (-0.3, 1.3) it sat ON the upper row
+    # and hid the last third of the trace
+    ax.set_ylim(-0.35, 2.0)
     ax.set_xlabel("Time (ms)", fontsize=14)
     ax.set_ylabel("Readout", fontsize=14)
     ax.set_title(f"Raw readout (running XOR of the parity) — first {n} "
@@ -117,8 +134,13 @@ def plot_parity(plot_data: xr.Dataset) -> plt.Figure:
     ])
 
     ax.set_yticks([0, 1])
-    ax.set_yticklabels(["even", "odd"])
-    ax.set_ylim(-0.3, 1.3)
+    # NOT "even"/"odd": this measurement fixes the parity only up to a global
+    # label, so which value is the even charge parity is unknowable from it.
+    # The plotted quantity is literally s[i] XOR s[i+1].
+    ax.set_yticklabels(["XOR=0", "XOR=1"])
+    # headroom for the annotation box: at (-0.3, 1.3) it sat ON the upper row
+    # and hid the last third of the trace
+    ax.set_ylim(-0.35, 2.0)
     ax.set_xlabel("Time (ms)", fontsize=14)
     ax.set_ylabel("Charge parity", fontsize=14)
     ax.set_title(f"Parity (measured telegraph) — first {n} of "
