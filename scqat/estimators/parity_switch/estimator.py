@@ -11,7 +11,11 @@ from scqat.core.base_estimator import (
     with_iqdata,
 )
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
-from scqat.estimators.parity_switch.visualization import plot_psd, plot_trace
+from scqat.estimators.parity_switch.visualization import (
+    plot_parity,
+    plot_psd,
+    plot_trace,
+)
 from scqat.tools.discriminate import discriminate_states
 from scqat.tools.telegraph_psd import (
     fit_telegraph_psd,
@@ -157,15 +161,27 @@ class ParitySwitchEstimator(BaseEstimator):
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
-        """Bundle the 0/1 trace (over ``shot_idx``/``time_s``), the PSD + fit
-        curve (over ``psd_freq_hz``) and an IQ subsample when the input carried
-        quadratures; every fit scalar lives in ``.attrs``."""
+        """Bundle the measured 0/1 trace (over ``shot_idx``/``time_s``), the
+        derived PARITY of each consecutive pair (over ``pair_idx``), the PSD +
+        fit curve (over ``psd_freq_hz``) and an IQ subsample when the input
+        carried quadratures; every fit scalar lives in ``.attrs``.
+
+        The parity is the physically meaningful trace: the measured state says
+        which pole the qubit landed on, and a CHANGE between consecutive shots
+        is what a parity switch looks like. Even (0) = the pair agrees, odd (1)
+        = it does not, so the array is one shorter than the shot trace and each
+        entry is timed BETWEEN its two shots.
+        """
         trace = np.asarray(results["trace"], dtype=np.int8)
         dt = float(results["dt_s"])
         n = trace.size
 
+        parity = (trace[:-1] != trace[1:]).astype(np.int8) if n >= 2 \
+            else np.empty(0, dtype=np.int8)
+
         data_vars: Dict[str, Any] = {
             "state": ("shot_idx", trace),
+            "parity": ("pair_idx", parity),
             "psd": ("psd_freq_hz",
                     np.asarray(results["psd"], dtype=float)),
             "psd_fit": ("psd_freq_hz",
@@ -174,6 +190,9 @@ class ParitySwitchEstimator(BaseEstimator):
         coords: Dict[str, Any] = {
             "shot_idx": np.arange(n),
             "time_s": ("shot_idx", np.arange(n) * dt),
+            "pair_idx": np.arange(parity.size),
+            # the pair sits BETWEEN its two shots, hence the half-step
+            "pair_time_s": ("pair_idx", (np.arange(parity.size) + 0.5) * dt),
             "psd_freq_hz": np.asarray(results["psd_freq_hz"], dtype=float),
         }
         has_iq = "IQdata" in dataset.data_vars or (
@@ -206,12 +225,14 @@ class ParitySwitchEstimator(BaseEstimator):
         plot_data: Optional[xr.Dataset] = None,
         **kwargs,
     ) -> Dict[str, plt.Figure]:
-        """Telegraph-trace snippet + log-log PSD with the knee fit (+ the
-        shared IQ-plane panel when the input carried quadratures). Draws only
-        from ``plot_data``."""
+        """Measured-state snippet, the derived parity snippet, and the log-log
+        PSD with the knee fit (+ the shared IQ-plane panel when the input
+        carried quadratures). Draws only from ``plot_data``."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        figs = {"trace": plot_trace(plot_data), "psd": plot_psd(plot_data)}
+        figs = {"trace": plot_trace(plot_data),
+                "parity": plot_parity(plot_data),
+                "psd": plot_psd(plot_data)}
         if has_iq_plane(plot_data):
             figs["iq_plane"] = plot_iq_plane(plot_data)
         return figs
