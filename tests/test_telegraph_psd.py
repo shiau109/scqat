@@ -219,3 +219,72 @@ class TestSpectralReach:
             _telegraph(rate_up_hz=12.0, n=30_000, seed=20), DT)
         assert res["corner_margin_low"] < 5.0
         assert res["success"] is True
+
+
+class TestMappingFidelity:
+    """``A`` and ``B`` are the reference model's ``4F^2`` and ``(1-F^2)dt``
+    terms in different variables, so the SAME three-parameter fit yields the
+    sequence mapping fidelity F twice over — no refit, just a change of
+    variables. See the tool's "reference parameterization" docstring section.
+    """
+
+    def test_the_two_estimates_agree_on_a_clean_telegraph(self):
+        res = fit_telegraph_psd(_telegraph(n=400_000, seed=31), DT)
+        assert res["mapping_fidelity"] == pytest.approx(1.0, abs=0.05)
+        assert res["mapping_fidelity_floor"] == pytest.approx(1.0, abs=0.05)
+        assert res["mapping_fidelity_ratio"] == pytest.approx(1.0, abs=0.08)
+
+    @pytest.mark.parametrize("p_err", [0.002, 0.01, 0.05])
+    def test_floor_estimate_tracks_F_equals_one_minus_two_eps(self, p_err):
+        """On a DIRECTLY sampled telegraph the mapping error really is white,
+        and then the floor reads F back essentially exactly."""
+        res = fit_telegraph_psd(
+            _telegraph(n=400_000, seed=32, p_err=p_err), DT)
+        assert res["mapping_fidelity_floor"] == pytest.approx(
+            1.0 - 2.0 * p_err, abs=0.01)
+
+    def test_derived_from_the_fit_not_recomputed(self):
+        """Both numbers must be exactly the documented functions of (A, f_c, B)
+        — if they ever drift into a separate estimate the two would stop being
+        an independent cross-check of the same fit."""
+        res = fit_telegraph_psd(_telegraph(n=200_000, seed=33), DT)
+        a, fc, b = (res["psd_amplitude"], res["psd_corner_hz"],
+                    res["psd_white_floor"])
+        assert res["mapping_fidelity"] == pytest.approx(
+            np.sqrt(2.0 * np.pi * fc * a))
+        assert res["mapping_fidelity_floor"] == pytest.approx(
+            np.sqrt(1.0 - 2.0 * b / DT))
+        # and the rate is the same fit's corner, times pi
+        assert res["parity_rate_hz"] == pytest.approx(np.pi * fc)
+
+    def test_power_budget_closes(self):
+        """The parameterization is only self-consistent if the two fitted terms
+        integrate to the series variance: Lorentzian -> F^2/4, floor ->
+        (1-F^2)/4. This is what pins the factor-of-2 conventions (0/1 vs +-1,
+        one-sided vs two-sided) that the F formulas depend on."""
+        series = _telegraph(n=400_000, seed=34)
+        res = fit_telegraph_psd(series, DT)
+        lorentz = res["psd_amplitude"] * res["psd_corner_hz"] * np.pi / 2.0
+        floor = res["psd_white_floor"] / (2.0 * DT)
+        assert lorentz + floor == pytest.approx(float(np.var(series)), rel=0.1)
+
+    def test_a_floor_over_budget_is_NaN_not_a_clamp(self):
+        """B > dt/2 exceeds the total noise power the model allows for ANY
+        fidelity. That is a broken model, not a low F — say so with NaN rather
+        than silently reporting 0."""
+        # white noise: no knee, and the fitter puts everything in the floor
+        rng = np.random.default_rng(35)
+        res = fit_telegraph_psd(
+            (rng.random(100_000) < 0.5).astype(np.int8), DT * 4.0)
+        assert res["success"] is False
+        if res["psd_white_floor"] > 2.0 * DT:
+            assert np.isnan(res["mapping_fidelity_floor"])
+            assert np.isnan(res["mapping_fidelity_ratio"])
+
+    def test_reported_on_a_failed_fit_too(self):
+        """Like every other tier-1 key, present (as NaN) even when the fit is
+        refused, so a failure stays diagnosable."""
+        res = fit_telegraph_psd(np.zeros(1000, dtype=np.int8), DT)
+        for key in ("mapping_fidelity", "mapping_fidelity_floor",
+                    "mapping_fidelity_ratio"):
+            assert key in res
