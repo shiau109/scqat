@@ -14,11 +14,13 @@ from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.parity_switch.visualization import (
     plot_parity,
     plot_psd,
+    plot_state_psd,
     plot_trace,
 )
 from scqat.tools.discriminate import discriminate_states
 from scqat.tools.telegraph_psd import (
     fit_telegraph_psd,
+    telegraph_spectrum,
     validate_telegraph_psd_kwargs,
 )
 
@@ -31,11 +33,20 @@ class ParitySwitchEstimator(BaseEstimator):
     """Estimator for the parity-switch monitor: a fixed-sequence single-shot
     time trace -> the charge-parity switching rate.
 
-    Pipeline: resolve the per-shot 0/1 trace (a ``state`` variable verbatim,
+    Pipeline: resolve the per-shot 0/1 readout (a ``state`` variable verbatim,
     or nearest-centre discrimination of per-shot I/Q against the stored blob
-    centres), then fit the trace's Welch PSD with a Lorentzian knee
+    centres), derive the PARITY as the consecutive-pair difference, then fit
+    the PARITY's Welch PSD with a Lorentzian knee
     (:func:`scqat.tools.telegraph_psd.fit_telegraph_psd`) — the rate is
     ``pi * corner`` (convention pinned in the tool's docstring).
+
+    WHICH SERIES IS FITTED, AND WHY IT IS NOT THE READOUT. The sequence carries
+    no qubit reset and is a unitary, so it maps antipodal Bloch vectors to
+    antipodal ones and each outcome inverts with the pole the previous shot
+    left behind: ``s[i] = s[i-1] XOR parity[i]``. The readout trace is the
+    running XOR of the parity; the pair series IS the parity telegraph. The
+    readout's own spectrum is still computed and plotted, unfitted, as a
+    diagnostic.
 
     Dataset contract:
         - Coordinate ``shot_idx`` (uniform shot cadence).
@@ -148,36 +159,65 @@ class ParitySwitchEstimator(BaseEstimator):
                 pos_e_i=float(centres[1][0]), pos_e_q=float(centres[1][1]),
             )
 
-        results.update(fit_telegraph_psd(trace, dt, **kwargs))
+        # THE PARITY, not the readout, is what gets fitted. The sequence runs
+        # without a qubit reset and is a unitary, so each shot's outcome
+        # INVERTS with the pole the previous shot left behind:
+        #     s[i] = s[i-1] XOR parity[i]
+        # i.e. the readout trace is the running XOR of the parity, and the
+        # consecutive-pair series IS the parity telegraph. Fitting the readout
+        # instead fits an integrated telegraph and returns a meaningless rate
+        # (module docstring of scqat.tools.telegraph_psd).
+        if trace.size < 2:
+            raise ValueError(
+                f"parity_switch needs at least 2 shots to form a parity "
+                f"(the parity is the difference between consecutive shots), "
+                f"got {trace.size}."
+            )
+        parity = (trace[:-1] != trace[1:]).astype(np.int8)
+
+        results.update(fit_telegraph_psd(parity, dt, **kwargs))
+        # the odd-parity level, distinct from p_switch (the parity's own
+        # switching fraction, which is what the guard reads). ~0.5 is HEALTHY:
+        # it just says the chip sits in each parity about half the time.
+        results["p_parity_odd"] = float(np.mean(parity)) if parity.size else float("nan")
+
+        # the readout's own spectrum, kept for the diagnostic figure ONLY and
+        # deliberately never fitted — it is the integrated telegraph, so a
+        # Lorentzian on it means nothing.
+        state_freq, state_psd = telegraph_spectrum(trace, dt, **kwargs)
+        results["state_psd_freq_hz"] = state_freq
+        results["state_psd"] = state_psd
+
         results["trace"] = trace
+        results["parity"] = parity
         results["dt_s"] = dt
         return results
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Persist the rate + fit scalars; drop the per-shot/spectral arrays."""
-        drop = {"trace", "psd_freq_hz", "psd", "psd_fit"}
+        drop = {"trace", "parity", "psd_freq_hz", "psd", "psd_fit",
+                "state_psd_freq_hz", "state_psd"}
         return {k: v for k, v in results.items() if k not in drop}
 
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
-        """Bundle the measured 0/1 trace (over ``shot_idx``/``time_s``), the
-        derived PARITY of each consecutive pair (over ``pair_idx``), the PSD +
-        fit curve (over ``psd_freq_hz``) and an IQ subsample when the input
-        carried quadratures; every fit scalar lives in ``.attrs``.
+        """Bundle the measured 0/1 readout (over ``shot_idx``/``time_s``), the
+        derived PARITY (over ``pair_idx``), the parity's PSD + Lorentzian fit
+        (over ``psd_freq_hz``), the readout's own UNFITTED spectrum (over
+        ``state_psd_freq_hz``) and an IQ subsample when the input carried
+        quadratures; every fit scalar lives in ``.attrs``.
 
-        The parity is the physically meaningful trace: the measured state says
-        which pole the qubit landed on, and a CHANGE between consecutive shots
-        is what a parity switch looks like. Even (0) = the pair agrees, odd (1)
-        = it does not, so the array is one shorter than the shot trace and each
-        entry is timed BETWEEN its two shots.
+        The parity is the measurement: even (0) = the two shots agree, odd (1)
+        = they differ, one entry shorter than the readout trace and each timed
+        BETWEEN its two shots. Under this no-reset sequence that pair series IS
+        the parity telegraph (class docstring), which is why it — and not the
+        readout — carries the fit.
         """
         trace = np.asarray(results["trace"], dtype=np.int8)
+        parity = np.asarray(results["parity"], dtype=np.int8)
         dt = float(results["dt_s"])
         n = trace.size
-
-        parity = (trace[:-1] != trace[1:]).astype(np.int8) if n >= 2 \
-            else np.empty(0, dtype=np.int8)
 
         data_vars: Dict[str, Any] = {
             "state": ("shot_idx", trace),
@@ -186,6 +226,8 @@ class ParitySwitchEstimator(BaseEstimator):
                     np.asarray(results["psd"], dtype=float)),
             "psd_fit": ("psd_freq_hz",
                         np.asarray(results["psd_fit"], dtype=float)),
+            "state_psd": ("state_psd_freq_hz",
+                          np.asarray(results["state_psd"], dtype=float)),
         }
         coords: Dict[str, Any] = {
             "shot_idx": np.arange(n),
@@ -194,6 +236,8 @@ class ParitySwitchEstimator(BaseEstimator):
             # the pair sits BETWEEN its two shots, hence the half-step
             "pair_time_s": ("pair_idx", (np.arange(parity.size) + 0.5) * dt),
             "psd_freq_hz": np.asarray(results["psd_freq_hz"], dtype=float),
+            "state_psd_freq_hz": np.asarray(results["state_psd_freq_hz"],
+                                            dtype=float),
         }
         has_iq = "IQdata" in dataset.data_vars or (
             "I" in dataset.data_vars and "Q" in dataset.data_vars
@@ -208,8 +252,9 @@ class ParitySwitchEstimator(BaseEstimator):
         attrs: Dict[str, Any] = {
             k: results[k]
             for k in ("parity_rate_hz", "psd_corner_hz", "psd_amplitude",
-                      "psd_white_floor", "n_transitions", "p_excited",
-                      "dt_s", "state_source", "method")
+                      "psd_white_floor", "n_transitions", "p_switch",
+                      "p_high", "p_parity_odd", "dt_s", "state_source",
+                      "method")
             if k in results
         }
         attrs["success"] = int(bool(results.get("success")))
@@ -225,14 +270,16 @@ class ParitySwitchEstimator(BaseEstimator):
         plot_data: Optional[xr.Dataset] = None,
         **kwargs,
     ) -> Dict[str, plt.Figure]:
-        """Measured-state snippet, the derived parity snippet, and the log-log
-        PSD with the knee fit (+ the shared IQ-plane panel when the input
-        carried quadratures). Draws only from ``plot_data``."""
+        """Readout snippet, the derived parity snippet, the parity's log-log
+        PSD with the knee fit, and the readout's own UNFITTED spectrum (+ the
+        shared IQ-plane panel when the input carried quadratures). Draws only
+        from ``plot_data``."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
         figs = {"trace": plot_trace(plot_data),
                 "parity": plot_parity(plot_data),
-                "psd": plot_psd(plot_data)}
+                "psd": plot_psd(plot_data),
+                "state_psd": plot_state_psd(plot_data)}
         if has_iq_plane(plot_data):
             figs["iq_plane"] = plot_iq_plane(plot_data)
         return figs
