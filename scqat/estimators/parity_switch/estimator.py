@@ -253,8 +253,9 @@ class ParitySwitchEstimator(BaseEstimator):
             k: results[k]
             for k in ("parity_rate_hz", "psd_corner_hz", "psd_amplitude",
                       "psd_white_floor", "n_transitions", "p_switch",
-                      "p_high", "p_parity_odd", "dt_s", "state_source",
-                      "method")
+                      "p_high", "p_parity_odd", "psd_freq_min_hz",
+                      "psd_freq_max_hz", "psd_contrast", "corner_margin_low",
+                      "dt_s", "state_source", "method")
             if k in results
         }
         attrs["success"] = int(bool(results.get("success")))

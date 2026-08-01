@@ -69,9 +69,8 @@ running the experiment:
   buys a ~20 % accurate rate. This is a real fidelity requirement, not a
   nicety;
 * sampling SLOWER raises ``Gamma*dt`` and therefore suppresses the bias, so the
-  best cadence is the slowest one that still keeps ``p_switch`` comfortably
-  under :data:`MAX_ODD_FRACTION` — the opposite of the "measure faster"
-  instinct.
+  best cadence is the slowest one that still leaves the corner comfortably
+  inside the spectral window — the opposite of the "measure faster" instinct.
 
 Correcting this bias (fitting the lag-1 term, or subtracting the known
 ``2*eps(1-eps)`` contribution) is not implemented; the rate is reported as
@@ -97,8 +96,16 @@ on:
     p_high          : mean level of the input telegraph. Generic on purpose:
                       fed the parity series this is the odd-parity fraction
                       (~0.5 is HEALTHY), not an excited-state population.
-    success         : bool — fit trustworthy (corner resolved inside the
-                      spectral window AND the series actually correlated)
+    psd_freq_min_hz : lowest fitted frequency bin = 1/(nperseg*dt). THE limit on
+                      how slow a rate this trace can see (see below).
+    psd_freq_max_hz : highest bin (Nyquist, 1/(2*dt)).
+    psd_contrast    : A/B — the plateau over its own white floor. The "is there
+                      a knee at all" number; gated by MIN_PSD_CONTRAST.
+    corner_margin_low : corner / psd_freq_min_hz — how much low-frequency
+                      headroom the fit had. REPORTED, not gated: below ~5 the
+                      plateau is thinly sampled and a longer record would help.
+    success         : bool — fit trustworthy (corner inside the spectral window
+                      AND a real plateau above the floor)
     method          : "welch_lorentzian"
 
 On a failed fit the rate is NaN, ``success`` is False, and the tier-2 arrays
@@ -107,28 +114,26 @@ arrays: ``psd_freq_hz``, ``psd``, ``psd_fit``.
 
 Is it even resolved?
 --------------------
-For a Markov telegraph sampled at ``dt``,
+Two independent things can go wrong, and only one of them is the fit's fault.
 
-    p_switch = (1 - exp(-2 * Gamma * dt)) / 2
+**No knee at all.** On uncorrelated data the spectrum is white, yet ``curve_fit``
+still returns a finite corner — the Lorentzian cannot self-diagnose this. What
+DOES separate the cases is the plateau-to-floor contrast ``A/B``
+(:data:`MIN_PSD_CONTRAST`), which lands ~1e-9 on white data and 1e3–1e6 on a
+real telegraph. Failing it sets ``success = False`` with a NaN rate while
+KEEPING the corner and the arrays, so the failure stays diagnosable.
 
-which SATURATES AT 0.5: at p_switch = 0.5 consecutive samples are statistically
-independent, the spectrum is white, and any "knee" the fitter lands on is
-noise. Inverting gives the switches-per-sample,
-``Gamma * dt = -ln(1 - 2*p_switch)/2``.
+**Not enough low-frequency reach.** The lowest bin is
+``psd_freq_min_hz = 1/(nperseg*dt)``, and with the default ``nperseg = n/8``
+that is ``8 / T_record``. A corner near that bin is fitted from only a handful
+of plateau points. ``corner_margin_low`` reports the headroom and is
+deliberately NOT gated — the remedy is a longer record, which is a decision for
+the caller, and refusing the run would throw away a usable measurement. Rule of
+thumb: aim for a margin above ~5, i.e. ``T_record > 40 / f_c``.
 
-So a high p_switch is not a slightly-worse fit, it is the ABSENCE of the signal
-being measured, and the Lorentzian fit alone cannot tell the difference — it
-returns a finite corner either way. :data:`MAX_ODD_FRACTION` is therefore
-checked independently of the fit, and failing it sets ``success = False`` with
-a NaN rate while KEEPING the corner and the arrays, so the failure is
-diagnosable rather than opaque. A NaN rate from this check means "unresolved at
-this cadence" — measure faster — and is a different statement from "the fit did
-not converge".
-
-Note this check only means anything on the RIGHT input. Computed on the raw
-readout of a no-reset sequence it measures the parity's own level (~0.5) rather
-than its switching, and would reject every healthy run — which is exactly what
-it did before the input was corrected.
+The switches-per-sample follows from ``p_switch`` when wanted:
+``Gamma * dt = -ln(1 - 2*p_switch)/2``. It is reported but does NOT gate — any
+shot-to-shot noise drives it toward 0.5 regardless of whether a knee exists.
 """
 
 from typing import Any, Dict, Optional
@@ -141,13 +146,19 @@ from scipy.signal import welch
 #: against BEFORE any per-target loop.
 TELEGRAPH_PSD_KNOBS = frozenset({"nperseg", "window", "detrend"})
 
-#: Refuse a trace whose consecutive pairs disagree this often. Gamma*dt =
-#: -ln(1 - 2*p)/2, so 0.40 is ~0.8 switches per shot — the telegraph is already
-#: undersampled, and 0.5 is the hard ceiling where the shots are independent and
-#: the spectrum is white (see the module docstring). Deliberately generous: the
-#: job here is to reject traces carrying NO recoverable rate, not to insist on a
-#: comfortably slow one.
-MAX_ODD_FRACTION = 0.40
+#: Refuse a fit whose Lorentzian plateau is not meaningfully above its own white
+#: floor: ``A/B`` below this means there is no knee, only noise with a curve
+#: drawn through it. Measured separation is enormous — real telegraphs score
+#: 7.4e2 to 7.8e6 (including one buried under 30 % spurious flips), while
+#: uncorrelated data scores ~1e-9 because the fitter drives ``A`` to zero. 3.0
+#: therefore sits eight orders of magnitude clear of both populations.
+#:
+#: This REPLACED a threshold on ``p_switch``. That was the wrong quantity: any
+#: shot-to-shot noise pushes it toward 0.5 whether or not a knee exists, and a
+#: real chipA run with a clean fit (A/B ~ 7800) reported p_switch = 0.294
+#: against a 0.40 ceiling — within 1.4x of a false refusal. ``p_switch`` is
+#: still reported, it just no longer decides.
+MIN_PSD_CONTRAST = 3.0
 
 
 def validate_telegraph_psd_kwargs(knobs: Dict) -> None:
@@ -276,6 +287,10 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
         "n_transitions": n_transitions,
         "p_switch": p_switch,
         "p_high": p_high,
+        "psd_freq_min_hz": float("nan"),
+        "psd_freq_max_hz": float("nan"),
+        "psd_contrast": float("nan"),
+        "corner_margin_low": float("nan"),
         "success": False,
         "method": "welch_lorentzian",
         "psd_freq_hz": np.array([]),
@@ -290,24 +305,26 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
                psd_fit=np.full_like(psd, np.nan))
     if freq.size < 8:
         return out
+    out.update(psd_freq_min_hz=float(freq[0]), psd_freq_max_hz=float(freq[-1]))
 
     try:
         amplitude, corner, floor = _fit_knee(freq, psd)
     except Exception:
         return out
 
+    contrast = float(amplitude / floor) if floor > 0 else float("inf")
     out.update(psd_corner_hz=corner, psd_amplitude=amplitude,
-               psd_white_floor=floor,
+               psd_white_floor=floor, psd_contrast=contrast,
+               corner_margin_low=float(corner / freq[0]),
                psd_fit=lorentzian_knee(freq, amplitude, corner, floor))
     # A corner pinned at (or outside) the spectral window is unresolved: too
-    # slow to see in this trace length, or faster than the shot cadence.
+    # slow to see in this trace length, or faster than the sample cadence.
     resolved = bool(freq[0] < corner < freq[-1] and np.isfinite(corner))
-    # ... and independently of the fit: consecutive samples must actually be
-    # CORRELATED. At p_switch -> 0.5 they are independent and the spectrum is
-    # white, but curve_fit still returns a finite corner, so the Lorentzian
-    # cannot self-diagnose this (module docstring).
-    correlated = bool(np.isfinite(p_switch) and p_switch <= MAX_ODD_FRACTION)
-    if resolved and correlated:
+    # ... and there must be an actual KNEE, not a curve drawn through noise.
+    # curve_fit returns a finite corner on a white spectrum, so the fit cannot
+    # self-diagnose that; the plateau-to-floor contrast can (module docstring).
+    has_knee = bool(np.isfinite(contrast) and contrast >= MIN_PSD_CONTRAST)
+    if resolved and has_knee:
         out["parity_rate_hz"] = float(np.pi * corner)
         out["success"] = True
     return out
