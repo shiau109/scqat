@@ -27,6 +27,12 @@ from .discriminate import (
 )
 from .ge_discriminator import compute_ge_discriminator
 from .ramsey_fit import RAMSEY_MODELS, fit_ramsey
+from .telegraph_psd import (
+    TELEGRAPH_PSD_KNOBS,
+    fit_telegraph_psd,
+    lorentzian_knee,
+    validate_telegraph_psd_kwargs,
+)
 from . import fit_abscos  # noqa: F401
 from . import fit_cosine  # noqa: F401
 from . import fit_damped_oscillation  # noqa: F401

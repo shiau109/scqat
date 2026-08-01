@@ -30,6 +30,7 @@ from scqat.estimators.qubit_echo_flux import QubitEchoFluxEstimator
 from scqat.estimators.qubit_drag_equator import QubitDragEquatorEstimator
 from scqat.estimators.qubit_drag_alternating import QubitDragAlternatingEstimator
 from scqat.estimators.qubit_deterministic_benchmarking import QubitDeterministicBenchmarkingEstimator
+from scqat.estimators.parity_switch import ParitySwitchEstimator
 
 __all__ = [
     "QubitDecoherenceEstimator",
@@ -62,6 +63,7 @@ __all__ = [
     "QubitDragEquatorEstimator",
     "QubitDragAlternatingEstimator",
     "QubitDeterministicBenchmarkingEstimator",
+    "ParitySwitchEstimator",
 ]
 
 

@@ -271,7 +271,8 @@ Who consumes each tool (re-check with `grep -rl "tools.<x>" scqat/estimators/`):
 | `peak_fit` | ac_stark_shift, parametric_drive_resonance, qubit_spectroscopy, qubit_spectroscopy_flux, readout_pulse_photon |
 | `peak_map` | parametric_drive_resonance, qubit_spectroscopy_flux (+ `tests/test_flux_ref_scope.py`, which covers `track_flux_peaks`) |
 | `iq_reduce` | power_rabi, qubit_echo, qubit_relaxation, qubit_spectroscopy_flux, ramsey (+ `tests/test_stored_positions.py`, the `reduced_signal` priority chain) |
-| `discriminate` | qubit_tomography, readout_fidelity, state_discrimination |
+| `discriminate` | qubit_tomography, readout_fidelity, state_discrimination, parity_switch |
+| `telegraph_psd` | parity_switch |
 | `hankel_analysis` | none — workflows only; `tests/test_hankel_analysis.py` alone |
 
 **Coverage gap — do not paper over it.** 9 of 27 estimators are imported by NO test, by module
