@@ -33,7 +33,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from scqat.tools.telegraph_psd import MAX_ODD_FRACTION
+#: below this much low-frequency headroom the plateau is thinly sampled and a
+#: longer record would tighten the fit. Advisory only — the tool does not gate
+#: on it, because the remedy is the caller's decision.
+_LOW_MARGIN_ADVISORY = 5.0
 
 #: points drawn in the time-domain snippets. A full run is ~1e6 shots; past a
 #: few thousand markers the panel saturates regardless of marker size, and the
@@ -106,17 +109,12 @@ def plot_parity(plot_data: xr.Dataset) -> plt.Figure:
     ax.scatter(t[:n] * 1e3, parity[:n], **_SCATTER)
 
     attrs = plot_data.attrs
-    p_switch = float(attrs.get("p_switch", float("nan")))
-    lines = [
+    _annotate(ax, [
         f"rate = {float(attrs.get('parity_rate_hz', float('nan'))):.4g} Hz",
         f"odd parity = {float(attrs.get('p_parity_odd', float('nan'))):.3g}"
         f"  (~0.5 expected)",
-        f"switch fraction = {p_switch:.4g}",
-    ]
-    if np.isfinite(p_switch) and p_switch > MAX_ODD_FRACTION:
-        lines.append("WARNING: parity ~uncorrelated between")
-        lines.append("samples — switching faster than the cadence?")
-    _annotate(ax, lines)
+        f"switch fraction = {float(attrs.get('p_switch', float('nan'))):.4g}",
+    ])
 
     ax.set_yticks([0, 1])
     ax.set_yticklabels(["even", "odd"])
@@ -148,10 +146,27 @@ def plot_psd(plot_data: xr.Dataset) -> plt.Figure:
         ax.axvline(corner, color="red", linestyle="--", linewidth=1,
                    label=f"corner {corner:.4g} Hz -> rate {rate:.4g} Hz")
 
+    # the low-frequency edge: how slow a rate this record length could see at
+    # all. Drawn because a corner sitting near it is the readable symptom of
+    # "record for longer".
+    f_min = float(attrs.get("psd_freq_min_hz", float("nan")))
+    margin = float(attrs.get("corner_margin_low", float("nan")))
+    if np.isfinite(f_min):
+        ax.axvline(f_min, color="tab:green", linestyle=":", linewidth=1.2,
+                   label=f"lowest bin {f_min:.3g} Hz (= 8 / record time)")
+
+    lines = [f"contrast A/B = {float(attrs.get('psd_contrast', float('nan'))):.4g}"]
+    if np.isfinite(margin):
+        lines.append(f"low-freq headroom = {margin:.2f}x")
+        if margin < _LOW_MARGIN_ADVISORY:
+            lines.append("thin plateau — a LONGER RECORD")
+            lines.append("would tighten this fit")
+    _annotate(ax, lines)
+
     ax.set_xlabel("Frequency (Hz)", fontsize=14)
     ax.set_ylabel("PSD (1/Hz)", fontsize=14)
     ax.set_title("Parity spectrum — this is the measurement", fontsize=10)
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=9, loc="lower left")
     fig.tight_layout()
     plt.close(fig)
     return fig

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from scqat.tools.telegraph_psd import (
-    MAX_ODD_FRACTION,
+    MIN_PSD_CONTRAST,
     TELEGRAPH_PSD_KNOBS,
     fit_telegraph_psd,
     lorentzian_knee,
@@ -118,15 +118,20 @@ class TestTelegraphPsd:
         assert lorentzian_knee(f, 2.0, 10.0, 0.5)[1] == pytest.approx(1.5)
 
 
-class TestUnresolvedTraceIsRefused:
-    """A trace whose consecutive shots are UNCORRELATED carries no rate.
+class TestTheKneeGate:
+    """What decides a trustworthy fit is the PLATEAU-TO-FLOOR contrast, not the
+    switch fraction.
 
-    p_odd = (1 - exp(-2*Gamma*dt))/2 saturates at 0.5, so p_odd near 0.5 means
-    the shots are independent and the spectrum is white — but curve_fit still
-    lands a finite corner on white noise, so the Lorentzian cannot tell on its
-    own. Motivated by a real 1e6-shot run that reported 535053 transitions
-    (p_odd = 0.535, past the ceiling) alongside a confident-looking 1708 Hz,
-    and PASSED the outcome gate — proposing that rate as a chip fact.
+    On uncorrelated data the spectrum is white and ``curve_fit`` still returns a
+    finite corner, so the Lorentzian cannot self-diagnose. ``A/B`` can: measured
+    ~1e-9 on white data against 1e3-1e6 on real telegraphs — eight orders of
+    magnitude of separation.
+
+    This replaced a threshold on ``p_switch``, which was the wrong quantity: any
+    shot-to-shot noise drives it toward 0.5 whether or not a knee exists. A real
+    chipA run with a clean fit (A/B ~ 7800, corner 0.749 Hz) reported
+    p_switch = 0.294 against the old 0.40 ceiling — within 1.4x of a false
+    refusal. See ``test_the_real_chipa_run_still_passes``.
     """
 
     def test_uncorrelated_trace_fails_with_a_nan_rate(self):
@@ -134,47 +139,83 @@ class TestUnresolvedTraceIsRefused:
         res = fit_telegraph_psd(rng.integers(0, 2, 60_000).astype(np.int8), DT)
         assert res["success"] is False
         assert np.isnan(res["parity_rate_hz"])
-        assert res["p_switch"] == pytest.approx(0.5, abs=0.02)
+        # refused on CONTRAST: the fitter drives the plateau to nothing
+        assert res["psd_contrast"] < MIN_PSD_CONTRAST
         # still diagnosable: the corner and the arrays survive the refusal
         assert np.isfinite(res["psd_corner_hz"])
         assert res["psd_freq_hz"].size > 0
 
-    def test_the_real_run_signature_is_refused(self):
-        """p_odd slightly ABOVE 0.5 — past the Markov ceiling entirely."""
+    def test_anticorrelated_trace_is_refused(self):
         rng = np.random.default_rng(12)
         trace = rng.integers(0, 2, 40_000).astype(np.int8)
         trace[::2] = 1 - trace[1::2][:trace[::2].size]  # nudge anti-correlated
         res = fit_telegraph_psd(trace, DT)
-        assert res["p_switch"] > 0.5
         assert res["success"] is False
 
-    def test_p_odd_matches_the_transition_count(self):
+    def test_p_switch_matches_the_transition_count(self):
         trace = _telegraph(seed=13)
         res = fit_telegraph_psd(trace, DT)
         assert res["p_switch"] == pytest.approx(
             res["n_transitions"] / (trace.size - 1))
 
-    def test_a_resolved_trace_still_passes(self):
-        """The guard must not reject merely FAST switching that is still
-        sampled well enough to fit."""
+    def test_a_resolved_trace_passes_with_high_contrast(self):
         res = fit_telegraph_psd(_telegraph(seed=14), DT)
         assert res["success"] is True
-        assert res["p_switch"] < MAX_ODD_FRACTION
+        assert res["psd_contrast"] > 1e3
         assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.2)
 
-    def test_just_under_the_threshold_still_passes(self):
-        """A boundary, not a blanket rejection of fast switching.
-
-        ``_telegraph`` flips with per-step probability ``rate * dt``, and for a
-        Bernoulli flip chain that probability IS p_odd — so a target odd
-        fraction is ``rate = target / dt``. (The chain's true Gamma is the
-        continuous-time inversion ``-ln(1 - 2*p)/(2*dt)``, which is ~2x larger
-        here; the two only coincide for small p, which is why the other
-        recovery tests sit at p = 0.005.)
-        """
-        target = MAX_ODD_FRACTION - 0.05
-        res = fit_telegraph_psd(
-            _telegraph(rate_up_hz=target / DT, seed=15, n=200_000), DT)
-        assert res["p_switch"] == pytest.approx(target, abs=0.02)
+    def test_a_telegraph_buried_in_noise_still_passes(self):
+        """THE case the old p_switch gate got wrong. Flipping 30% of the
+        samples drives p_switch to ~0.3 while leaving the knee intact — the fit
+        must survive, because the noise is white and the knee is not."""
+        rng = np.random.default_rng(16)
+        clean = _telegraph(rate_up_hz=2.35, seed=16, n=200_000)
+        noisy = (clean ^ (rng.random(200_000) < 0.30)).astype(np.int8)
+        res = fit_telegraph_psd(noisy, DT)
+        assert res["p_switch"] > 0.25          # would have failed the old gate
         assert res["success"] is True
-        assert np.isfinite(res["parity_rate_hz"])
+        assert res["psd_contrast"] > MIN_PSD_CONTRAST
+
+    def test_the_real_chipa_run_still_passes(self):
+        """Rebuilt from the run that motivated all of this
+        (20260801-191415-048-chipA-qubit_parity_switch-01): rate 2.352 Hz,
+        corner 0.7488 Hz, A/B ~ 7800, p_switch 0.294 at dt = 30.379 us. It is a
+        good measurement and must never be refused."""
+        dt = 3.0379e-05
+        rng = np.random.default_rng(17)
+        n = 1_000_000
+        parity = (np.cumsum(rng.random(n) < 2.352 * dt) % 2).astype(np.int8)
+        # ~60% of the parity variance was white in that run
+        noisy = (parity ^ (rng.random(n) < 0.147)).astype(np.int8)
+        res = fit_telegraph_psd(noisy, dt)
+        assert res["success"] is True
+        assert res["parity_rate_hz"] == pytest.approx(2.352, rel=0.4)
+        assert res["p_switch"] > 0.25          # the old gate's near-miss
+        assert res["psd_contrast"] > 1e2
+
+
+class TestSpectralReach:
+    """``psd_freq_min_hz`` is what a record length buys, and the reason the
+    experiment is parameterized by record TIME rather than shot count."""
+
+    def test_lowest_bin_tracks_the_record_length(self):
+        short = fit_telegraph_psd(_telegraph(n=50_000, seed=18), DT)
+        long_ = fit_telegraph_psd(_telegraph(n=400_000, seed=18), DT)
+        # 8x the record -> 8x lower reach (Welch defaults to 8 segments)
+        assert long_["psd_freq_min_hz"] == pytest.approx(
+            short["psd_freq_min_hz"] / 8.0, rel=0.05)
+
+    def test_margins_are_reported(self):
+        res = fit_telegraph_psd(_telegraph(seed=19), DT)
+        assert res["corner_margin_low"] == pytest.approx(
+            res["psd_corner_hz"] / res["psd_freq_min_hz"])
+        assert res["psd_freq_max_hz"] == pytest.approx(0.5 / DT, rel=0.01)
+
+    def test_a_thin_plateau_is_reported_but_NOT_refused(self):
+        """A corner close to the lowest bin means a longer record would help —
+        it does not mean the measurement is invalid, so it must still pass."""
+        # ~4 Hz corner with a short record puts the corner near f_min
+        res = fit_telegraph_psd(
+            _telegraph(rate_up_hz=12.0, n=30_000, seed=20), DT)
+        assert res["corner_margin_low"] < 5.0
+        assert res["success"] is True
