@@ -147,21 +147,52 @@ class TestParitySwitchEstimator:
         assert pd.attrs["state_source"] == "discriminated"
         assert pd.attrs["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.25)
 
+    def test_parity_is_the_consecutive_pair_agreement(self):
+        """even (0) = the pair agrees, odd (1) = it differs, one shorter than
+        the shot trace, and the odd count must equal n_transitions."""
+        est = ParitySwitchEstimator()
+        ds = _state_ds()
+        res = est.extract_parameters(ds)
+        pd = est.build_plot_data(ds, res)
+
+        assert pd["parity"].dims == ("pair_idx",)
+        assert pd.coords["pair_time_s"].dims == ("pair_idx",)
+        state = pd["state"].values
+        parity = pd["parity"].values
+        assert parity.size == state.size - 1
+        assert np.array_equal(parity, (state[:-1] != state[1:]).astype(np.int8))
+        assert int(np.count_nonzero(parity)) == res["n_transitions"]
+        # each pair is timed BETWEEN its two shots
+        assert pd.coords["pair_time_s"].values[0] == pytest.approx(0.5 * DT)
+
+    def test_parity_handles_a_degenerate_trace(self):
+        """A one-shot trace has no pairs; the layout must still be valid."""
+        est = ParitySwitchEstimator()
+        ds = xr.Dataset({"state": ("shot_idx", np.array([1], dtype=np.int8))},
+                        coords={"shot_idx": [0]})
+        ds["shot_period_s"] = DT
+        res = est.extract_parameters(ds)
+        pd = est.build_plot_data(ds, res)
+        assert pd["parity"].sizes["pair_idx"] == 0
+        assert isinstance(est.generate_figures(ds, res, plot_data=pd)["parity"],
+                          plt.Figure)
+        plt.close("all")
+
     def test_analyze_roundtrip_state_mode(self, tmp_path):
         est = ParitySwitchEstimator()
         res, figs = est.analyze(_state_ds(), output_dir=str(tmp_path))
         assert (tmp_path / "parity_switch_metadata.json").exists()
         assert (tmp_path / "parity_switch_plotdata.nc").exists()
-        assert set(figs) == {"trace", "psd"}  # no IQ cloud in state mode
+        assert set(figs) == {"trace", "parity", "psd"}  # no IQ cloud in state mode
         assert isinstance(figs["trace"], plt.Figure)
         plt.close("all")
 
     def test_analyze_roundtrip_iq_mode_and_replot(self, tmp_path):
         est = ParitySwitchEstimator()
         res, figs = est.analyze(_iq_ds(), output_dir=str(tmp_path))
-        assert set(figs) == {"trace", "psd", "iq_plane"}
+        assert set(figs) == {"trace", "parity", "psd", "iq_plane"}
         # replot with zero re-fit, straight from the saved plotdata
         loaded = est.load_plot_data(str(tmp_path))
         refigs = est.generate_figures(None, None, plot_data=loaded)
-        assert set(refigs) == {"trace", "psd", "iq_plane"}
+        assert set(refigs) == {"trace", "parity", "psd", "iq_plane"}
         plt.close("all")

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from scqat.tools.telegraph_psd import (
+    MAX_ODD_FRACTION,
     TELEGRAPH_PSD_KNOBS,
     fit_telegraph_psd,
     lorentzian_knee,
@@ -115,3 +116,65 @@ class TestTelegraphPsd:
         f = np.array([0.0, 10.0])
         assert lorentzian_knee(f, 2.0, 10.0, 0.5)[0] == pytest.approx(2.5)
         assert lorentzian_knee(f, 2.0, 10.0, 0.5)[1] == pytest.approx(1.5)
+
+
+class TestUnresolvedTraceIsRefused:
+    """A trace whose consecutive shots are UNCORRELATED carries no rate.
+
+    p_odd = (1 - exp(-2*Gamma*dt))/2 saturates at 0.5, so p_odd near 0.5 means
+    the shots are independent and the spectrum is white — but curve_fit still
+    lands a finite corner on white noise, so the Lorentzian cannot tell on its
+    own. Motivated by a real 1e6-shot run that reported 535053 transitions
+    (p_odd = 0.535, past the ceiling) alongside a confident-looking 1708 Hz,
+    and PASSED the outcome gate — proposing that rate as a chip fact.
+    """
+
+    def test_uncorrelated_trace_fails_with_a_nan_rate(self):
+        rng = np.random.default_rng(11)
+        res = fit_telegraph_psd(rng.integers(0, 2, 60_000).astype(np.int8), DT)
+        assert res["success"] is False
+        assert np.isnan(res["parity_rate_hz"])
+        assert res["p_odd"] == pytest.approx(0.5, abs=0.02)
+        # still diagnosable: the corner and the arrays survive the refusal
+        assert np.isfinite(res["psd_corner_hz"])
+        assert res["psd_freq_hz"].size > 0
+
+    def test_the_real_run_signature_is_refused(self):
+        """p_odd slightly ABOVE 0.5 — past the Markov ceiling entirely."""
+        rng = np.random.default_rng(12)
+        trace = rng.integers(0, 2, 40_000).astype(np.int8)
+        trace[::2] = 1 - trace[1::2][:trace[::2].size]  # nudge anti-correlated
+        res = fit_telegraph_psd(trace, DT)
+        assert res["p_odd"] > 0.5
+        assert res["success"] is False
+
+    def test_p_odd_matches_the_transition_count(self):
+        trace = _telegraph(seed=13)
+        res = fit_telegraph_psd(trace, DT)
+        assert res["p_odd"] == pytest.approx(
+            res["n_transitions"] / (trace.size - 1))
+
+    def test_a_resolved_trace_still_passes(self):
+        """The guard must not reject merely FAST switching that is still
+        sampled well enough to fit."""
+        res = fit_telegraph_psd(_telegraph(seed=14), DT)
+        assert res["success"] is True
+        assert res["p_odd"] < MAX_ODD_FRACTION
+        assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.2)
+
+    def test_just_under_the_threshold_still_passes(self):
+        """A boundary, not a blanket rejection of fast switching.
+
+        ``_telegraph`` flips with per-step probability ``rate * dt``, and for a
+        Bernoulli flip chain that probability IS p_odd — so a target odd
+        fraction is ``rate = target / dt``. (The chain's true Gamma is the
+        continuous-time inversion ``-ln(1 - 2*p)/(2*dt)``, which is ~2x larger
+        here; the two only coincide for small p, which is why the other
+        recovery tests sit at p = 0.005.)
+        """
+        target = MAX_ODD_FRACTION - 0.05
+        res = fit_telegraph_psd(
+            _telegraph(rate_up_hz=target / DT, seed=15, n=200_000), DT)
+        assert res["p_odd"] == pytest.approx(target, abs=0.02)
+        assert res["success"] is True
+        assert np.isfinite(res["parity_rate_hz"])

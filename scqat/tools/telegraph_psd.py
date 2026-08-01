@@ -42,14 +42,35 @@ on:
     psd_white_floor : fitted white floor B, 1/Hz
     n_transitions   : raw nearest-neighbour flip count (diagnostic;
                       inflated by readout errors)
+    p_odd           : n_transitions / (n - 1) — the fraction of consecutive
+                      pairs that DISAGREE. See "Is it even resolved?" below.
     p_excited       : mean occupancy of the trace
     success         : bool — fit trustworthy (corner resolved inside the
-                      spectral window)
+                      spectral window AND the trace actually correlated)
     method          : "welch_lorentzian"
 
 On a failed fit the rate is NaN, ``success`` is False, and the tier-2 arrays
 are still returned (possibly empty for a degenerate trace). Tier-2 plot-data
 arrays: ``psd_freq_hz``, ``psd``, ``psd_fit``.
+
+Is it even resolved?
+--------------------
+For a Markov telegraph sampled at ``dt``,
+
+    p_odd = (1 - exp(-2 * Gamma * dt)) / 2
+
+which SATURATES AT 0.5: at p_odd = 0.5 consecutive shots are statistically
+independent, the spectrum is white, and any "knee" the fitter lands on is
+noise. Inverting gives the switches-per-shot, ``Gamma * dt = -ln(1 - 2*p_odd)/2``.
+
+So a high p_odd is not a slightly-worse fit, it is the ABSENCE of the signal
+being measured, and the Lorentzian fit alone cannot tell the difference — it
+returns a finite corner either way. :data:`MAX_ODD_FRACTION` is therefore
+checked independently of the fit, and failing it sets ``success = False`` with
+a NaN rate while KEEPING the corner and the arrays, so the failure is
+diagnosable rather than opaque. A NaN rate from this check means "unresolved at
+this shot cadence" — measure faster — and is a different statement from "the
+fit did not converge".
 """
 
 from typing import Any, Dict, Optional
@@ -61,6 +82,14 @@ from scipy.signal import welch
 #: caller-selectable knobs — the single source of truth callers validate
 #: against BEFORE any per-target loop.
 TELEGRAPH_PSD_KNOBS = frozenset({"nperseg", "window", "detrend"})
+
+#: Refuse a trace whose consecutive pairs disagree this often. Gamma*dt =
+#: -ln(1 - 2*p)/2, so 0.40 is ~0.8 switches per shot — the telegraph is already
+#: undersampled, and 0.5 is the hard ceiling where the shots are independent and
+#: the spectrum is white (see the module docstring). Deliberately generous: the
+#: job here is to reject traces carrying NO recoverable rate, not to insist on a
+#: comfortably slow one.
+MAX_ODD_FRACTION = 0.40
 
 
 def validate_telegraph_psd_kwargs(knobs: Dict) -> None:
@@ -143,6 +172,8 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
     rounded = np.rint(states)
     n_transitions = int(np.count_nonzero(np.diff(rounded)))
     p_excited = float(np.mean(states))
+    p_odd = (float(n_transitions) / (states.size - 1)
+             if states.size >= 2 else float("nan"))
 
     out: Dict[str, Any] = {
         "parity_rate_hz": float("nan"),
@@ -150,6 +181,7 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
         "psd_amplitude": float("nan"),
         "psd_white_floor": float("nan"),
         "n_transitions": n_transitions,
+        "p_odd": p_odd,
         "p_excited": p_excited,
         "success": False,
         "method": "welch_lorentzian",
@@ -186,7 +218,12 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
     # A corner pinned at (or outside) the spectral window is unresolved: too
     # slow to see in this trace length, or faster than the shot cadence.
     resolved = bool(freq[0] < corner < freq[-1] and np.isfinite(corner))
-    if resolved:
+    # ... and independently of the fit: consecutive shots must actually be
+    # CORRELATED. At p_odd -> 0.5 they are independent and the spectrum is
+    # white, but curve_fit still returns a finite corner, so the Lorentzian
+    # cannot self-diagnose this (module docstring).
+    correlated = bool(np.isfinite(p_odd) and p_odd <= MAX_ODD_FRACTION)
+    if resolved and correlated:
         out["parity_rate_hz"] = float(np.pi * corner)
         out["success"] = True
     return out
