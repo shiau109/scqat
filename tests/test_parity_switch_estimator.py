@@ -207,18 +207,18 @@ class TestParitySwitchEstimator:
         assert (tmp_path / "parity_switch_metadata.json").exists()
         assert (tmp_path / "parity_switch_plotdata.nc").exists()
         # no IQ cloud in state mode
-        assert set(figs) == {"trace", "parity", "psd", "state_psd"}
-        assert isinstance(figs["trace"], plt.Figure)
+        assert set(figs) == {"timetrace", "psd", "state_psd"}
+        assert isinstance(figs["timetrace"], plt.Figure)
         plt.close("all")
 
     def test_analyze_roundtrip_iq_mode_and_replot(self, tmp_path):
         est = ParitySwitchEstimator()
         res, figs = est.analyze(_iq_ds(), output_dir=str(tmp_path))
-        assert set(figs) == {"trace", "parity", "psd", "state_psd", "iq_plane"}
+        assert set(figs) == {"timetrace", "psd", "state_psd", "iq_plane"}
         # replot with zero re-fit, straight from the saved plotdata
         loaded = est.load_plot_data(str(tmp_path))
         refigs = est.generate_figures(None, None, plot_data=loaded)
-        assert set(refigs) == {"trace", "parity", "psd", "state_psd", "iq_plane"}
+        assert set(refigs) == {"timetrace", "psd", "state_psd", "iq_plane"}
         plt.close("all")
 
 

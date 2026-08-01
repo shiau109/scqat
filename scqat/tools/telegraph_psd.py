@@ -76,6 +76,60 @@ Correcting this bias (fitting the lag-1 term, or subtracting the known
 ``2*eps(1-eps)`` contribution) is not implemented; the rate is reported as
 measured.
 
+The reference parameterization (mapping fidelity F)
+---------------------------------------------------
+The literature writes the same spectrum as
+
+    S_P(f) = 4*F^2*Gamma / ((2*Gamma)^2 + (2*pi*f)^2) + (1 - F^2)*dt
+
+for a +-1-valued parity, two-sided, where F is the SEQUENCE MAPPING FIDELITY —
+the correlation between the true parity and the measured one, ``F = 1 - 2*eps``
+for a per-sample mapping-error probability ``eps``. That is the same function as
+ours in different variables. Our series is 0/1 (a quarter of the variance) and
+welch returns the one-sided density (twice), so ``S_ours = S_P / 2`` and
+
+    f_c = Gamma / pi           <=>   Gamma = pi * f_c
+    A   = F^2 / (2*Gamma)      <=>   F^2   = 2 * pi * f_c * A
+    B   = (1 - F^2) * dt / 2   <=>   F^2   = 1 - 2 * B / dt
+
+No refit is needed to get F: the existing three-parameter fit ALREADY IS the
+reference model, with ``A`` and ``B`` exactly its ``4*F^2`` and ``(1-F^2)*dt``
+terms carried as free parameters. The normalization is self-consistent by
+construction — the Lorentzian integrates to ``F^2/4`` and the floor to
+``(1-F^2)/4``, summing to the 1/4 variance of a balanced 0/1 series (checked on
+the real chipA run: 0.2329 reconstructed vs 0.2490 measured, 6 %).
+
+TWO estimates of F fall out, and they are NOT redundant:
+
+    mapping_fidelity        sqrt(2*pi*f_c*A)    — from the plateau
+    mapping_fidelity_floor  sqrt(1 - 2*B/dt)    — from the floor
+    mapping_fidelity_ratio  their ratio         — the diagnostic
+
+On a DIRECTLY sampled telegraph with genuinely white mapping error the FLOOR
+estimate is the accurate one — measured at 1.000x of truth across Gamma =
+2-200 Hz and eps = 0-5 %, while the plateau estimate runs ~2 % low from Welch
+window leakage. But on the XOR-derived parity of a no-reset run the induced
+noise is lag-1 correlated rather than white (previous section), and then the
+floor estimate SATURATES AT 1 — it reports a flawless sequence — while the
+plateau estimate collapses. Measured, planting Gamma = 20 Hz at dt = 50 us:
+
+    readout error   corner bias   F_plateau   F_floor
+        0              0.97x        0.978      1.000
+        0.05 %         2.2x         0.913      1.000
+        0.2  %          71x         0.285      1.000
+        1.0  %         226x         0.358      1.000
+
+So ``mapping_fidelity`` (the plateau) is the headline, and the RATIO is what to
+read: near 1 the Lorentzian-plus-white-floor model describes the data; far below
+1 it does not, which is the readable symptom of the correlated readout error
+that also inflates the rate. Note the contrast gate does NOT catch this — those
+corrupted fits keep a large ``A/B``.
+
+It is REPORTED, never gated. The failure it exposes is real, but there is no
+calibrated threshold yet, and a wrong one would reject good runs — which is
+exactly how the old ``p_switch`` ceiling nearly refused a textbook chipA fit.
+That run scores F = 0.578 (plateau) / 0.634 (floor), ratio 0.91.
+
 The rate scales linearly with ``dt_s``: a shot-period bookkeeping error in the
 caller shifts the rate proportionally (which is also how to detect one — vary
 the between-shot wait on hardware and check the rate is invariant).
@@ -101,6 +155,14 @@ on:
     psd_freq_max_hz : highest bin (Nyquist, 1/(2*dt)).
     psd_contrast    : A/B — the plateau over its own white floor. The "is there
                       a knee at all" number; gated by MIN_PSD_CONTRAST.
+    mapping_fidelity : sequence mapping fidelity F from the PLATEAU,
+                      sqrt(2*pi*f_c*A). F = 1 - 2*eps for a per-sample
+                      mapping-error probability eps. The headline F.
+    mapping_fidelity_floor : the same F from the FLOOR, sqrt(1 - 2*B/dt).
+                      Independent of the plateau — NaN if the fitted floor
+                      exceeds the model's whole noise budget (B > dt/2).
+    mapping_fidelity_ratio : plateau/floor. ~1 means the model fits; well below
+                      1 means it does not. See "The reference parameterization".
     corner_margin_low : corner / psd_freq_min_hz — how much low-frequency
                       headroom the fit had. REPORTED, not gated: below ~5 the
                       plateau is thinly sampled and a longer record would help.
@@ -291,6 +353,9 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
         "psd_freq_max_hz": float("nan"),
         "psd_contrast": float("nan"),
         "corner_margin_low": float("nan"),
+        "mapping_fidelity": float("nan"),
+        "mapping_fidelity_floor": float("nan"),
+        "mapping_fidelity_ratio": float("nan"),
         "success": False,
         "method": "welch_lorentzian",
         "psd_freq_hz": np.array([]),
@@ -313,9 +378,22 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
         return out
 
     contrast = float(amplitude / floor) if floor > 0 else float("inf")
+    # the same fit read in the reference variables: A and B ARE its 4F^2 and
+    # (1-F^2)dt terms, so F falls out twice over with no refit (module
+    # docstring). Two independent estimates on purpose — their ratio is the
+    # only thing here that notices a correlated-noise model failure.
+    f_plateau = float(np.sqrt(2.0 * np.pi * corner * amplitude))
+    floor_budget = 1.0 - 2.0 * floor / dt_s
+    # B > dt/2 means the fitted floor carries more power than the model allows
+    # for ANY fidelity — not a low F, a broken model. NaN, not a clamp to 0.
+    f_floor = float(np.sqrt(floor_budget)) if floor_budget > 0 else float("nan")
     out.update(psd_corner_hz=corner, psd_amplitude=amplitude,
                psd_white_floor=floor, psd_contrast=contrast,
                corner_margin_low=float(corner / freq[0]),
+               mapping_fidelity=f_plateau,
+               mapping_fidelity_floor=f_floor,
+               mapping_fidelity_ratio=(float(f_plateau / f_floor)
+                                       if f_floor > 0 else float("nan")),
                psd_fit=lorentzian_knee(freq, amplitude, corner, floor))
     # A corner pinned at (or outside) the spectral window is unresolved: too
     # slow to see in this trace length, or faster than the sample cadence.

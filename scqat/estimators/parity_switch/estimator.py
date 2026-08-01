@@ -12,10 +12,9 @@ from scqat.core.base_estimator import (
 )
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.parity_switch.visualization import (
-    plot_parity,
     plot_psd,
     plot_state_psd,
-    plot_trace,
+    plot_timetrace,
 )
 from scqat.tools.discriminate import discriminate_states
 from scqat.tools.telegraph_psd import (
@@ -260,6 +259,8 @@ class ParitySwitchEstimator(BaseEstimator):
                       "psd_white_floor", "n_transitions", "p_switch",
                       "p_high", "p_parity_odd", "p_state_high", "psd_freq_min_hz",
                       "psd_freq_max_hz", "psd_contrast", "corner_margin_low",
+                      "mapping_fidelity", "mapping_fidelity_floor",
+                      "mapping_fidelity_ratio",
                       "dt_s", "state_source", "method")
             if k in results
         }
@@ -276,14 +277,13 @@ class ParitySwitchEstimator(BaseEstimator):
         plot_data: Optional[xr.Dataset] = None,
         **kwargs,
     ) -> Dict[str, plt.Figure]:
-        """Readout snippet, the derived parity snippet, the parity's log-log
-        PSD with the knee fit, and the readout's own UNFITTED spectrum (+ the
-        shared IQ-plane panel when the input carried quadratures). Draws only
-        from ``plot_data``."""
+        """One shared-axis DEBUG panel holding the readout snippet over the
+        derived parity snippet, the parity's log-log PSD with the knee fit, and
+        the readout's own UNFITTED spectrum (+ the shared IQ-plane panel when
+        the input carried quadratures). Draws only from ``plot_data``."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        figs = {"trace": plot_trace(plot_data),
-                "parity": plot_parity(plot_data),
+        figs = {"timetrace": plot_timetrace(plot_data),
                 "psd": plot_psd(plot_data),
                 "state_psd": plot_state_psd(plot_data)}
         if has_iq_plane(plot_data):
