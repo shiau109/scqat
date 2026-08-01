@@ -28,9 +28,11 @@ from .discriminate import (
 from .ge_discriminator import compute_ge_discriminator
 from .ramsey_fit import RAMSEY_MODELS, fit_ramsey
 from .telegraph_psd import (
+    MAX_ODD_FRACTION,
     TELEGRAPH_PSD_KNOBS,
     fit_telegraph_psd,
     lorentzian_knee,
+    telegraph_spectrum,
     validate_telegraph_psd_kwargs,
 )
 from . import fit_abscos  # noqa: F401

@@ -23,9 +23,22 @@ POS_G = (0.2, -0.4)
 POS_E = (4.2, -0.4)
 
 
-def _trace(n=N, gamma=GAMMA, dt=DT, seed=3):
+def _parity(n=N, gamma=GAMMA, dt=DT, seed=3):
+    """The charge parity itself: a telegraph switching at ``gamma``."""
     rng = np.random.default_rng(seed)
     return (np.cumsum(rng.random(n) < gamma * dt) % 2).astype(np.int8)
+
+
+def _trace(n=N, gamma=GAMMA, dt=DT, seed=3):
+    """What the instrument actually returns: the RUNNING XOR of the parity.
+
+    No qubit reset plus a QND readout means each outcome inverts with the pole
+    the previous shot left behind, so ``s[i] = s[i-1] XOR parity[i]``. Building
+    the fixture this way is the whole point — one that planted the telegraph
+    directly into the readout would validate the wrong physics, which is
+    exactly how the original bug survived its own tests.
+    """
+    return (np.cumsum(_parity(n, gamma, dt, seed)) % 2).astype(np.int8)
 
 
 def _state_ds(n=N, seed=3, with_period=True):
@@ -38,7 +51,16 @@ def _state_ds(n=N, seed=3, with_period=True):
     return ds
 
 
-def _iq_ds(n=N, noise=0.8, seed=4, with_ref=True):
+#: blob noise for the IQ fixtures. Deliberately small: the separation is 4, so
+#: 0.4 puts the centres 5 sigma apart and the discrimination error is ~1e-7.
+#: That matters because these tests check the IQ PLUMBING, and the parity rate
+#: is brutally sensitive to readout error (~1 + 2*eps/(Gamma*dt)) — at the old
+#: 0.8 the ~0.6% error alone inflated the rate 10x. The sensitivity itself is
+#: pinned separately by TestReadoutErrorBias.
+_IQ_NOISE = 0.4
+
+
+def _iq_ds(n=N, noise=_IQ_NOISE, seed=4, with_ref=True):
     trace = _trace(n=n, seed=seed)
     rng = np.random.default_rng(seed + 1)
     i = np.where(trace, POS_E[0], POS_G[0]) + noise * rng.standard_normal(n)
@@ -129,7 +151,8 @@ class TestParitySwitchEstimator:
         for key in ("trace", "psd_freq_hz", "psd", "psd_fit"):
             assert key not in meta
         assert {"parity_rate_hz", "psd_corner_hz", "n_transitions",
-                "p_excited", "success", "dt_s", "state_source"} <= set(meta)
+                "p_switch", "p_high", "p_parity_odd", "success", "dt_s",
+                "state_source"} <= set(meta)
 
     def test_plot_data_layout(self):
         est = ParitySwitchEstimator()
@@ -147,9 +170,9 @@ class TestParitySwitchEstimator:
         assert pd.attrs["state_source"] == "discriminated"
         assert pd.attrs["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.25)
 
-    def test_parity_is_the_consecutive_pair_agreement(self):
+    def test_parity_is_the_consecutive_pair_difference(self):
         """even (0) = the pair agrees, odd (1) = it differs, one shorter than
-        the shot trace, and the odd count must equal n_transitions."""
+        the readout trace, and it must equal the PLANTED parity."""
         est = ParitySwitchEstimator()
         ds = _state_ds()
         res = est.extract_parameters(ds)
@@ -161,38 +184,139 @@ class TestParitySwitchEstimator:
         parity = pd["parity"].values
         assert parity.size == state.size - 1
         assert np.array_equal(parity, (state[:-1] != state[1:]).astype(np.int8))
-        assert int(np.count_nonzero(parity)) == res["n_transitions"]
+        # and that derived series IS the parity the fixture planted
+        assert np.array_equal(parity, _parity()[1:])
+        # n_transitions now counts the PARITY's own switches, not the readout's
+        assert int(np.count_nonzero(np.diff(parity))) == res["n_transitions"]
         # each pair is timed BETWEEN its two shots
         assert pd.coords["pair_time_s"].values[0] == pytest.approx(0.5 * DT)
 
-    def test_parity_handles_a_degenerate_trace(self):
-        """A one-shot trace has no pairs; the layout must still be valid."""
+    def test_a_single_shot_has_no_parity_at_all(self):
+        """The parity IS the consecutive difference, so one shot carries no
+        measurement — refuse by name rather than fit an empty array."""
         est = ParitySwitchEstimator()
         ds = xr.Dataset({"state": ("shot_idx", np.array([1], dtype=np.int8))},
                         coords={"shot_idx": [0]})
         ds["shot_period_s"] = DT
-        res = est.extract_parameters(ds)
-        pd = est.build_plot_data(ds, res)
-        assert pd["parity"].sizes["pair_idx"] == 0
-        assert isinstance(est.generate_figures(ds, res, plot_data=pd)["parity"],
-                          plt.Figure)
-        plt.close("all")
+        with pytest.raises(ValueError, match="at least 2 shots"):
+            est.extract_parameters(ds)
 
     def test_analyze_roundtrip_state_mode(self, tmp_path):
         est = ParitySwitchEstimator()
         res, figs = est.analyze(_state_ds(), output_dir=str(tmp_path))
         assert (tmp_path / "parity_switch_metadata.json").exists()
         assert (tmp_path / "parity_switch_plotdata.nc").exists()
-        assert set(figs) == {"trace", "parity", "psd"}  # no IQ cloud in state mode
+        # no IQ cloud in state mode
+        assert set(figs) == {"trace", "parity", "psd", "state_psd"}
         assert isinstance(figs["trace"], plt.Figure)
         plt.close("all")
 
     def test_analyze_roundtrip_iq_mode_and_replot(self, tmp_path):
         est = ParitySwitchEstimator()
         res, figs = est.analyze(_iq_ds(), output_dir=str(tmp_path))
-        assert set(figs) == {"trace", "parity", "psd", "iq_plane"}
+        assert set(figs) == {"trace", "parity", "psd", "state_psd", "iq_plane"}
         # replot with zero re-fit, straight from the saved plotdata
         loaded = est.load_plot_data(str(tmp_path))
         refigs = est.generate_figures(None, None, plot_data=loaded)
-        assert set(refigs) == {"trace", "parity", "psd", "iq_plane"}
+        assert set(refigs) == {"trace", "parity", "psd", "state_psd", "iq_plane"}
         plt.close("all")
+
+
+class TestTheReadoutIsNotTheParity:
+    """The bug this experiment shipped with, pinned so it cannot come back.
+
+    The sequence has NO qubit reset and is a unitary, so it maps antipodal
+    Bloch vectors to antipodal ones: |0> and |1> can never give the same
+    outcome. The measured outcome therefore inverts with the pole the previous
+    shot left behind, and the readout is the RUNNING XOR of the parity rather
+    than the parity. v0.19.0 fitted the readout and every rate it produced was
+    meaningless.
+    """
+
+    def test_the_sequence_inverts_with_the_starting_pole(self):
+        """The physics the whole analysis rests on, checked from the unitary
+        rather than remembered. y90 - Z(+-pi/2) - x90 on |0> and on |1> must
+        give OPPOSITE outcomes for the same parity."""
+        def rot(axis, ang):
+            s = {"x": np.array([[0, 1], [1, 0]]),
+                 "y": np.array([[0, -1j], [1j, 0]]),
+                 "z": np.array([[1, 0], [0, -1]])}[axis]
+            return np.cos(ang / 2) * np.eye(2) - 1j * np.sin(ang / 2) * s
+
+        for phase in (+np.pi / 2, -np.pi / 2):          # even / odd parity
+            seq = rot("x", np.pi / 2) @ rot("z", phase) @ rot("y", np.pi / 2)
+            p_from_g = abs((seq @ np.array([1, 0], complex))[1]) ** 2
+            p_from_e = abs((seq @ np.array([0, 1], complex))[1]) ** 2
+            assert p_from_g == pytest.approx(1.0 - p_from_e, abs=1e-12)
+            assert abs(p_from_g - p_from_e) == pytest.approx(1.0, abs=1e-12)
+
+    def test_rate_is_recovered_from_a_running_xor_readout(self):
+        """THE regression test: feed the estimator what the instrument really
+        returns and require the PLANTED rate back. Fitting the readout instead
+        of the parity fails this outright."""
+        est = ParitySwitchEstimator()
+        res = est.extract_parameters(_state_ds())
+        assert res["success"] is True
+        assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.2)
+
+    def test_a_healthy_run_has_odd_parity_near_one_half(self):
+        """p_parity_odd ~ 0.5 is HEALTHY — the chip sits in each parity about
+        half the time, and that fraction carries no rate information. Only
+        p_switch (how often the parity CHANGES) decides resolvability, and it
+        must be small for a well-sampled telegraph."""
+        est = ParitySwitchEstimator()
+        res = est.extract_parameters(_state_ds())
+        assert res["p_parity_odd"] == pytest.approx(0.5, abs=0.1)
+        assert res["p_switch"] < 0.05
+        assert res["p_switch"] == pytest.approx(GAMMA * DT, rel=0.3)
+
+    def test_the_readout_spectrum_is_kept_but_never_fitted(self):
+        est = ParitySwitchEstimator()
+        ds = _state_ds()
+        res = est.extract_parameters(ds)
+        pd = est.build_plot_data(ds, res)
+        assert pd["state_psd"].dims == ("state_psd_freq_hz",)
+        assert pd["state_psd"].size > 0
+        # no fit curve exists for it, and none may be added
+        assert "state_psd_fit" not in pd.data_vars
+        # the fitted spectrum is the PARITY's, and it is a different array
+        assert pd["psd"].size != pd["state_psd"].size or not np.array_equal(
+            pd["psd"].values, pd["state_psd"].values)
+
+
+class TestReadoutErrorBias:
+    """Readout error is NOT benign on this experiment, and the size of the
+    effect is worth pinning rather than discovering on hardware.
+
+    The parity is recovered as the difference of consecutive readouts, so ONE
+    bad shot flips TWO adjacent parity samples. The corruption is therefore
+    lag-1 correlated rather than white, and it biases the fitted corner —
+    unlike a directly sampled telegraph, where errors land harmlessly in the
+    white floor. The rate inflates as ~1 + 2*eps/(Gamma*dt).
+    """
+
+    @staticmethod
+    def _rate(eps, seed=7, n=200_000):
+        rng = np.random.default_rng(seed)
+        parity = (np.cumsum(rng.random(n) < GAMMA * DT) % 2).astype(np.int8)
+        state = (np.cumsum(parity) % 2).astype(np.int8)
+        if eps:
+            state = (state ^ (rng.random(n) < eps)).astype(np.int8)
+        ds = xr.Dataset({"state": ("shot_idx", state)},
+                        coords={"shot_idx": np.arange(n)})
+        ds["shot_period_s"] = DT
+        return ParitySwitchEstimator().extract_parameters(ds)["parity_rate_hz"]
+
+    def test_clean_readout_recovers_the_planted_rate(self):
+        assert self._rate(0.0) == pytest.approx(GAMMA, rel=0.15)
+
+    def test_error_well_under_gamma_dt_is_tolerable(self):
+        # eps = 0.1 * Gamma*dt -> ~1.2x, still the right order
+        assert self._rate(0.1 * GAMMA * DT) == pytest.approx(GAMMA, rel=0.35)
+
+    def test_error_comparable_to_gamma_dt_inflates_the_rate_badly(self):
+        """The number that sets the fidelity requirement: at eps ~ Gamma*dt the
+        reported rate is several times the truth. If this ever starts passing
+        as 'close enough', the bias has been corrected and the docs must change."""
+        inflated = self._rate(GAMMA * DT)          # eps == Gamma*dt
+        assert inflated > 3 * GAMMA

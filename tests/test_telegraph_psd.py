@@ -63,7 +63,7 @@ class TestTelegraphPsd:
         # convention: rate = pi * corner
         assert res["parity_rate_hz"] == pytest.approx(
             np.pi * res["psd_corner_hz"])
-        assert res["p_excited"] == pytest.approx(0.5, abs=0.05)
+        assert res["p_high"] == pytest.approx(0.5, abs=0.05)
 
     def test_readout_errors_raise_the_floor_not_the_rate(self):
         clean = fit_telegraph_psd(_telegraph(seed=1), DT)
@@ -81,21 +81,21 @@ class TestTelegraphPsd:
         assert res["success"] is True
         # corner = Gamma_up + Gamma_down -> reported rate = the mean (50 Hz)
         assert res["parity_rate_hz"] == pytest.approx(50.0, rel=0.25)
-        assert res["p_excited"] == pytest.approx(0.8, abs=0.07)
+        assert res["p_high"] == pytest.approx(0.8, abs=0.07)
 
     def test_flat_trace_fails_softly(self):
         res = fit_telegraph_psd(np.zeros(5000), DT)
         assert res["success"] is False
         assert np.isnan(res["parity_rate_hz"])
         assert res["n_transitions"] == 0
-        assert res["p_excited"] == 0.0
+        assert res["p_high"] == 0.0
         for key in ("psd_freq_hz", "psd", "psd_fit"):
             assert key in res  # arrays present even on failure
 
     def test_diagnostics_on_a_tiny_trace(self):
         res = fit_telegraph_psd(np.array([0, 0, 1, 1, 0, 1]), DT)
         assert res["n_transitions"] == 3
-        assert res["p_excited"] == pytest.approx(0.5)
+        assert res["p_high"] == pytest.approx(0.5)
         assert res["success"] is False  # far too short to resolve a knee
 
     def test_nperseg_knob(self):
@@ -134,7 +134,7 @@ class TestUnresolvedTraceIsRefused:
         res = fit_telegraph_psd(rng.integers(0, 2, 60_000).astype(np.int8), DT)
         assert res["success"] is False
         assert np.isnan(res["parity_rate_hz"])
-        assert res["p_odd"] == pytest.approx(0.5, abs=0.02)
+        assert res["p_switch"] == pytest.approx(0.5, abs=0.02)
         # still diagnosable: the corner and the arrays survive the refusal
         assert np.isfinite(res["psd_corner_hz"])
         assert res["psd_freq_hz"].size > 0
@@ -145,13 +145,13 @@ class TestUnresolvedTraceIsRefused:
         trace = rng.integers(0, 2, 40_000).astype(np.int8)
         trace[::2] = 1 - trace[1::2][:trace[::2].size]  # nudge anti-correlated
         res = fit_telegraph_psd(trace, DT)
-        assert res["p_odd"] > 0.5
+        assert res["p_switch"] > 0.5
         assert res["success"] is False
 
     def test_p_odd_matches_the_transition_count(self):
         trace = _telegraph(seed=13)
         res = fit_telegraph_psd(trace, DT)
-        assert res["p_odd"] == pytest.approx(
+        assert res["p_switch"] == pytest.approx(
             res["n_transitions"] / (trace.size - 1))
 
     def test_a_resolved_trace_still_passes(self):
@@ -159,7 +159,7 @@ class TestUnresolvedTraceIsRefused:
         sampled well enough to fit."""
         res = fit_telegraph_psd(_telegraph(seed=14), DT)
         assert res["success"] is True
-        assert res["p_odd"] < MAX_ODD_FRACTION
+        assert res["p_switch"] < MAX_ODD_FRACTION
         assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.2)
 
     def test_just_under_the_threshold_still_passes(self):
@@ -175,6 +175,6 @@ class TestUnresolvedTraceIsRefused:
         target = MAX_ODD_FRACTION - 0.05
         res = fit_telegraph_psd(
             _telegraph(rate_up_hz=target / DT, seed=15, n=200_000), DT)
-        assert res["p_odd"] == pytest.approx(target, abs=0.02)
+        assert res["p_switch"] == pytest.approx(target, abs=0.02)
         assert res["success"] is True
         assert np.isfinite(res["parity_rate_hz"])
