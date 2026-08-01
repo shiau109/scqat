@@ -320,3 +320,25 @@ class TestReadoutErrorBias:
         as 'close enough', the bias has been corrected and the docs must change."""
         inflated = self._rate(GAMMA * DT)          # eps == Gamma*dt
         assert inflated > 3 * GAMMA
+
+
+def test_state_mean_is_distinct_from_the_parity_level():
+    """Three level-fractions exist and conflating them is how this experiment
+    got its analysis wrong once already:
+
+      p_state_high  -- the RAW READOUT's mean (the running XOR)
+      p_parity_odd  -- the PARITY's level, ~0.5 on a healthy run
+      p_switch      -- how often the PARITY CHANGES; the only one about the rate
+    """
+    est = ParitySwitchEstimator()
+    ds = _state_ds()
+    res = est.extract_parameters(ds)
+
+    assert res["p_state_high"] == pytest.approx(
+        float(np.mean(ds["state"].values)))
+    # the readout is the running XOR, so its mean is its own quantity
+    assert res["p_state_high"] != pytest.approx(res["p_parity_odd"], abs=1e-6)
+    assert res["p_switch"] < 0.05
+    # and it has to reach the figure layer, which draws only from plot_data
+    pd = est.build_plot_data(ds, res)
+    assert pd.attrs["p_state_high"] == pytest.approx(res["p_state_high"])
