@@ -286,7 +286,7 @@ promotion checklist already requires "`simulate()` implemented → offline end-t
 — name-matching `ls tests/` is NOT enough (`test_fit_qubit_decoherence.py` tests the *fitter*,
 not the estimator; `test_qubit_tomography.py` imports only the class name).
 
-The **full suite** (`uv run --extra dev pytest -q`, ~53 s / 296 tests) is for cutting a release or
+The **full suite** (`uv run --extra dev pytest -q`, ~84 s / 329 tests) is for cutting a release or
 a shared-core edit (row 5). Otherwise **report the exact command run** and offer the full-suite
 command rather than spending the time unasked.
 
