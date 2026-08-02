@@ -34,6 +34,7 @@ from scqat.estimators.parity_switch import ParitySwitchEstimator
 from scqat.estimators.pair_swap_chevron import PairSwapChevronEstimator
 from scqat.estimators.pair_swap_flux_map import PairSwapFluxMapEstimator
 from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator
+from scqat.estimators.spectroscopy_cryoscope import SpectroscopyCryoscopeEstimator
 from scqat.estimators.xyz_delay import XyzDelayEstimator
 
 __all__ = [
@@ -71,6 +72,7 @@ __all__ = [
     "PairSwapChevronEstimator",
     "PairSwapFluxMapEstimator",
     "RamseyCryoscopeEstimator",
+    "SpectroscopyCryoscopeEstimator",
     "XyzDelayEstimator",
 ]
 
