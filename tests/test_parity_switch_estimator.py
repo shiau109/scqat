@@ -305,7 +305,11 @@ class TestReadoutErrorBias:
         ds = xr.Dataset({"state": ("shot_idx", state)},
                         coords={"shot_idx": np.arange(n)})
         ds["shot_period_s"] = DT
-        return ParitySwitchEstimator().extract_parameters(ds)["parity_rate_hz"]
+        # the 1 + 2*eps/(Gamma*dt) bias is the FREE-corner behaviour, which the
+        # tool's bias table measured under the independent fit; pin it here so
+        # this class keeps documenting that fit rather than the coupled default.
+        return ParitySwitchEstimator().extract_parameters(
+            ds, model="independent")["parity_rate_hz"]
 
     def test_clean_readout_recovers_the_planted_rate(self):
         assert self._rate(0.0) == pytest.approx(GAMMA, rel=0.15)

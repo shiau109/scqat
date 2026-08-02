@@ -105,6 +105,11 @@ class ParitySwitchEstimator(BaseEstimator):
                 :func:`scqat.tools.discriminate.discriminate_states`);
                 ``user_mean`` overrides the stored ``ref_pos_*`` centres.
                 Ignored when the dataset already carries a ``state`` variable.
+            model ({"constrained", "independent"}):
+                Which PSD model to fit (see
+                :data:`scqat.tools.telegraph_psd.TELEGRAPH_MODELS`). Default
+                ``"constrained"`` — the reference single-F model. Only the parity
+                fit reads it; the raw-state spectrum is always unfitted.
             nperseg, window, detrend:
                 PSD knobs (see :func:`scqat.tools.telegraph_psd.fit_telegraph_psd`).
 
@@ -116,6 +121,8 @@ class ParitySwitchEstimator(BaseEstimator):
         user_mean = kwargs.pop("user_mean", None)
         user_std = kwargs.pop("user_std", None)
         outlier_sigma = kwargs.pop("outlier_sigma", 3)
+        # the model axis is not a welch knob — pop it before validating the rest
+        model = kwargs.pop("model", "constrained")
         validate_telegraph_psd_kwargs(kwargs)  # everything left is a PSD knob
 
         dt = self._resolve_dt(dataset, dt_s)
@@ -174,7 +181,7 @@ class ParitySwitchEstimator(BaseEstimator):
             )
         parity = (trace[:-1] != trace[1:]).astype(np.int8)
 
-        results.update(fit_telegraph_psd(parity, dt, **kwargs))
+        results.update(fit_telegraph_psd(parity, dt, model=model, **kwargs))
         # the odd-parity level, distinct from p_switch (the parity's own
         # switching fraction, which is what the guard reads). ~0.5 is HEALTHY:
         # it just says the chip sits in each parity about half the time.
@@ -260,7 +267,7 @@ class ParitySwitchEstimator(BaseEstimator):
                       "p_high", "p_parity_odd", "p_state_high", "psd_freq_min_hz",
                       "psd_freq_max_hz", "psd_contrast", "corner_margin_low",
                       "mapping_fidelity", "mapping_fidelity_floor",
-                      "mapping_fidelity_ratio",
+                      "mapping_fidelity_ratio", "psd_model", "psd_fit_residual",
                       "dt_s", "state_source", "method")
             if k in results
         }

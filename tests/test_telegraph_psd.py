@@ -16,6 +16,7 @@ import pytest
 
 from scqat.tools.telegraph_psd import (
     MIN_PSD_CONTRAST,
+    TELEGRAPH_MODELS,
     TELEGRAPH_PSD_KNOBS,
     fit_telegraph_psd,
     lorentzian_knee,
@@ -76,8 +77,13 @@ class TestTelegraphPsd:
         assert noisy["psd_white_floor"] > 3 * clean["psd_white_floor"]
 
     def test_asymmetric_reports_the_mean_per_direction_rate(self):
+        # the INDEPENDENT model: the constrained reference model bakes in the
+        # symmetric-telegraph (1/4 variance) normalization, so it is biased on a
+        # deliberately asymmetric telegraph. Parity is balanced by physics, so
+        # the default is fine there — but this tool test is not parity.
         res = fit_telegraph_psd(
-            _telegraph(rate_up_hz=80.0, rate_down_hz=20.0, seed=2), DT)
+            _telegraph(rate_up_hz=80.0, rate_down_hz=20.0, seed=2), DT,
+            model="independent")
         assert res["success"] is True
         # corner = Gamma_up + Gamma_down -> reported rate = the mean (50 Hz)
         assert res["parity_rate_hz"] == pytest.approx(50.0, rel=0.25)
@@ -222,14 +228,17 @@ class TestSpectralReach:
 
 
 class TestMappingFidelity:
-    """``A`` and ``B`` are the reference model's ``4F^2`` and ``(1-F^2)dt``
-    terms in different variables, so the SAME three-parameter fit yields the
-    sequence mapping fidelity F twice over — no refit, just a change of
-    variables. See the tool's "reference parameterization" docstring section.
+    """The INDEPENDENT model: free ``A`` and ``B`` are the reference model's
+    ``4F^2`` and ``(1-F^2)dt`` terms in different variables, so the SAME
+    three-parameter fit yields the sequence mapping fidelity F twice over — no
+    refit, just a change of variables. (The constrained model has this pair
+    NaN; these tests pin the independent behaviour by name.) See the tool's
+    "reference parameterization" docstring section.
     """
 
     def test_the_two_estimates_agree_on_a_clean_telegraph(self):
-        res = fit_telegraph_psd(_telegraph(n=400_000, seed=31), DT)
+        res = fit_telegraph_psd(_telegraph(n=400_000, seed=31), DT,
+                                model="independent")
         assert res["mapping_fidelity"] == pytest.approx(1.0, abs=0.05)
         assert res["mapping_fidelity_floor"] == pytest.approx(1.0, abs=0.05)
         assert res["mapping_fidelity_ratio"] == pytest.approx(1.0, abs=0.08)
@@ -239,7 +248,7 @@ class TestMappingFidelity:
         """On a DIRECTLY sampled telegraph the mapping error really is white,
         and then the floor reads F back essentially exactly."""
         res = fit_telegraph_psd(
-            _telegraph(n=400_000, seed=32, p_err=p_err), DT)
+            _telegraph(n=400_000, seed=32, p_err=p_err), DT, model="independent")
         assert res["mapping_fidelity_floor"] == pytest.approx(
             1.0 - 2.0 * p_err, abs=0.01)
 
@@ -247,7 +256,8 @@ class TestMappingFidelity:
         """Both numbers must be exactly the documented functions of (A, f_c, B)
         — if they ever drift into a separate estimate the two would stop being
         an independent cross-check of the same fit."""
-        res = fit_telegraph_psd(_telegraph(n=200_000, seed=33), DT)
+        res = fit_telegraph_psd(_telegraph(n=200_000, seed=33), DT,
+                                model="independent")
         a, fc, b = (res["psd_amplitude"], res["psd_corner_hz"],
                     res["psd_white_floor"])
         assert res["mapping_fidelity"] == pytest.approx(
@@ -263,7 +273,7 @@ class TestMappingFidelity:
         (1-F^2)/4. This is what pins the factor-of-2 conventions (0/1 vs +-1,
         one-sided vs two-sided) that the F formulas depend on."""
         series = _telegraph(n=400_000, seed=34)
-        res = fit_telegraph_psd(series, DT)
+        res = fit_telegraph_psd(series, DT, model="independent")
         lorentz = res["psd_amplitude"] * res["psd_corner_hz"] * np.pi / 2.0
         floor = res["psd_white_floor"] / (2.0 * DT)
         assert lorentz + floor == pytest.approx(float(np.var(series)), rel=0.1)
@@ -275,7 +285,8 @@ class TestMappingFidelity:
         # white noise: no knee, and the fitter puts everything in the floor
         rng = np.random.default_rng(35)
         res = fit_telegraph_psd(
-            (rng.random(100_000) < 0.5).astype(np.int8), DT * 4.0)
+            (rng.random(100_000) < 0.5).astype(np.int8), DT * 4.0,
+            model="independent")
         assert res["success"] is False
         if res["psd_white_floor"] > 2.0 * DT:
             assert np.isnan(res["mapping_fidelity_floor"])
@@ -288,3 +299,104 @@ class TestMappingFidelity:
         for key in ("mapping_fidelity", "mapping_fidelity_floor",
                     "mapping_fidelity_ratio"):
             assert key in res
+
+
+def _xor_derived_parity(gamma, dt_s, n, seed, eps_ro):
+    """The real no-reset construction: plant the telegraph in the PARITY, form
+    the running XOR as the readout, corrupt the READOUT with white error eps_ro,
+    then recover the parity as the consecutive-pair difference. One bad readout
+    flips TWO adjacent parity samples, so the induced parity noise is lag-1
+    correlated, not white — the case where the two fidelity estimates diverge."""
+    rng = np.random.default_rng(seed)
+    p_flip = 0.5 * (1.0 - np.exp(-2.0 * gamma * dt_s))
+    parity = (np.cumsum(rng.random(n) < p_flip) % 2).astype(np.int8)
+    state = np.cumsum(parity) % 2
+    state = (state ^ (rng.random(n) < eps_ro)).astype(np.int8)
+    return (state[:-1] ^ state[1:]).astype(np.int8)
+
+
+class TestPsdModels:
+    """Two selectable spectral fit models over the SAME PSD: the reference
+    constrained single-F fit (default) and the independent free-floor fit.
+    """
+
+    def test_registry_and_default(self):
+        assert TELEGRAPH_MODELS == ("constrained", "independent")
+        # default is the constrained reference model
+        res = fit_telegraph_psd(_telegraph(n=200_000, seed=40), DT)
+        assert res["psd_model"] == "constrained"
+
+    def test_unknown_model_raises(self):
+        with pytest.raises(ValueError, match="Unknown telegraph model"):
+            fit_telegraph_psd(_telegraph(n=1000), DT, model="bogus")
+
+    @pytest.mark.parametrize("eps", [0.0, 0.02, 0.05])
+    def test_constrained_recovers_a_planted_fidelity(self, eps):
+        """On a DIRECTLY sampled telegraph with white mapping error eps, F is
+        1 - 2*eps, and the constrained fit reads it back DIRECTLY (it is the
+        fitted parameter, not a derived quantity)."""
+        res = fit_telegraph_psd(
+            _telegraph(n=400_000, seed=41, p_err=eps), DT, model="constrained")
+        assert res["success"]
+        assert res["mapping_fidelity"] == pytest.approx(1.0 - 2.0 * eps, abs=0.03)
+        # the coupled model produces no independent floor estimate
+        assert np.isnan(res["mapping_fidelity_floor"])
+        assert np.isnan(res["mapping_fidelity_ratio"])
+
+    def test_constrained_floor_is_dt_fixed_derived(self):
+        """dt is FIXED, not fitted: the derived floor is exactly (1-F^2)dt/2."""
+        res = fit_telegraph_psd(_telegraph(n=300_000, seed=42), DT,
+                                model="constrained")
+        F = res["mapping_fidelity"]
+        assert res["psd_white_floor"] == pytest.approx(
+            (1.0 - F ** 2) * DT / 2.0, rel=1e-6)
+        assert res["psd_amplitude"] == pytest.approx(
+            F ** 2 / (2.0 * np.pi * res["psd_corner_hz"]), rel=1e-6)
+
+    def test_both_models_agree_on_a_clean_telegraph(self):
+        """No readout error -> white floor -> both models recover the same rate,
+        and the single constrained F agrees with the independent estimates."""
+        s = _telegraph(n=400_000, seed=43)
+        c = fit_telegraph_psd(s, DT, model="constrained")
+        i = fit_telegraph_psd(s, DT, model="independent")
+        assert c["success"] and i["success"]
+        assert c["parity_rate_hz"] == pytest.approx(i["parity_rate_hz"], rel=0.2)
+        assert c["mapping_fidelity"] == pytest.approx(i["mapping_fidelity"],
+                                                      abs=0.06)
+
+    def test_models_diverge_on_correlated_readout_error(self):
+        """On the XOR-derived parity the induced noise is lag-1 correlated, and
+        the two models expose the trouble differently — which is why both exist.
+
+        Independent: the FLOOR estimate saturates toward 1 (claims a flawless
+        sequence) while the plateau collapses, so their RATIO falls far below 1
+        — its model-consistency check firing. Constrained: it returns a single
+        F but its log-space RESIDUAL balloons versus a clean telegraph, because
+        one shared F cannot fit the plateau and the blue tail at once."""
+        dt = 50e-6
+        q = _xor_derived_parity(20.0, dt, 2_000_000, seed=44, eps_ro=0.005)
+        clean = _xor_derived_parity(20.0, dt, 2_000_000, seed=46, eps_ro=0.0)
+
+        i = fit_telegraph_psd(q, dt, model="independent")
+        assert i["mapping_fidelity_floor"] > 0.95      # floor claims perfection
+        assert i["mapping_fidelity_ratio"] < 0.6       # ...the ratio calls it out
+
+        c_bad = fit_telegraph_psd(q, dt, model="constrained")
+        c_ok = fit_telegraph_psd(clean, dt, model="constrained")
+        # the constrained model's own tell: a much worse fit on corrupted data
+        assert c_bad["psd_fit_residual"] > 2.0 * c_ok["psd_fit_residual"]
+
+    def test_residual_reported_for_both_models(self):
+        s = _telegraph(n=200_000, seed=45)
+        for model in TELEGRAPH_MODELS:
+            res = fit_telegraph_psd(s, DT, model=model)
+            assert np.isfinite(res["psd_fit_residual"])
+            assert res["psd_model"] == model
+
+    def test_keys_present_on_a_failed_fit(self):
+        for model in TELEGRAPH_MODELS:
+            res = fit_telegraph_psd(np.zeros(1000, dtype=np.int8), DT,
+                                    model=model)
+            assert res["success"] is False
+            for key in ("psd_model", "psd_fit_residual", "mapping_fidelity"):
+                assert key in res

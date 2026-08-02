@@ -92,26 +92,44 @@ welch returns the one-sided density (twice), so ``S_ours = S_P / 2`` and
     A   = F^2 / (2*Gamma)      <=>   F^2   = 2 * pi * f_c * A
     B   = (1 - F^2) * dt / 2   <=>   F^2   = 1 - 2 * B / dt
 
-No refit is needed to get F: the existing three-parameter fit ALREADY IS the
-reference model, with ``A`` and ``B`` exactly its ``4*F^2`` and ``(1-F^2)*dt``
-terms carried as free parameters. The normalization is self-consistent by
-construction — the Lorentzian integrates to ``F^2/4`` and the floor to
-``(1-F^2)/4``, summing to the 1/4 variance of a balanced 0/1 series (checked on
-the real chipA run: 0.2329 reconstructed vs 0.2490 measured, 6 %).
+TWO FIT MODELS, selected by ``model=`` (:data:`TELEGRAPH_MODELS`). Both fit the
+one-sided form above; they differ in whether F is shared or free.
 
-TWO estimates of F fall out, and they are NOT redundant:
+**"constrained"** (default) — the reference model verbatim: ONE F, shared across
+the amplitude and the floor, with ``dt`` FIXED to the known sample period. A
+2-parameter fit ``{F, Gamma}`` of
+
+    S(f) = [F^2/(2*Gamma)] / (1 + (pi*f/Gamma)^2) + (1 - F^2)*dt/2
+
+so ``mapping_fidelity`` is the fitted F directly, and ``A``, ``f_c``, ``B`` are
+DERIVED from ``{F, Gamma, dt}``. There is no independent floor estimate — the
+model couples the two — so ``mapping_fidelity_floor`` and
+``mapping_fidelity_ratio`` are NaN under this model. Its own fit-quality number
+is ``psd_fit_residual`` (log-space RMS): a shared F that cannot fit the plateau
+and the floor at once leaves a large residual. Note this model assumes a
+SYMMETRIC (balanced) telegraph — its normalization bakes in the 1/4 variance —
+which the parity is by physics; on a deliberately asymmetric telegraph its rate
+is biased and ``independent`` is the one to use.
+
+**"independent"** — the unconstrained fit: free ``{A, f_c, B}``, from which F is
+read back TWICE. ``A`` and ``B`` are exactly the reference model's ``4*F^2`` and
+``(1-F^2)*dt`` terms carried as free parameters, so no refit is needed — the
+normalization is self-consistent by construction (the Lorentzian integrates to
+``F^2/4`` and the floor to ``(1-F^2)/4``, summing to the 1/4 variance of a
+balanced 0/1 series; checked on the real chipA run, 0.2329 vs 0.2490, 6 %). The
+two estimates
 
     mapping_fidelity        sqrt(2*pi*f_c*A)    — from the plateau
     mapping_fidelity_floor  sqrt(1 - 2*B/dt)    — from the floor
     mapping_fidelity_ratio  their ratio         — the diagnostic
 
-On a DIRECTLY sampled telegraph with genuinely white mapping error the FLOOR
-estimate is the accurate one — measured at 1.000x of truth across Gamma =
-2-200 Hz and eps = 0-5 %, while the plateau estimate runs ~2 % low from Welch
-window leakage. But on the XOR-derived parity of a no-reset run the induced
-noise is lag-1 correlated rather than white (previous section), and then the
-floor estimate SATURATES AT 1 — it reports a flawless sequence — while the
-plateau estimate collapses. Measured, planting Gamma = 20 Hz at dt = 50 us:
+are NOT redundant. On a DIRECTLY sampled telegraph with genuinely white mapping
+error the FLOOR estimate is the accurate one — measured at 1.000x of truth across
+Gamma = 2-200 Hz and eps = 0-5 %, while the plateau runs ~2 % low from Welch
+window leakage. But on the XOR-derived parity of a no-reset run the induced noise
+is lag-1 correlated rather than white (previous section), and then the floor
+estimate SATURATES AT 1 — it reports a flawless sequence — while the plateau
+collapses. Measured, planting Gamma = 20 Hz at dt = 50 us:
 
     readout error   corner bias   F_plateau   F_floor
         0              0.97x        0.978      1.000
@@ -119,16 +137,19 @@ plateau estimate collapses. Measured, planting Gamma = 20 Hz at dt = 50 us:
         0.2  %          71x         0.285      1.000
         1.0  %         226x         0.358      1.000
 
-So ``mapping_fidelity`` (the plateau) is the headline, and the RATIO is what to
-read: near 1 the Lorentzian-plus-white-floor model describes the data; far below
-1 it does not, which is the readable symptom of the correlated readout error
-that also inflates the rate. Note the contrast gate does NOT catch this — those
-corrupted fits keep a large ``A/B``.
+So the RATIO is what to read: near 1 the Lorentzian-plus-white-floor model
+describes the data; far below 1 it does not, which is the readable symptom of the
+correlated readout error that also inflates the rate. The contrast gate does NOT
+catch this — those corrupted fits keep a large ``A/B``.
 
-It is REPORTED, never gated. The failure it exposes is real, but there is no
-calibrated threshold yet, and a wrong one would reject good runs — which is
-exactly how the old ``p_switch`` ceiling nearly refused a textbook chipA fit.
-That run scores F = 0.578 (plateau) / 0.634 (floor), ratio 0.91.
+Which to use: ``constrained`` is the default because it returns F directly the
+way the reference reports it and is more robust (2 params, coupled), and its
+residual flags a bad fit. Reach for ``independent`` when you specifically want the
+plateau/floor cross-check — the ratio is the sharper correlated-noise diagnostic.
+The diagnostics are REPORTED, never gated: the failures are real, but there is no
+calibrated threshold yet and a wrong one would reject good runs, exactly how the
+old ``p_switch`` ceiling nearly refused a textbook chipA fit (which scores F =
+0.578 plateau / 0.634 floor, ratio 0.91 under ``independent``).
 
 The rate scales linearly with ``dt_s``: a shot-period bookkeeping error in the
 caller shifts the rate proportionally (which is also how to detect one — vary
@@ -155,14 +176,20 @@ on:
     psd_freq_max_hz : highest bin (Nyquist, 1/(2*dt)).
     psd_contrast    : A/B — the plateau over its own white floor. The "is there
                       a knee at all" number; gated by MIN_PSD_CONTRAST.
-    mapping_fidelity : sequence mapping fidelity F from the PLATEAU,
-                      sqrt(2*pi*f_c*A). F = 1 - 2*eps for a per-sample
-                      mapping-error probability eps. The headline F.
-    mapping_fidelity_floor : the same F from the FLOOR, sqrt(1 - 2*B/dt).
-                      Independent of the plateau — NaN if the fitted floor
-                      exceeds the model's whole noise budget (B > dt/2).
-    mapping_fidelity_ratio : plateau/floor. ~1 means the model fits; well below
-                      1 means it does not. See "The reference parameterization".
+    mapping_fidelity : sequence mapping fidelity F. F = 1 - 2*eps for a
+                      per-sample mapping-error probability eps. Under
+                      model="constrained" it is the fitted single F; under
+                      model="independent" it is the PLATEAU estimate
+                      sqrt(2*pi*f_c*A). The headline F either way.
+    mapping_fidelity_floor : the floor estimate sqrt(1 - 2*B/dt) — ONLY under
+                      model="independent" (NaN under "constrained", which has no
+                      independent floor). NaN too if B > dt/2 (broken model).
+    mapping_fidelity_ratio : plateau/floor — ONLY under model="independent"
+                      (NaN under "constrained"). ~1 means the model fits, well
+                      below 1 means it does not.
+    psd_model       : which model was fitted ("constrained" | "independent").
+    psd_fit_residual : log-space RMS residual of the fit over the band. The
+                      constrained model's fit-quality number.
     corner_margin_low : corner / psd_freq_min_hz — how much low-frequency
                       headroom the fit had. REPORTED, not gated: below ~5 the
                       plateau is thinly sampled and a longer record would help.
@@ -222,6 +249,21 @@ TELEGRAPH_PSD_KNOBS = frozenset({"nperseg", "window", "detrend"})
 #: still reported, it just no longer decides.
 MIN_PSD_CONTRAST = 3.0
 
+#: The two spectral fit models, selected by ``fit_telegraph_psd(model=...)``.
+#: Both fit the SAME one-sided RTS spectrum; they differ only in whether the
+#: sequence mapping fidelity F is a shared parameter or free per-term (see the
+#: module docstring's "reference parameterization" section):
+#:
+#:   "constrained" — the reference model, ONE shared F in both the Lorentzian
+#:                   amplitude and the floor, with dt FIXED to the sample period:
+#:                   a 2-parameter fit {F, Gamma}. F comes out directly. DEFAULT.
+#:   "independent" — free {A, f_c, B}: F is read back TWICE (plateau + floor),
+#:                   and their disagreement is the model-consistency diagnostic.
+#:
+#: SCQO mirrors this as the ``psd_model`` Literal (its test_estimator_method_sync
+#: keeps the two equal).
+TELEGRAPH_MODELS = ("constrained", "independent")
+
 
 def validate_telegraph_psd_kwargs(knobs: Dict) -> None:
     """Raise ValueError for an unknown knob — call BEFORE per-target loops."""
@@ -273,6 +315,84 @@ def _fit_knee(freq: np.ndarray, psd: np.ndarray) -> tuple:
     return float(a), float(fc), float(b)
 
 
+def _fit_independent(freq: np.ndarray, psd: np.ndarray, dt_s: float) -> Dict:
+    """The unconstrained fit: free {A, f_c, B}, then F read back TWICE.
+
+    A and B are the reference model's ``4F^2`` and ``(1-F^2)dt`` terms carried as
+    free parameters, so F falls out of the plateau AND the floor with no refit —
+    two independent estimates whose ratio notices a correlated-noise model
+    failure the contrast gate is blind to (module docstring).
+    """
+    amplitude, corner, floor = _fit_knee(freq, psd)
+    f_plateau = float(np.sqrt(2.0 * np.pi * corner * amplitude))
+    floor_budget = 1.0 - 2.0 * floor / dt_s
+    # B > dt/2 means the fitted floor carries more power than the model allows
+    # for ANY fidelity — a broken model, not a low F. NaN, not a clamp to 0.
+    f_floor = float(np.sqrt(floor_budget)) if floor_budget > 0 else float("nan")
+    ratio = float(f_plateau / f_floor) if f_floor > 0 else float("nan")
+    return {
+        "psd_amplitude": float(amplitude),
+        "psd_corner_hz": float(corner),
+        "psd_white_floor": float(floor),
+        "mapping_fidelity": f_plateau,
+        "mapping_fidelity_floor": f_floor,
+        "mapping_fidelity_ratio": ratio,
+    }
+
+
+def _fit_constrained(freq: np.ndarray, psd: np.ndarray, dt_s: float) -> Dict:
+    """The reference fit: ONE shared F, dt FIXED, a 2-parameter {F, Gamma}.
+
+    Fits ``S(f) = [F^2/(2G)] / (1 + (pi*f/G)^2) + (1-F^2)*dt/2`` in log space —
+    the 0/1 one-sided form of ``F^2*4G/((2G)^2+(2*pi*f)^2) + (1-F^2)*dt``. F is
+    the fitted parameter, so it is returned directly; ``A``, ``f_c`` and ``B``
+    are DERIVED from ``{F, Gamma, dt}``. There is no independent floor estimate
+    here — the model couples the two by construction — so ``mapping_fidelity_*``
+    floor/ratio are NaN (use ``model="independent"`` for that cross-check).
+
+    Seeded from the cheap unconstrained knee fit so the corner and fidelity start
+    near the data even on a short trace.
+    """
+    a0, fc0, b0 = _fit_knee(freq, psd)  # seed only
+    gamma0 = np.pi * fc0
+    f0 = float(np.clip(np.sqrt(max(2.0 * np.pi * fc0 * a0, 1e-12)), 1e-3, 1.0))
+
+    # fit {F, log(Gamma)} — F stays in (0, 1], Gamma positive by the log
+    def log_model(f, fidelity, log_gamma):
+        gamma = np.exp(log_gamma)
+        amp = fidelity ** 2 / (2.0 * gamma)
+        floor = (1.0 - fidelity ** 2) * dt_s / 2.0
+        return np.log(amp / (1.0 + (np.pi * f / gamma) ** 2) + floor)
+
+    p0 = [f0, np.log(gamma0)]
+    lower = [1e-3, np.log(0.5 * np.pi * freq[0])]
+    upper = [1.0, np.log(np.pi * freq[-1])]
+    popt, _ = curve_fit(log_model, freq, np.log(psd), p0=p0,
+                        bounds=(lower, upper), maxfev=20000)
+    fidelity = float(popt[0])
+    gamma = float(np.exp(popt[1]))
+
+    corner = gamma / np.pi
+    amplitude = fidelity ** 2 / (2.0 * gamma)
+    floor = (1.0 - fidelity ** 2) * dt_s / 2.0
+    return {
+        "psd_amplitude": float(amplitude),
+        "psd_corner_hz": float(corner),
+        "psd_white_floor": float(floor),
+        "mapping_fidelity": fidelity,
+        "mapping_fidelity_floor": float("nan"),
+        "mapping_fidelity_ratio": float("nan"),
+    }
+
+
+#: model name -> fitter. Both return the same key set; the caller shares the
+#: contrast/residual/gate logic downstream.
+_TELEGRAPH_FITTERS = {
+    "constrained": _fit_constrained,
+    "independent": _fit_independent,
+}
+
+
 def telegraph_spectrum(series: np.ndarray, dt_s: float, *,
                        nperseg: Optional[int] = None, window: str = "hann",
                        detrend: str = "constant") -> tuple:
@@ -307,6 +427,7 @@ def telegraph_spectrum(series: np.ndarray, dt_s: float, *,
 
 
 def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
+                      model: str = "constrained",
                       nperseg: Optional[int] = None, window: str = "hann",
                       detrend: str = "constant") -> Dict[str, Any]:
     """Extract the switching rate of a 0/1 telegraph from its PSD knee.
@@ -319,6 +440,11 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
         readout — see the module docstring, this is the whole ballgame.
     dt_s : float
         Sample-to-sample period in seconds.
+    model : {"constrained", "independent"}
+        Which spectral model to fit (see :data:`TELEGRAPH_MODELS`).
+        ``"constrained"`` (default) is the reference RTS model with a single
+        shared fidelity F and dt fixed; ``"independent"`` frees the floor and
+        reads F twice for the plateau/floor cross-check.
     nperseg : int, optional
         Welch segment length. Default ``min(n, max(256, n // 8))`` — about 8
         averaged segments, keeping low-frequency reach on long traces.
@@ -327,6 +453,10 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
 
     See the module docstring for the rate convention and the result contract.
     """
+    if model not in _TELEGRAPH_FITTERS:
+        raise ValueError(
+            f"Unknown telegraph model {model!r}; valid: {list(TELEGRAPH_MODELS)}"
+        )
     if dt_s is None or not (np.isfinite(dt_s) and dt_s > 0):
         raise ValueError(
             f"dt_s must be a positive finite sample period in seconds, got {dt_s!r}"
@@ -356,6 +486,8 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
         "mapping_fidelity": float("nan"),
         "mapping_fidelity_floor": float("nan"),
         "mapping_fidelity_ratio": float("nan"),
+        "psd_model": model,
+        "psd_fit_residual": float("nan"),
         "success": False,
         "method": "welch_lorentzian",
         "psd_freq_hz": np.array([]),
@@ -373,28 +505,30 @@ def fit_telegraph_psd(states: np.ndarray, dt_s: float, *,
     out.update(psd_freq_min_hz=float(freq[0]), psd_freq_max_hz=float(freq[-1]))
 
     try:
-        amplitude, corner, floor = _fit_knee(freq, psd)
+        fid = _TELEGRAPH_FITTERS[model](freq, psd, dt_s)
     except Exception:
         return out
 
+    amplitude = fid["psd_amplitude"]
+    corner = fid["psd_corner_hz"]
+    floor = fid["psd_white_floor"]
     contrast = float(amplitude / floor) if floor > 0 else float("inf")
-    # the same fit read in the reference variables: A and B ARE its 4F^2 and
-    # (1-F^2)dt terms, so F falls out twice over with no refit (module
-    # docstring). Two independent estimates on purpose — their ratio is the
-    # only thing here that notices a correlated-noise model failure.
-    f_plateau = float(np.sqrt(2.0 * np.pi * corner * amplitude))
-    floor_budget = 1.0 - 2.0 * floor / dt_s
-    # B > dt/2 means the fitted floor carries more power than the model allows
-    # for ANY fidelity — not a low F, a broken model. NaN, not a clamp to 0.
-    f_floor = float(np.sqrt(floor_budget)) if floor_budget > 0 else float("nan")
+    psd_fit = lorentzian_knee(freq, amplitude, corner, floor)
+    # log-space RMS residual over the fitted band: the constrained model's own
+    # fit-quality number (it has no plateau/floor ratio to fall back on), and a
+    # useful goodness check for the independent model too.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        resid = np.log(psd) - np.log(psd_fit)
+    residual = (float(np.sqrt(np.mean(resid ** 2)))
+                if np.all(np.isfinite(resid)) else float("nan"))
     out.update(psd_corner_hz=corner, psd_amplitude=amplitude,
                psd_white_floor=floor, psd_contrast=contrast,
                corner_margin_low=float(corner / freq[0]),
-               mapping_fidelity=f_plateau,
-               mapping_fidelity_floor=f_floor,
-               mapping_fidelity_ratio=(float(f_plateau / f_floor)
-                                       if f_floor > 0 else float("nan")),
-               psd_fit=lorentzian_knee(freq, amplitude, corner, floor))
+               mapping_fidelity=fid["mapping_fidelity"],
+               mapping_fidelity_floor=fid["mapping_fidelity_floor"],
+               mapping_fidelity_ratio=fid["mapping_fidelity_ratio"],
+               psd_fit_residual=residual,
+               psd_fit=psd_fit)
     # A corner pinned at (or outside) the spectral window is unresolved: too
     # slow to see in this trace length, or faster than the sample cadence.
     resolved = bool(freq[0] < corner < freq[-1] and np.isfinite(corner))
