@@ -7,6 +7,10 @@ __pycache__/
 # Generated notebook output (re-derivable; not source)
 notebooks/temp_output/
 
+# Local scratch — offline-analysis outputs and throwaway scripts, not source
+analysis/out/
+temp/
+
 # Claude Code: personal/local settings stay local
 .claude/settings.local.json
 
