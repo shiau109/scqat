@@ -27,8 +27,8 @@ vars   : ``state`` (shot_idx, 0/1), ``parity`` (pair_idx, 0/1),
 attrs  : ``parity_rate_hz``, ``psd_corner_hz``, ``psd_amplitude``,
          ``psd_white_floor``, ``n_transitions``, ``p_switch``, ``p_high``,
          ``p_parity_odd``, ``p_state_high``, ``mapping_fidelity``,
-         ``mapping_fidelity_floor``, ``mapping_fidelity_ratio``, ``success``,
-         ``dt_s``, ``state_source``
+         ``mapping_fidelity_floor``, ``mapping_fidelity_ratio``, ``psd_model``,
+         ``psd_fit_residual``, ``success``, ``dt_s``, ``state_source``
 
 Three level-fractions appear here and they are NOT interchangeable:
 ``p_parity_odd`` (== ``p_high``) is the PARITY's level, ~0.5 on a healthy run;
@@ -143,21 +143,26 @@ def plot_psd(plot_data: xr.Dataset) -> plt.Figure:
     """Log-log Welch PSD **of the parity** with the Lorentzian-knee fit.
 
     The fitted ``A / (1 + (f/f_c)^2) + B`` is the reference RTS spectrum
-    ``4F^2*G / ((2G)^2 + (2*pi*f)^2) + (1-F^2)*dt`` in different variables, so
-    the corner gives the rate (``G = pi*f_c``) and the plateau and floor each
-    give the sequence mapping fidelity F independently — see the
-    ``telegraph_psd`` module docstring.
+    ``4F^2*G / ((2G)^2 + (2*pi*f)^2) + (1-F^2)*dt`` in different variables. Under
+    the ``constrained`` model F is a single shared parameter (dt fixed); under
+    ``independent`` the plateau and floor each give F on their own and their
+    ratio is the model-consistency check — see the ``telegraph_psd`` docstring.
     """
     fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
+
+    attrs = plot_data.attrs
+    model = str(attrs.get("psd_model", ""))
 
     freq = plot_data.coords["psd_freq_hz"].values
     ax.loglog(freq, plot_data["psd"].values, ".", markersize=3,
               label="parity PSD (Welch)")
     fit = plot_data["psd_fit"].values
     if np.any(np.isfinite(fit)):
-        ax.loglog(freq, fit, "-", linewidth=2, label="Lorentzian knee fit")
+        fit_label = {"constrained": "shared-F fit (F, $\\Gamma$; dt fixed)",
+                     "independent": "free-floor fit (A, $f_c$, B)"}.get(
+                         model, "Lorentzian knee fit")
+        ax.loglog(freq, fit, "-", linewidth=2, label=fit_label)
 
-    attrs = plot_data.attrs
     corner = float(attrs.get("psd_corner_hz", float("nan")))
     if np.isfinite(corner):
         rate = float(attrs.get("parity_rate_hz", float("nan")))
@@ -174,21 +179,28 @@ def plot_psd(plot_data: xr.Dataset) -> plt.Figure:
         ax.axvline(f_min, color="tab:green", linestyle=":", linewidth=1.2,
                    label=f"lowest bin {f_min:.3g} Hz (= 8 / record time)")
 
-    lines = [f"contrast A/B = {float(attrs.get('psd_contrast', float('nan'))):.4g}"]
-    # F read two ways from the SAME fit. Printed together because the pair is
-    # the diagnostic: a big gap means the Lorentzian-plus-WHITE-floor model does
-    # not describe the data (correlated readout error does exactly that), which
-    # the contrast number cannot see.
+    model_label = {"constrained": "model: constrained (shared F)",
+                   "independent": "model: independent (free floor)"}.get(model)
+    lines = [model_label] if model_label else []
+    lines.append(f"contrast A/B = {float(attrs.get('psd_contrast', float('nan'))):.4g}")
+    # constrained: ONE fitted F (floor/ratio are NaN -> the two lines below drop
+    # out). independent: F read TWICE from the SAME fit and printed together,
+    # because their gap IS the diagnostic — a Lorentzian-plus-WHITE-floor model
+    # that does not fit (correlated readout error does exactly that) shows a big
+    # ratio the contrast number cannot see.
     f_amp = float(attrs.get("mapping_fidelity", float("nan")))
     f_floor = float(attrs.get("mapping_fidelity_floor", float("nan")))
     if np.isfinite(f_amp):
-        lines.append(f"F (plateau) = {f_amp:.3g}")
+        lines.append(f"F {'(plateau)' if np.isfinite(f_floor) else ''}= {f_amp:.3g}")
     if np.isfinite(f_floor):
         lines.append(f"F (floor)   = {f_floor:.3g}")
     ratio = float(attrs.get("mapping_fidelity_ratio", float("nan")))
     if np.isfinite(ratio):
         lines.append(f"F ratio = {ratio:.3g}" +
                      ("" if 0.5 <= ratio <= 2.0 else "  <- model mismatch"))
+    resid = float(attrs.get("psd_fit_residual", float("nan")))
+    if np.isfinite(resid):
+        lines.append(f"fit residual = {resid:.3g}")
     if np.isfinite(margin):
         lines.append(f"low-freq headroom = {margin:.2f}x")
         if margin < _LOW_MARGIN_ADVISORY:
