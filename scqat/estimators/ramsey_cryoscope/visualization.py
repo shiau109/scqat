@@ -1,7 +1,7 @@
-"""Cryoscope plotting helpers.
+"""Ramsey cryoscope plotting helpers.
 
 Both functions consume the **plot_data** Dataset built by
-``CryoscopeEstimator.build_plot_data`` and draw without any recalculation.
+``RamseyCryoscopeEstimator.build_plot_data`` and draw without any recalculation.
 
 plot_data layout
 ----------------

@@ -7,11 +7,11 @@ from scipy.signal import savgol_filter
 
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
 from scqat.tools.step_response_fit import fit_step_response
-from scqat.estimators.cryoscope.visualization import plot_step_response, plot_phase_freq
+from scqat.estimators.ramsey_cryoscope.visualization import plot_step_response, plot_phase_freq
 
 
-class CryoscopeEstimator(BaseEstimator):
-    """Estimator for a cryoscope experiment: reconstruct the flux line's step
+class RamseyCryoscopeEstimator(BaseEstimator):
+    """Estimator for a RAMSEY cryoscope experiment: reconstruct the flux line's step
     response and fit it to a sum of exponentials, yielding the predistortion
     tap ``(amplitude, tau)`` components.
 
@@ -46,7 +46,7 @@ class CryoscopeEstimator(BaseEstimator):
     ``distortion_amp`` (= ``amp / a_dc``) and ``distortion_tau_s`` (seconds).
     """
 
-    estimator_name = "cryoscope"
+    estimator_name = "ramsey_cryoscope"
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         has_iq = "IQdata" in dataset.data_vars or (

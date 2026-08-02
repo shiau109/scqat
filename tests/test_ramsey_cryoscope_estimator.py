@@ -1,4 +1,4 @@
-"""Tests for the CryoscopeEstimator (flux-line step-response reconstruction).
+"""Tests for the RamseyCryoscopeEstimator (flux-line step-response reconstruction).
 
 The forward model mirrors the probe: a flux pulse of swept DURATION delivers a
 (distorted) flux ``S(t)`` — the normalized step response, settling to 1 — which
@@ -19,8 +19,8 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import pytest
 
-from scqat.estimators import CryoscopeEstimator
-from scqat.estimators.cryoscope import CryoscopeEstimator as SubpkgEstimator
+from scqat.estimators import RamseyCryoscopeEstimator
+from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator as SubpkgEstimator
 
 F_SCALE = 100e6  # settled detuning, Hz — sets fringes/turn (dphi/step < pi)
 
@@ -58,13 +58,13 @@ def _forward(components, tmax_ns=400, nframe=16, f_scale=F_SCALE, *, iq=False,
     return ds, S
 
 
-class TestCryoscopeEstimator:
+class TestRamseyCryoscopeEstimator:
 
     def test_step_response_reconstruction_is_faithful(self):
         """The lock-in + savgol chain reproduces the planted step response
         (the estimator's core job) — tight, even for a two-component S."""
         ds, S = _forward([(0.08, 100.0), (0.03, 25.0)])
-        r = CryoscopeEstimator().extract_parameters(ds)
+        r = RamseyCryoscopeEstimator().extract_parameters(ds)
         # skip the first few samples (savgol edge)
         assert np.max(np.abs(r["step_response"][3:] - S[3:])) < 0.01
         assert r["step_response"][-10:].mean() == pytest.approx(1.0, abs=0.02)
@@ -73,7 +73,7 @@ class TestCryoscopeEstimator:
         """A well-conditioned single exponential (tau well within the record)
         comes back accurately through the full chain."""
         ds, _ = _forward([(0.08, 50.0)])
-        r = CryoscopeEstimator().extract_parameters(ds, start_fractions=(0.3,))
+        r = RamseyCryoscopeEstimator().extract_parameters(ds, start_fractions=(0.3,))
         assert r["success"] is True
         assert r["n_components"] == 1
         (amp,), (tau,) = r["component_amps"], r["component_taus_s"]
@@ -85,7 +85,7 @@ class TestCryoscopeEstimator:
         in the right ballpark (the ill-conditioned decomposition is the tool's
         concern; here we only require a sane, successful fit)."""
         ds, _ = _forward([(0.08, 100.0), (0.03, 25.0)])
-        r = CryoscopeEstimator().extract_parameters(ds, start_fractions=(0.5, 0.01))
+        r = RamseyCryoscopeEstimator().extract_parameters(ds, start_fractions=(0.5, 0.01))
         assert r["success"] is True
         assert r["n_components"] == 2
         amp_slow, tau_slow = r["component_amps"][0], r["component_taus_s"][0]
@@ -96,7 +96,7 @@ class TestCryoscopeEstimator:
         """The complex-IQ lock-in returns the same components regardless of the
         readout rotation, and matches the pre-discriminated real path."""
         comps = [(0.08, 100.0), (0.03, 25.0)]
-        est = CryoscopeEstimator()
+        est = RamseyCryoscopeEstimator()
         base = est.extract_parameters(_forward(comps)[0])
         for theta in (0.0, 1.1, -2.3):
             ds_iq, _ = _forward(comps, iq=True, theta=theta)
@@ -106,30 +106,30 @@ class TestCryoscopeEstimator:
 
     def test_analyze_roundtrips_artifacts(self, tmp_path):
         ds, _ = _forward([(0.08, 60.0)])
-        est = CryoscopeEstimator()
+        est = RamseyCryoscopeEstimator()
         results, figs = est.analyze(ds, output_dir=str(tmp_path), start_fractions=(0.3,))
-        assert set(figs) == {"cryoscope", "phase_freq"}
+        assert set(figs) == {"ramsey_cryoscope", "phase_freq"}
         for fig in figs.values():
             assert isinstance(fig, plt.Figure)
         # metadata JSON self-identifies and drops the bulky arrays
         meta = est.load_metadata(str(tmp_path))
-        assert meta["estimator_name"] == "cryoscope"
+        assert meta["estimator_name"] == "ramsey_cryoscope"
         assert "component_taus_s" in meta and "step_response" not in meta
         # plot_data netCDF reloads with the raw fringe map + fitted trace
         pd = est.load_plot_data(str(tmp_path))
         assert set(pd["signal"].dims) == {"duration", "frame"}
         assert "best_fit" in pd and pd.attrs["success"] == 1
-        for name in ("cryoscope", "phase_freq"):
-            assert (tmp_path / f"cryoscope_{name}.png").exists() or (tmp_path / "cryoscope.png").exists()
+        for name in ("ramsey_cryoscope", "phase_freq"):
+            assert (tmp_path / f"ramsey_cryoscope_{name}.png").exists() or (tmp_path / "ramsey_cryoscope.png").exists()
 
     def test_figures_redraw_from_plotdata_alone(self, tmp_path):
         """generate_figures must draw from a reloaded plot_data with no results."""
         ds, _ = _forward([(0.08, 60.0)])
-        est = CryoscopeEstimator()
+        est = RamseyCryoscopeEstimator()
         est.analyze(ds, output_dir=str(tmp_path), start_fractions=(0.3,))
         pd = est.load_plot_data(str(tmp_path))
         figs = est.generate_figures(None, None, plot_data=pd)
-        assert set(figs) == {"cryoscope", "phase_freq"}
+        assert set(figs) == {"ramsey_cryoscope", "phase_freq"}
 
     def test_short_record_fails_without_raising(self):
         """A record too short for the multi-exponential fit yields an honest
@@ -140,11 +140,11 @@ class TestCryoscopeEstimator:
         sig = 0.5 + 0.5 * np.cos(2 * np.pi * frame[None, :]) + rng.normal(0, 0.01, (t_s.size, frame.size))
         ds = xr.Dataset({"signal": (("duration", "frame"), sig)},
                         coords={"duration": t_s, "frame": frame})
-        r = CryoscopeEstimator().extract_parameters(ds)
+        r = RamseyCryoscopeEstimator().extract_parameters(ds)
         assert r["success"] is False
 
     def test_check_data_requires_signal_and_coords(self):
-        est = CryoscopeEstimator()
+        est = RamseyCryoscopeEstimator()
         frame = np.linspace(0.0, 1.0, 16, endpoint=False)
         t_s = np.arange(1.0, 21.0) * 1e-9
         no_signal = xr.Dataset(coords={"duration": t_s, "frame": frame})
@@ -156,4 +156,4 @@ class TestCryoscopeEstimator:
             est._check_data(no_frame)
 
     def test_aggregate_and_subpackage_export_same_class(self):
-        assert CryoscopeEstimator is SubpkgEstimator
+        assert RamseyCryoscopeEstimator is SubpkgEstimator
