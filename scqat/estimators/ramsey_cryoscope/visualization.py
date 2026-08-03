@@ -48,6 +48,18 @@ def plot_step_response(plot_data: xr.Dataset) -> plt.Figure:
         ax.set_xlabel("Flux-pulse duration (ns)", fontsize=14)
     ax_lin.set_ylabel("Normalized flux (step response)", fontsize=14)
     ax_log.set_xscale("log")
+    # A fit-only view: give the log axis explicit positive limits so tight_layout
+    # never autoscales an empty axes, and annotate when the fit is empty (all-NaN)
+    # — it must render rather than crash on a failed fit (the raw fringe lives in
+    # the sibling phase/detuning figure).
+    _pos = t_ns[np.isfinite(t_ns) & (t_ns > 0)]
+    if _pos.size:
+        ax_log.set_xlim(float(_pos.min()), float(_pos.max()))
+    if not (np.isfinite(step).any() or np.isfinite(best_fit).any()):
+        for ax in (ax_lin, ax_log):
+            ax.text(0.5, 0.5, "fit unsuccessful\n(no step response)",
+                    transform=ax.transAxes, ha="center", va="center",
+                    fontsize=13, color="0.4")
     ax_lin.set_title("linear time")
     ax_log.set_title("log time")
     ax_lin.legend()

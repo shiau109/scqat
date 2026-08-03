@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
+from scqat.core.figures import render_figures
 from scqat.tools.step_response_fit import fit_step_response
 from scqat.estimators.ramsey_cryoscope.visualization import plot_step_response, plot_phase_freq
 
@@ -201,7 +202,7 @@ class RamseyCryoscopeEstimator(BaseEstimator):
         from ``plot_data`` (rebuilt only when called outside ``analyze()``)."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {
-            self.estimator_name: plot_step_response(plot_data),
-            "phase_freq": plot_phase_freq(plot_data),
-        }
+        return render_figures({
+            self.estimator_name: lambda: plot_step_response(plot_data),
+            "phase_freq": lambda: plot_phase_freq(plot_data),
+        }, label=self.estimator_name)

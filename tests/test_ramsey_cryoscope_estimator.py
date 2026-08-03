@@ -143,6 +143,22 @@ class TestRamseyCryoscopeEstimator:
         r = RamseyCryoscopeEstimator().extract_parameters(ds)
         assert r["success"] is False
 
+    def test_figures_render_on_a_failed_fit(self, tmp_path):
+        """A failed fit must still write BOTH figures — the fit panel annotates
+        instead of crashing, and neither is dropped (per-figure isolation)."""
+        t_s = np.arange(1.0, 13.0) * 1e-9  # below MIN_SAMPLES -> failed fit
+        frame = np.linspace(0.0, 1.0, 16, endpoint=False)
+        rng = np.random.default_rng(0)
+        sig = 0.5 + 0.5 * np.cos(2 * np.pi * frame[None, :]) + rng.normal(0, 0.01, (t_s.size, frame.size))
+        ds = xr.Dataset({"signal": (("duration", "frame"), sig)},
+                        coords={"duration": t_s, "frame": frame})
+        est = RamseyCryoscopeEstimator()
+        results, figs = est.analyze(ds, output_dir=str(tmp_path))
+        assert results["success"] is False
+        assert set(figs) == {"ramsey_cryoscope", "phase_freq"}
+        assert (tmp_path / "ramsey_cryoscope.png").exists()
+        assert (tmp_path / "ramsey_cryoscope_phase_freq.png").exists()
+
     def test_check_data_requires_signal_and_coords(self):
         est = RamseyCryoscopeEstimator()
         frame = np.linspace(0.0, 1.0, 16, endpoint=False)

@@ -5,6 +5,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 
 from scqat.core.base_estimator import BaseEstimator
+from scqat.core.figures import render_figures
 from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks, validate_peak_kwargs
 from scqat.tools.step_response_fit import fit_step_response
 from scqat.estimators.spectroscopy_cryoscope.visualization import (
@@ -221,7 +222,7 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
         from ``plot_data``."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {
-            self.estimator_name: plot_step_response(plot_data),
-            "spectrogram": plot_spectrogram(plot_data),
-        }
+        return render_figures({
+            self.estimator_name: lambda: plot_step_response(plot_data),
+            "spectrogram": lambda: plot_spectrogram(plot_data),
+        }, label=self.estimator_name)

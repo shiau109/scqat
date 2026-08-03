@@ -100,6 +100,24 @@ class TestSpectroscopyCryoscopeEstimator:
         r = SpectroscopyCryoscopeEstimator().extract_parameters(ds)
         assert r["success"] is False
 
+    def test_figures_render_on_a_failed_fit(self, tmp_path):
+        """The raw spectrogram must ALWAYS render — a failed fit (all-NaN step
+        response) annotates the fit panel instead of crashing, and neither figure
+        is dropped. Direct regression guard for the missing-figures bug."""
+        wait_s = np.logspace(np.log10(16e-9), np.log10(20000e-9), 30)
+        detuning = np.linspace(-100e6, 100e6, 41)
+        rng = np.random.default_rng(0)
+        sig = rng.normal(0, 0.01, (wait_s.size, detuning.size))  # pure noise -> no peaks
+        ds = xr.Dataset({"signal": (("wait_time", "detuning"), sig),
+                         "center_offset_hz": F_PARK},
+                        coords={"wait_time": wait_s, "detuning": detuning})
+        est = SpectroscopyCryoscopeEstimator()
+        results, figs = est.analyze(ds, output_dir=str(tmp_path))
+        assert results["success"] is False
+        assert set(figs) == {"spectroscopy_cryoscope", "spectrogram"}
+        assert (tmp_path / "spectroscopy_cryoscope.png").exists()
+        assert (tmp_path / "spectroscopy_cryoscope_spectrogram.png").exists()
+
     def test_analyze_roundtrips_artifacts(self, tmp_path):
         ds, _ = _forward([(0.06, 3000.0)])
         est = SpectroscopyCryoscopeEstimator()

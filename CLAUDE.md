@@ -107,6 +107,31 @@ anything a figure needs therefore has to be put into `build_plot_data()`.
 `generate_figures` so older estimators keep working; new/migrated estimators must
 ignore them.)
 
+## Raw data must always be plottable
+
+A run whose FIT failed must still produce its raw-data figure. A broken fit — or
+a plotter that crashes on a degenerate (all-NaN) fit — must never leave the run
+figure-less: SCQO's artifact fallback silently drops **all** figures on any single
+plotter exception, so one crash = zero PNGs (that is exactly how a real
+`qubit_spectroscopy_cryoscope` run lost its raw spectrogram to a log-scale crash
+in the empty step-response panel). Four rules:
+
+1. `build_plot_data` ALWAYS carries the raw measured arrays and never raises on a
+   failed fit — fit-derived fields degrade to NaN, never absent.
+2. `generate_figures` returns `render_figures({name: lambda: plot_x(plot_data),
+   ...}, label=self.estimator_name)` (`scqat/core/figures.py`) — per-figure
+   isolation, so one figure's failure is skipped with a warning and never drops
+   another (crucially, the raw one). Pass THUNKS, not pre-built figures.
+3. Each plotter draws its raw data UNCONDITIONALLY and guards the fit overlay: no
+   `set_xscale("log")` + `tight_layout()` on an all-NaN series, no `set_*lim` /
+   annotation that assumes a finite fit. Reference guard: the cryoscope
+   `plot_step_response`.
+4. A pure FIT view (no raw data) is exempt from rule 3's "raw" clause but still
+   must not crash — it renders an annotated-empty panel.
+
+Enforced per estimator by a "figures render on a failed fit" test (reference:
+`tests/test_spectroscopy_cryoscope_estimator.py::...test_figures_render_on_a_failed_fit`).
+
 ## Multi-method estimators (N approaches, one physics)
 
 When more than one analysis approach can extract the same physical parameters
