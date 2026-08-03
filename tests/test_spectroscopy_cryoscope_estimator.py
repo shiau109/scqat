@@ -24,15 +24,18 @@ F_PARK = 300e6  # parked detuning the drive is centered on, Hz
 
 def _forward(components, *, n_wait=44, wmin_ns=16, wmax_ns=20000, f_park=F_PARK,
              ndet=81, span_hz=200e6, fwhm_hz=2e6, noise=0.005, seed=1,
-             attach_offset=True):
+             attach_offset=True, det_min=None, det_max=None):
     """Synthesize a spectroscopy-cryoscope map and return ``(dataset, S)`` — S the
     true normalized step response over wait time. ``components`` are ``(amp,
-    tau_ns)`` pairs."""
+    tau_ns)`` pairs. The detuning window is symmetric ``+/-span_hz/2`` by default;
+    pass ``det_min``/``det_max`` for an asymmetric one."""
     wait_ns = np.unique(
         np.logspace(np.log10(wmin_ns), np.log10(wmax_ns), n_wait).astype(int)
     ).astype(float)
     wait_s = wait_ns * 1e-9
-    detuning = np.linspace(-span_hz / 2, span_hz / 2, ndet)
+    lo = -span_hz / 2 if det_min is None else det_min
+    hi = span_hz / 2 if det_max is None else det_max
+    detuning = np.linspace(lo, hi, ndet)
     S = 1.0 + sum(amp * np.exp(-wait_ns / tau) for amp, tau in components)
     center = f_park * (S ** 2 - 1.0)  # peak position relative to the parked drive
     gamma = fwhm_hz / 2
@@ -58,6 +61,19 @@ class TestSpectroscopyCryoscopeEstimator:
         # the reconstructed step response tracks the truth well away from the edges
         assert np.nanmax(np.abs(r["step_response"] - S)) < 0.02
         assert r["step_response"][-5:].mean() == pytest.approx(1.0, abs=0.02)
+
+    def test_asymmetric_detuning_window_reconstruction_is_faithful(self):
+        """A one-sided (asymmetric) detuning window reconstructs the step response
+        just as well — nothing in the estimator/peak_fit assumes a zero-centered or
+        symmetric axis (the case a mis-centered real run produces)."""
+        ds, S = _forward([(0.05, 5000.0), (0.03, 400.0)],
+                         det_min=-40e6, det_max=120e6, ndet=81)
+        # the axis really is asymmetric (center at +40 MHz, not 0)
+        assert float(ds["detuning"].min()) == pytest.approx(-40e6)
+        assert float(ds["detuning"].max()) == pytest.approx(120e6)
+        r = SpectroscopyCryoscopeEstimator().extract_parameters(ds)
+        assert r["n_peaks_found"] == len(r["wait_time_s"])
+        assert np.nanmax(np.abs(r["step_response"] - S)) < 0.03
 
     def test_single_component_recovery(self):
         """A single exponential (tau within the record) comes back accurately."""
