@@ -27,6 +27,12 @@ from .discriminate import (
 )
 from .ge_discriminator import compute_ge_discriminator
 from .ramsey_fit import RAMSEY_MODELS, fit_ramsey
+from .flux_predistortion import (
+    MIN_A_DC,
+    exp_sum_step_response,
+    exp_sum_to_cascade,
+    partition_exp_stages,
+)
 from .step_response_fit import (
     fit_step_response,
     sequential_exp_fit,
