@@ -166,9 +166,18 @@ def plot_psd(plot_data: xr.Dataset) -> plt.Figure:
     corner = float(attrs.get("psd_corner_hz", float("nan")))
     if np.isfinite(corner):
         rate = float(attrs.get("parity_rate_hz", float("nan")))
+        # Which quantity is the FITTED parameter differs by model, so name the
+        # fitted one first: 'constrained' fits Gamma directly (f_c = Gamma/pi
+        # derived); 'independent' fits the corner f_c (Gamma = pi*f_c derived).
+        # The vline sits at the corner either way — that IS the visual knee.
+        if model == "constrained":
+            corner_label = (f"$\\Gamma$ = {rate:.4g} Hz (fitted) "
+                            f"-> $f_c = \\Gamma/\\pi$ = {corner:.4g} Hz")
+        else:
+            corner_label = (f"corner $f_c$ = {corner:.4g} Hz "
+                            f"-> $\\Gamma = \\pi f_c$ = {rate:.4g} Hz")
         ax.axvline(corner, color="red", linestyle="--", linewidth=1,
-                   label=f"corner $f_c$ = {corner:.4g} Hz "
-                         f"-> $\\Gamma = \\pi f_c$ = {rate:.4g} Hz")
+                   label=corner_label)
 
     # the low-frequency edge: how slow a rate this record length could see at
     # all. Drawn because a corner sitting near it is the readable symptom of
