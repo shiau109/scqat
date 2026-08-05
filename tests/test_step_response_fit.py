@@ -52,6 +52,50 @@ class TestFitStepResponse:
         assert res["rms"] < 1e-3
         assert np.allclose(res["best_fit"], _step(t, comps), atol=2e-3)
 
+    def test_degenerate_pair_collapses_to_one_component(self):
+        """A ``t*exp(-t/tau)``-like response tempts a two-exponential model into
+        a giant cancelling pair on near-identical taus (seen at +-22 on real
+        ramsey-cryoscope hardware). The guard collapses to ONE bounded
+        component instead."""
+        t = np.arange(1.0, 101.0)
+        y = 1.0 - 0.35 * (t / 8.0) * np.exp(-t / 8.0)  # not a pure exp sum
+        res = fit_step_response(t, y, [0.5, 0.01], a_dc=1.0)
+        assert len(res["components"]) == 1  # collapsed, not a degenerate pair
+        (amp, tau) = res["components"][0]
+        assert abs(amp) < 1.0  # no +-22 nonsense
+        assert res["success"] is True
+        assert len(res["best_fractions"]) == 1
+
+    def test_well_separated_components_are_not_collapsed(self):
+        """The collapse must not fire on a genuine two-component response
+        (tau ratio 4 — comfortably above degen_tau_ratio)."""
+        comps = [(0.08, 100.0), (0.03, 25.0)]
+        t = np.arange(1.0, 401.0)
+        res = fit_step_response(
+            t, _step(t, comps, noise=1e-4), START_FRACTIONS, a_dc=1.0,
+        )
+        assert len(res["components"]) == 2
+        assert res["success"] is True
+
+    def test_record_starting_far_after_the_transient_no_blowup(self):
+        """A record whose first sample is many tau after the transient (the
+        +-22866 regression: min_wait 40 ns, tau ~3 ns) must not mint giant
+        re-referenced amplitudes — the tau floor keeps exp(t[0]/tau) <= e^2."""
+        t = np.arange(40.0, 240.0)  # t[0] = 40, transient tau = 3 (unseen)
+        y = _step(t, [(-0.07, 3.0)], noise=2e-3)  # settled + noise, in effect
+        res = fit_step_response(t, y, [0.5, 0.05], a_dc=1.0)
+        assert all(abs(amp) <= 2.0 for amp, _ in res["components"])
+
+    def test_amp_max_is_respected(self):
+        """No component's t=0-referenced amplitude may exceed amp_max."""
+        comps = [(0.08, 100.0), (0.03, 25.0)]
+        t = np.arange(1.0, 401.0)
+        res = fit_step_response(
+            t, _step(t, comps, noise=1e-4), START_FRACTIONS, a_dc=1.0,
+            amp_max=0.5,
+        )
+        assert all(abs(amp) <= 0.5 for amp, _ in res["components"])
+
     def test_single_component_auto_dc_settled_record(self):
         """Over many time-constants the tail estimate is unbiased, so the
         auto-a_dc path recovers a lone component accurately."""

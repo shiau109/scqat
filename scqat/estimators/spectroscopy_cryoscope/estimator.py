@@ -144,8 +144,10 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
                 wait_s[good], step_response[good], start_fractions, a_dc=a_dc,
             )
         else:
+            # mirror fit_step_response's FULL failed-dict contract (incl. best_fit)
             fit = {"success": False, "components": [], "a_dc": float("nan"),
-                   "rms": float("nan"), "best_fractions": list(start_fractions)}
+                   "rms": float("nan"), "best_fractions": list(start_fractions),
+                   "best_fit": np.full(int(good.sum()), np.nan)}
         amps = [amp for amp, _ in fit["components"]]
         taus = [tau for _, tau in fit["components"]]
 

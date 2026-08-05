@@ -34,13 +34,18 @@ How the sequential fit works
 
 Result contract (:func:`fit_step_response`)
 -------------------------------------------
-    success        : bool — optimizer converged AND every requested component
-                     was fitted with a finite positive tau
-    components     : list of (amp, tau) pairs, slowest first as requested;
-                     amps referenced to t = 0, taus in the unit of ``t``
+    success        : bool — optimizer converged AND every kept component has a
+                     finite positive tau and ``|amp| <= amp_max``
+    components     : list of (amp, tau) pairs, slowest first; amps referenced
+                     to t = 0, taus in the unit of ``t``. May be FEWER than
+                     requested: a tau-degenerate pair (two components within
+                     ``degen_tau_ratio`` in tau — one physical component split
+                     into a cancelling pair) collapses the model by one
+                     component and refits (see the degeneracy guard in
+                     :func:`fit_step_response`).
     a_dc           : the constant (settled) level — fitted, or the passed one
     rms            : root-mean-square of the final residual
-    best_fractions : the optimized start fractions
+    best_fractions : the optimized start fractions (of the KEPT components)
     best_fit       : ``a_dc + sum_i amp_i * exp(-t / tau_i)`` on the input axis
 
 On a degenerate input (too few samples, all-NaN) the dict comes back with
@@ -88,6 +93,7 @@ def sequential_exp_fit(
     fixed_taus: Optional[Sequence[float]] = None,
     a_dc: Optional[float] = None,
     log: Optional[Callable[[str], None]] = None,
+    amp_max: float = 2.0,
 ) -> Tuple[List[Tuple[float, float]], float, np.ndarray]:
     """Fit a sum of exponentials sequentially, slowest component first.
 
@@ -107,6 +113,12 @@ def sequential_exp_fit(
         Pin the constant term instead of estimating it from the tail.
     log : callable, optional
         Progress sink (silent when ``None``).
+    amp_max : float, optional
+        Bound on each component's |amplitude| (in units of the response, i.e.
+        relative to ``a_dc ~ 1``). Physical flux-line taps are fractions of the
+        settled level; unbounded amplitudes let a pair of near-identical taus
+        cancel to a giant +-A degenerate solution (seen at +-22866 on real
+        hardware).
 
     Returns
     -------
@@ -135,6 +147,14 @@ def sequential_exp_fit(
 
     y_residual = y.copy() - a_dc
 
+    # Identifiability tau floor, in SAMPLE units (unit-agnostic — it scales
+    # with the axis): a component faster than half the first sample time
+    # t[0] is pure extrapolation (fully decayed before any data), and the
+    # t = 0 re-referencing in fit_step_response would amplify its amplitude
+    # by exp(t[0]/tau) — unbounded, this minted a +-22866 tap from a 40 ns
+    # min-wait record. With the floor the factor is capped at e^2 ~ 7.4.
+    tau_lo = max(0.1, 0.5 * t[0] / dt) if t[0] > 0 else 0.1
+
     for i, start_frac in enumerate(start_fractions):
         start_idx = int(len(t) * start_frac)
         s_fit = s[start_idx:]
@@ -144,16 +164,18 @@ def sequential_exp_fit(
                 tau_s_fixed = float(fixed_taus[i]) / dt
                 popt, _ = curve_fit(
                     lambda ss, amp: single_exp_decay(ss, amp, tau_s_fixed),
-                    s_fit, y_fit, p0=[y_fit[0]],
+                    s_fit, y_fit, p0=[np.clip(y_fit[0], -amp_max, amp_max)],
+                    bounds=([-amp_max], [amp_max]),
                 )
                 amp, tau_s = float(popt[0]), tau_s_fixed
             else:
-                # tau floor = one-tenth of a sample; the guess must sit above
-                # it or curve_fit refuses the fit as infeasible.
-                p0 = [y_fit[0], max(s[start_idx] / 3.0, 1.0)]
+                # seeds must sit inside the bounds or curve_fit refuses the
+                # fit as infeasible.
+                p0 = [float(np.clip(y_fit[0], -amp_max, amp_max)),
+                      max(s[start_idx] / 3.0, 1.0, tau_lo)]
                 popt, _ = curve_fit(
                     single_exp_decay, s_fit, y_fit, p0=p0,
-                    bounds=([-np.inf, 0.1], [np.inf, np.inf]),
+                    bounds=([-amp_max, tau_lo], [amp_max, np.inf]),
                 )
                 amp, tau_s = float(popt[0]), float(popt[1])
             tau = tau_s * dt
@@ -169,6 +191,23 @@ def sequential_exp_fit(
     return components, float(a_dc), y_residual
 
 
+def _has_degenerate_pair(
+    components: Sequence[Tuple[float, float]], ratio: float
+) -> bool:
+    """True when any two components' taus are within ``ratio`` of each other.
+
+    Two exponentials on (near-)identical taus are one physical component split
+    into a cancelling pair — the parameters are non-identifiable regardless of
+    how small the residual is (a degenerate pair can even emulate a
+    ``t*exp(-t/tau)`` shape, which is how +-22 amplitudes on taus equal to four
+    digits scored a good rms on real hardware).
+    """
+    taus = sorted(abs(tau) for _, tau in components)
+    return any(
+        hi / lo < ratio for lo, hi in zip(taus, taus[1:]) if lo > 0
+    )
+
+
 def fit_step_response(
     t: np.ndarray,
     y: np.ndarray,
@@ -179,6 +218,8 @@ def fit_step_response(
     bounds_scale: float = 0.5,
     maxiter: int = 1000,
     log: Optional[Callable[[str], None]] = None,
+    amp_max: float = 2.0,
+    degen_tau_ratio: float = 1.5,
 ) -> Dict[str, Any]:
     """Extract multi-exponential taps from a settled step response.
 
@@ -187,6 +228,17 @@ def fit_step_response(
     candidates refused) around :func:`sequential_exp_fit`, then re-references
     the amplitudes to ``t = 0``. See the module docstring for the result
     contract; taus come out in the unit of ``t``.
+
+    Degeneracy guard: amplitudes are bounded to ``+-amp_max`` and each tau to
+    at least half the first sample time (see :func:`sequential_exp_fit`), and
+    when a fit lands two components within ``degen_tau_ratio`` of each other in
+    tau, the model is collapsed — the fastest start fraction is dropped and the
+    whole fit rerun — until the components are tau-separated (or one remains).
+    ``components``/``best_fractions`` may therefore be SHORTER than requested;
+    that is the honest model. ``fixed_taus`` disables the collapse (the caller
+    pinned the model deliberately). A final component with ``|amp| > amp_max``
+    after t = 0 re-referencing fails the fit instead of reporting a tap no
+    hardware should see.
     """
     t = np.asarray(t, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
@@ -214,29 +266,57 @@ def fit_step_response(
     if t.size != y.size or t.size < MIN_SAMPLES or not np.all(np.isfinite(y)):
         return failed
 
-    def objective(x: np.ndarray) -> float:
-        if not np.all(np.diff(x) < 0):
-            return 1e6
-        components, _, residual = sequential_exp_fit(
-            t, y, x, fixed_taus=fixed_taus, a_dc=a_dc,
+    def _fit_once(fracs: List[float]):
+        """One full pass: Nelder-Mead over these fractions + the final fit."""
+
+        def objective(x: np.ndarray) -> float:
+            if not np.all(np.diff(x) < 0):
+                return 1e6
+            components, _, residual = sequential_exp_fit(
+                t, y, x, fixed_taus=fixed_taus, a_dc=a_dc, amp_max=amp_max,
+            )
+            if len(components) != len(fracs):
+                return 1e6
+            return float(np.sqrt(np.mean(residual ** 2)))
+
+        bounds = [
+            (start * (1.0 - bounds_scale), start * (1.0 + bounds_scale))
+            for start in fracs
+        ]
+        result = minimize(
+            objective, x0=fracs, bounds=bounds, method="Nelder-Mead",
+            options={"disp": False, "maxiter": maxiter},
         )
-        if len(components) != len(start_fractions):
-            return 1e6
-        return float(np.sqrt(np.mean(residual ** 2)))
+        best = list(result.x) if result.success else list(fracs)
+        components, fitted_dc, residual = sequential_exp_fit(
+            t, y, best, fixed_taus=fixed_taus, a_dc=a_dc, log=log,
+            amp_max=amp_max,
+        )
+        return bool(result.success), best, components, fitted_dc, residual
 
-    bounds = [
-        (start * (1.0 - bounds_scale), start * (1.0 + bounds_scale))
-        for start in start_fractions
-    ]
-    result = minimize(
-        objective, x0=start_fractions, bounds=bounds, method="Nelder-Mead",
-        options={"disp": False, "maxiter": maxiter},
-    )
-    best_fractions = list(result.x) if result.success else list(start_fractions)
+    # Degeneracy collapse: two components landing on (near-)identical taus are
+    # one physical component split into a cancelling pair — drop the fastest
+    # start fraction and refit until the taus separate or one component is
+    # left. Unconditional (no rms comparison): degenerate parameters are
+    # meaningless no matter how well their sum scores.
+    fracs = list(start_fractions)
+    converged, best_fractions, components, fitted_dc, residual = _fit_once(fracs)
+    while (
+        fixed_taus is None
+        and len(fracs) > 1
+        and len(components) > 1
+        and _has_degenerate_pair(components, degen_tau_ratio)
+    ):
+        fracs = fracs[:-1]
+        if log:
+            log(
+                f"tau-degenerate pair detected — collapsing to "
+                f"{len(fracs)} component(s)"
+            )
+        converged, best_fractions, components, fitted_dc, residual = _fit_once(
+            fracs
+        )
 
-    components, fitted_dc, residual = sequential_exp_fit(
-        t, y, best_fractions, fixed_taus=fixed_taus, a_dc=a_dc, log=log,
-    )
     rms = float(np.sqrt(np.mean(residual ** 2)))
     # The fits ran on t - t[0]; move the amplitude reference to t = 0 so the
     # components reproduce y on the CALLER's axis.
@@ -249,10 +329,13 @@ def fit_step_response(
         best_fit += amp * np.exp(-t / tau)
 
     success = bool(
-        result.success
-        and len(components) == len(start_fractions)
+        converged
+        and len(components) == len(fracs)
         and all(np.isfinite(tau) and tau > 0 for _, tau in components)
         and all(np.isfinite(amp) for amp, _ in components)
+        # the t = 0 re-reference can only blow past amp_max when tau crowds
+        # its identifiability floor — an unphysical tap, refused honestly.
+        and all(abs(amp) <= amp_max for amp, _ in components)
     )
     if log:
         log(
