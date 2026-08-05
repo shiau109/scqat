@@ -1,3 +1,4 @@
+import numpy as np
 from xarray import DataArray
 from lmfit import Model
 from lmfit.model import ModelResult
@@ -5,7 +6,9 @@ from numpy import cos, sin, abs, exp, max, min, mean, pi, nan
 from numpy import fft, asarray
 from scipy.signal import find_peaks
 
-from .function_fitting import FunctionFitting, register_fitter, parse_xy, robust_dt
+from .function_fitting import (
+    FunctionFitting, register_fitter, parse_xy, robust_dt, seed_amp_phase,
+)
 
 
 @register_fitter('damping_beat')
@@ -79,25 +82,43 @@ class FitDampingBeat(FunctionFitting):
                 break
 
         f_1_guess = float(abs(freq[f_1_idx]))
-        a_1_guess = float(abs(amp[f_1_idx]))
-        a_1_dict = dict(value=a_1_guess, min=0.0, max=a_1_guess * 2)
         f_1_dict = dict(value=f_1_guess, min=0.0, max=1.0 / dt / 2)
-        phi_1_dict = dict(value=0.0, min=-float(pi), max=float(pi))
 
         kappa_1_guess = 1.0 / abs(t[-1] / 2) if abs(t[-1] / 2) > 0 else 1.0
         kappa_1_dict = dict(value=kappa_1_guess, min=0.0, max=10 * kappa_1_guess)
 
         if f_2_idx is not None:
             f_2_guess = float(abs(freq[f_2_idx]))
-            a_2_guess = float(abs(amp[f_2_idx]))
         elif force_two_components:
             # No resolvable second peak, but the caller wants a genuine
             # two-frequency fit: seed f_2 just off f_1 and let it move so the
             # second component is real (not frozen) for model comparison.
             f_2_guess = f_1_guess * 1.1
-            a_2_guess = a_1_guess
         else:
             f_2_guess = None  # collapse to a single damped oscillation
+
+        # Seed amplitudes AND phases from the data (not a blind phi=0, and not
+        # the raw FFT-bin magnitude for the amplitude scale). A phi=0 seed on a
+        # near-anti-phase branch hits the a>=0 bound and collapses that branch to
+        # zero -- and with one branch surviving, a genuine beat is silently
+        # drawn as a single tone. Seed both branches jointly when present.
+        peak_to_peak = max_val - min_val
+
+        def _amp_dict(a_seed):
+            if not np.isfinite(a_seed) or a_seed <= 0:
+                a_seed = peak_to_peak / 2  # degenerate projection -> fallback
+            return dict(value=float(a_seed), min=0.0,
+                        max=float(np.maximum(peak_to_peak, a_seed * 2)))
+
+        if f_2_guess is None:
+            a_1_seed, phi_1_seed = seed_amp_phase(t, y, f_1_guess, kappa_1_guess, self.basis)
+        else:
+            (a_1_seed, phi_1_seed), (a_2_seed, phi_2_seed) = seed_amp_phase(
+                t, y, [f_1_guess, f_2_guess], [kappa_1_guess, kappa_1_guess], self.basis
+            )
+
+        a_1_dict = _amp_dict(a_1_seed)
+        phi_1_dict = dict(value=float(phi_1_seed), min=-float(pi), max=float(pi))
 
         if f_2_guess is None:
             # Single-frequency mode: freeze second component
@@ -106,9 +127,9 @@ class FitDampingBeat(FunctionFitting):
             phi_2_dict = dict(value=0, vary=False)
             kappa_2_dict = dict(value=0, vary=False)
         else:
-            a_2_dict = dict(value=a_2_guess, min=0.0, max=a_2_guess * 2)
+            a_2_dict = _amp_dict(a_2_seed)
             f_2_dict = dict(value=f_2_guess, min=0.0, max=1.0 / dt / 2)
-            phi_2_dict = dict(value=0.0, min=-float(pi), max=float(pi))
+            phi_2_dict = dict(value=float(phi_2_seed), min=-float(pi), max=float(pi))
             kappa_2_dict = dict(value=kappa_1_guess, min=0.0, max=10 * kappa_1_guess)
 
         c_dict = dict(value=float(mean(y)), min=min_val, max=max_val)

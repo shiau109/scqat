@@ -48,6 +48,13 @@ MIN_CYCLES = 1.0
 #: Bayesian-information-criterion margin by which the beat model must beat the
 #: single model to be accepted (Kass-Raftery "strong evidence").
 DELTA_BIC = 6.0
+#: Minimum fraction of the signal variance an oscillatory (single/beat) fit must
+#: explain beyond a flat line to count as successful. A degenerate fit whose
+#: amplitude has collapsed to ~0 reproduces only the mean (variance explained
+#: ~0) yet lmfit still reports convergence; this gate turns that into
+#: ``success=False`` so the run is marked FAILED rather than written back with a
+#: meaningless detuning / T2*.
+MIN_VAR_EXPLAINED = 0.05
 
 #: Valid ``force_model`` values (``None`` = automatic selection).
 RAMSEY_MODELS = ("single", "beat", "relaxation")
@@ -186,8 +193,22 @@ def fit_ramsey(
         else:
             results, fit_result = res_single, fr_single
 
-    results['success'] = bool(fit_result.success)
-    results['best_fit'] = fit_result.best_fit
+    best_fit = fit_result.best_fit
+    # Fraction of variance the fit explains beyond a flat mean line. A collapsed
+    # (amplitude -> 0) oscillation fit reproduces only the mean, so this is ~0.
+    sst = float(np.sum((signal - signal.mean()) ** 2))
+    sse = float(np.sum((signal - np.asarray(best_fit, dtype=float)) ** 2))
+    var_explained = 1.0 - sse / sst if sst > 0 else 0.0
+
+    success = bool(fit_result.success)
+    if results['model_type'] in ('single', 'beat'):
+        # A fringe model that explains ~none of the variance has collapsed; do
+        # not report it as a successful fit even though lmfit converged.
+        success = success and var_explained >= MIN_VAR_EXPLAINED
+
+    results['success'] = success
+    results['var_explained'] = var_explained
+    results['best_fit'] = best_fit
     results['fft_freq'] = fft_freq
     results['fft_amp'] = fft_amp
     results['fit_report'] = fit_result.fit_report()

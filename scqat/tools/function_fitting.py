@@ -54,6 +54,66 @@ def robust_dt(t) -> float:
     raise ValueError("Degenerate x axis: all sample positions are equal.")
 
 
+def seed_amp_phase(t, y, freqs, kappas=None, basis="cos"):
+    """Least-squares seed for the amplitude(s) and phase(s) of a damped sinusoid.
+
+    Projects ``y`` onto the (envelope-weighted) cos/sin quadratures at each
+    frequency in ``freqs``, plus a constant, so a fitter can seed
+    ``a*exp(-kappa*x)*trig(2*pi*f*x + phi)`` with the phase the data actually
+    carries instead of a blind ``phi=0``. A blind phase seed pins the model at a
+    fixed phase; when the real fringe is near anti-phase there, the amplitude
+    lower bound (``a>=0``) traps the optimiser at ``a->0`` — a flat line that
+    "converges" but explains no oscillation. Seeding the phase from the data
+    keeps the optimiser in the right basin so the amplitude stays meaningful.
+
+    Parameters
+    ----------
+    t, y : 1-D arrays
+        The sample grid and the signal.
+    freqs : float or sequence of float
+        One frequency (single component) or several (a beat).
+    kappas : float or sequence of float, optional
+        Per-frequency decay rate for the envelope weight; broadcast against
+        ``freqs``. Defaults to 0 (no envelope), a robust seed regardless.
+    basis : {"cos", "sin"}
+        Trig basis of the target model, so the returned phase matches it.
+
+    Returns
+    -------
+    (amp, phi) for a scalar ``freqs``, else a list of ``(amp, phi)`` pairs in
+    the order of ``freqs``. ``amp`` is non-negative; ``phi`` is in ``[-pi, pi]``.
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    scalar = np.isscalar(freqs)
+    freqs = np.atleast_1d(np.asarray(freqs, dtype=float))
+    if kappas is None:
+        kappas = np.zeros_like(freqs)
+    kappas = np.broadcast_to(np.asarray(kappas, dtype=float), freqs.shape)
+
+    columns = [np.ones_like(t)]
+    for f, k in zip(freqs, kappas):
+        theta = 2 * np.pi * f * t
+        env = np.exp(-k * t)
+        columns.append(env * np.cos(theta))
+        columns.append(env * np.sin(theta))
+    coef, *_ = np.linalg.lstsq(np.column_stack(columns), y, rcond=None)
+
+    out = []
+    for i in range(len(freqs)):
+        c_cos = float(coef[1 + 2 * i])
+        c_sin = float(coef[2 + 2 * i])
+        amp = float(np.hypot(c_cos, c_sin))
+        if basis == "sin":
+            # a*sin(th+phi) = (a cos phi) sin th + (a sin phi) cos th
+            phi = float(np.arctan2(c_cos, c_sin))
+        else:
+            # a*cos(th+phi) = (a cos phi) cos th - (a sin phi) sin th
+            phi = float(np.arctan2(-c_sin, c_cos))
+        out.append((amp, phi))
+    return out[0] if scalar else out
+
+
 class FunctionFitting(ABC):
     """
     Abstract base class for all function fitting routines.
