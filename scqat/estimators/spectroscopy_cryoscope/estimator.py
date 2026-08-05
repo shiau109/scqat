@@ -82,7 +82,10 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
         Kwargs — flat and fully owned:
             start_fractions (sequence[float]): DESCENDING 0-1 fractions where each
                 exponential component's fit starts (slowest first). Default
-                ``(0.7, 0.3, 0.05)`` (the 14b long-time defaults).
+                ``(0.7, 0.3, 0.05)`` (the 14b long-time defaults). No MPM
+                seeding here — the Matrix Pencil needs a UNIFORM axis and this
+                experiment's wait grid is log-spaced (see
+                ``tools.step_response_fit.mpm_tau_seeds``).
             stable_tail_frac (float): fraction of the record (longest waits) used to
                 normalize the step response. Default ``0.15``.
             a_dc (float | None): pin the settled level of the exponential fit.

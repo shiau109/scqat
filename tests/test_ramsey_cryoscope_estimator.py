@@ -69,6 +69,50 @@ class TestRamseyCryoscopeEstimator:
         assert np.max(np.abs(r["step_response"][3:] - S[3:])) < 0.01
         assert r["step_response"][-10:].mean() == pytest.approx(1.0, abs=0.02)
 
+    def test_best_of_mpm_and_fractions_recovers_two_components(self):
+        """The default pipeline runs BOTH the MPM-seeded joint fit and the
+        sequential fractions fit and keeps the better residual — on clean,
+        well-separated data the result is the exact two-component recovery,
+        and the provenance keys prove MPM ran."""
+        ds, _ = _forward([(0.08, 100.0), (0.03, 25.0)])
+        r = RamseyCryoscopeEstimator().extract_parameters(ds)
+        assert r["success"] is True
+        assert r["seed_method"] in ("mpm", "fractions")  # the winner
+        assert r["mpm_n_modes"] >= 1  # MPM ran
+        assert r["n_components"] == 2
+        # the DOMINANT (slow) tap is pinned; the fast one is distorted by the
+        # savgol edge in the noiseless chain (both paths land on the same
+        # values), so only its existence is asserted.
+        amps = r["component_amps"]
+        taus_ns = [tau * 1e9 for tau in r["component_taus_s"]]
+        dom = max(range(2), key=lambda i: abs(amps[i]))
+        assert taus_ns[dom] == pytest.approx(100.0, rel=0.3)
+        assert amps[dom] == pytest.approx(0.08, rel=0.3)
+
+    def test_mpm_wins_the_fast_beneath_slow_regime(self):
+        """The real-hardware regime (run 012846): a fast ~2 ns undershoot
+        beneath a slow ~18 ns one on a short noisy record. The fractions path
+        collapses to ONE component; MPM resolves both and wins the residual."""
+        ds, _ = _forward([(-0.04, 18.0), (-0.06, 2.0)], tmax_ns=80,
+                         noise=0.002, seed=7)
+        r = RamseyCryoscopeEstimator().extract_parameters(ds)
+        assert r["success"] is True
+        assert r["seed_method"] == "mpm"
+        assert r["n_components"] == 2
+        taus_ns = sorted(tau * 1e9 for tau in r["component_taus_s"])
+        assert taus_ns[0] == pytest.approx(2.0, rel=0.6)
+        assert taus_ns[1] == pytest.approx(18.0, rel=0.4)
+
+    def test_fractions_fallback_reachable_by_kwarg(self):
+        """seed_method='fractions' forces the sequential path (also the shape
+        of the automatic fallback) — provenance says so."""
+        ds, _ = _forward([(0.08, 50.0)])
+        r = RamseyCryoscopeEstimator().extract_parameters(
+            ds, seed_method="fractions", start_fractions=(0.5,))
+        assert r["seed_method"] == "fractions"
+        assert r["success"] is True
+        assert r["mpm_n_modes"] == 0  # MPM never ran
+
     def test_single_component_recovery(self):
         """A well-conditioned single exponential (tau well within the record)
         comes back accurately through the full chain."""

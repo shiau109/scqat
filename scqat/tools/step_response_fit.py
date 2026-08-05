@@ -86,6 +86,85 @@ def _estimate_a_dc(y: np.ndarray, log: Optional[Callable[[str], None]]) -> float
         return float(y[-1])
 
 
+def mpm_tau_seeds(
+    t: np.ndarray,
+    y: np.ndarray,
+    *,
+    a_dc: float = 1.0,
+    max_modes: int = 4,
+    mode_method: str = "mdl",
+) -> Dict[str, Any]:
+    """Model order + tau seeds for a UNIFORM-axis step response via the
+    Hankel-SVD Matrix Pencil Method (:func:`scqat.tools.hankel.hankel_decompose`).
+
+    MPM answers "how many exponentials does the data support, and roughly which
+    taus" by linear algebra — no start-fraction heuristics, no sequential-
+    subtraction bias — and is the standard SEEDING stage before a bounded
+    nonlinear polish (pass the returned ``taus`` to :func:`fit_step_response`
+    as ``tau_seeds``). Requires an evenly spaced ``t`` (the Hankel shift
+    structure IS the uniform sampling); a log-spaced axis is refused by name —
+    the spectroscopy cryoscope stays on the start-fractions path.
+
+    Returns ``{"taus": [...descending, caller units...], "n_modes": the SVD
+    model order, "oscillatory": bool — a significant complex-pole mode was
+    found (ringing/reflection the exp-sum model cannot represent; consider an
+    FIR correction), "modes": the kept raw mode dicts}``. Raises ``ValueError``
+    on a non-uniform axis, too few samples, or non-finite data.
+    """
+    t = np.asarray(t, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    if t.size != y.size or t.size < MIN_SAMPLES:
+        raise ValueError(f"mpm_tau_seeds needs >= {MIN_SAMPLES} samples")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("mpm_tau_seeds: y contains non-finite values")
+    steps = np.diff(t)
+    if np.max(np.abs(steps - steps.mean())) > 1e-3 * abs(steps.mean()):
+        raise ValueError(
+            "mpm_tau_seeds needs a UNIFORM time axis (the Hankel shift "
+            "structure is the uniform sampling) — got a non-uniform one; "
+            "use the start-fractions path instead"
+        )
+    from scqat.tools.hankel import hankel_decompose  # tools -> tools is legal
+
+    out = hankel_decompose(
+        y - a_dc, t, mode_method=mode_method, recon_method="mpm"
+    )
+    step = float(steps.mean())
+    span = float(t[-1] - t[0])
+    nyquist = 0.5 / step
+    max_amp = max((m["amplitude"] for m in out["modes"]), default=0.0)
+    kept: List[Dict[str, Any]] = []
+    oscillatory = False
+    for m in out["modes"]:  # arrive amplitude-sorted (descending)
+        significant = max_amp > 0 and m["amplitude"] >= 0.1 * max_amp
+        if abs(m["freq_hz"]) >= 0.02 * nyquist:
+            # a genuinely oscillating pole — not representable as a real
+            # decaying exponential; flag it (the "consider FIR" signal).
+            oscillatory = oscillatory or significant
+            continue
+        tau = m["time_constant"]
+        if not (m["decay_rate"] < 0 and np.isfinite(tau)):
+            continue
+        if not (0.5 * step <= tau <= 10.0 * span):
+            continue  # sub-sample or beyond-record: not identifiable
+        # dedupe: a tau within 1.5x of an already-kept (stronger) mode would
+        # hand the joint fit a near-degenerate p0 — keep the stronger one.
+        if any(
+            max(tau, k["time_constant"]) / min(tau, k["time_constant"]) < 1.5
+            for k in kept
+        ):
+            continue
+        kept.append(m)
+    kept = kept[:max_modes]
+    taus = sorted((float(m["time_constant"]) for m in kept), reverse=True)
+    return {
+        "taus": taus,
+        "n_modes": int(out["n_modes"]),
+        "oscillatory": bool(oscillatory),
+        "modes": kept,
+    }
+
+
 def sequential_exp_fit(
     t: np.ndarray,
     y: np.ndarray,
@@ -191,21 +270,156 @@ def sequential_exp_fit(
     return components, float(a_dc), y_residual
 
 
+#: joint-path amplitude floor: a tap below this (0.2 % of the settled level) is
+#: beneath measurement noise and hardware resolution — pruned, model refit.
+AMP_PRUNE = 2e-3
+
+
+def _joint_tau_fit(
+    t: np.ndarray,
+    y: np.ndarray,
+    tau_seeds: List[float],
+    *,
+    a_dc: Optional[float],
+    amp_max: float,
+    degen_tau_ratio: float,
+    log: Optional[Callable[[str], None]],
+    failed: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The tau-seeded JOINT path of :func:`fit_step_response`: one bounded
+    ``curve_fit`` of ``a_dc + sum_i A_i*exp(-t/tau_i)`` with all amps + taus
+    free, seeded by ``tau_seeds`` (e.g. from :func:`mpm_tau_seeds`) and their
+    linear-LS amplitudes. Same floors/bounds as the sequential path; the
+    degeneracy collapse drops the smallest-|amp| component and refits."""
+    t_offset = t - t[0]
+    dt = float(t_offset[1] - t_offset[0])
+    s = t_offset / dt
+    if a_dc is None:
+        a_dc = _estimate_a_dc(y, log)
+    tau_lo = max(0.1, 0.5 * t[0] / dt) if t[0] > 0 else 0.1
+    # sample units, nudged above the floor so the seed is feasible
+    seeds_s = [max(tau / dt, tau_lo * 1.01) for tau in tau_seeds]
+
+    def _refit(seeds: List[float]):
+        n = len(seeds)
+        design = np.exp(-np.outer(s, 1.0 / np.asarray(seeds)))
+        amps0, *_ = np.linalg.lstsq(design, y - a_dc, rcond=None)
+        amps0 = np.clip(amps0, -0.999 * amp_max, 0.999 * amp_max)
+
+        def model(ss, *p):
+            out = np.zeros_like(ss)
+            for a, tau_s in zip(p[:n], p[n:]):
+                out = out + a * np.exp(-ss / tau_s)
+            return out
+
+        popt, _ = curve_fit(
+            model, s, y - a_dc, p0=list(amps0) + list(seeds),
+            bounds=([-amp_max] * n + [tau_lo] * n,
+                    [amp_max] * n + [np.inf] * n),
+        )
+        comps = sorted(
+            ((float(a), float(ts) * dt) for a, ts in zip(popt[:n], popt[n:])),
+            key=lambda c: -c[1],  # slowest first, matching the contract
+        )
+        residual = (y - a_dc) - model(s, *popt)
+        return comps, residual
+
+    try:
+        components, residual = _refit(seeds_s)
+        while len(components) > 1:
+            pair = _degenerate_pair(components, degen_tau_ratio)
+            if pair is None:
+                break
+            # merge THE PAIR into one component (keep the stronger member's
+            # tau) — dropping the globally smallest component instead can kill
+            # a genuine component while the degenerate pair survives.
+            i, j = pair
+            keep_tau = components[i if abs(components[i][0])
+                                  >= abs(components[j][0]) else j][1]
+            seeds_s = [keep_tau / dt] + [
+                tau / dt
+                for k, (_, tau) in enumerate(components)
+                if k not in (i, j)
+            ]
+            if log:
+                log(
+                    f"cancelling tau-degenerate pair — collapsing to "
+                    f"{len(seeds_s)} component(s)"
+                )
+            components, residual = _refit(seeds_s)
+        # prune negligible taps (an artifact-sized component the joint fit
+        # dutifully models, e.g. a Savitzky-Golay edge bump) and refit once
+        keep = [k for k, (a, _) in enumerate(components)
+                if abs(a) >= AMP_PRUNE]
+        if 0 < len(keep) < len(components):
+            if log:
+                log(f"pruning {len(components) - len(keep)} negligible tap(s)")
+            seeds_s = [components[k][1] / dt for k in keep]
+            components, residual = _refit(seeds_s)
+    except (RuntimeError, ValueError) as err:
+        if log:
+            log(f"joint tau-seeded fit failed: {err}")
+        return dict(failed)
+
+    rms = float(np.sqrt(np.mean(residual ** 2)))
+    # re-reference the amplitudes to t = 0 (the fit ran on t - t[0])
+    components = [
+        (float(amp * np.exp(t[0] / tau)), float(tau)) for amp, tau in components
+    ]
+    best_fit = np.full_like(y, a_dc, dtype=float)
+    for amp, tau in components:
+        best_fit += amp * np.exp(-t / tau)
+    success = bool(
+        all(np.isfinite(tau) and tau > 0 for _, tau in components)
+        and all(np.isfinite(amp) for amp, _ in components)
+        and all(abs(amp) <= amp_max for amp, _ in components)
+    )
+    if log:
+        log(
+            f"joint fit {'succeeded' if success else 'FAILED'}: "
+            f"rms = {rms:.3e}, components = {components}"
+        )
+    return {
+        "success": success, "components": components, "a_dc": float(a_dc),
+        "rms": rms, "best_fractions": [],  # no fractions on the seeded path
+        "best_fit": best_fit,
+    }
+
+
+def _degenerate_pair(
+    components: Sequence[Tuple[float, float]], ratio: float
+) -> Optional[Tuple[int, int]]:
+    """Indices of a close-tau CANCELLING pair, or None.
+
+    Two exponentials on (near-)identical taus whose amplitudes largely cancel
+    are one physical component split into a degenerate pair — the parameters
+    are non-identifiable regardless of how small the residual is (such a pair
+    can even emulate a ``t*exp(-t/tau)`` shape, which is how +-22 amplitudes on
+    taus equal to four digits scored a good rms on real hardware). A SAME-SIGN
+    close pair merely splits one component's amplitude — harmless for any
+    consumer that sums the taps — so it does not fire the collapse.
+    """
+    order = sorted(range(len(components)), key=lambda i: abs(components[i][1]))
+    for i, j in zip(order, order[1:]):
+        a_i, tau_i = components[i]
+        a_j, tau_j = components[j]
+        lo, hi = abs(tau_i), abs(tau_j)
+        if lo <= 0 or hi / lo >= ratio:
+            continue
+        if a_i * a_j >= 0:
+            continue  # same-sign split — harmless
+        # (near-)IDENTICAL taus with opposite signs are degenerate regardless
+        # of how much survives the cancellation — the pair IS one component.
+        if hi / lo < 1.1 or abs(a_i + a_j) < 0.5 * max(abs(a_i), abs(a_j)):
+            return (i, j)
+    return None
+
+
 def _has_degenerate_pair(
     components: Sequence[Tuple[float, float]], ratio: float
 ) -> bool:
-    """True when any two components' taus are within ``ratio`` of each other.
-
-    Two exponentials on (near-)identical taus are one physical component split
-    into a cancelling pair — the parameters are non-identifiable regardless of
-    how small the residual is (a degenerate pair can even emulate a
-    ``t*exp(-t/tau)`` shape, which is how +-22 amplitudes on taus equal to four
-    digits scored a good rms on real hardware).
-    """
-    taus = sorted(abs(tau) for _, tau in components)
-    return any(
-        hi / lo < ratio for lo, hi in zip(taus, taus[1:]) if lo > 0
-    )
+    """Boolean face of :func:`_degenerate_pair` (the sequential path's check)."""
+    return _degenerate_pair(components, ratio) is not None
 
 
 def fit_step_response(
@@ -220,6 +434,7 @@ def fit_step_response(
     log: Optional[Callable[[str], None]] = None,
     amp_max: float = 2.0,
     degen_tau_ratio: float = 1.5,
+    tau_seeds: Optional[Sequence[float]] = None,
 ) -> Dict[str, Any]:
     """Extract multi-exponential taps from a settled step response.
 
@@ -229,11 +444,19 @@ def fit_step_response(
     the amplitudes to ``t = 0``. See the module docstring for the result
     contract; taus come out in the unit of ``t``.
 
-    Degeneracy guard: amplitudes are bounded to ``+-amp_max`` and each tau to
-    at least half the first sample time (see :func:`sequential_exp_fit`), and
-    when a fit lands two components within ``degen_tau_ratio`` of each other in
-    tau, the model is collapsed — the fastest start fraction is dropped and the
-    whole fit rerun — until the components are tau-separated (or one remains).
+    ``tau_seeds`` (e.g. from :func:`mpm_tau_seeds`) switches to the JOINT path:
+    one bounded ``curve_fit`` of the full model with all amps + taus free,
+    seeded by the given taus and their linear-LS amplitudes — no fractions, no
+    sequential subtraction; ``best_fractions`` comes back empty. The model
+    order is the seed count (collapse may still reduce it). Mutually exclusive
+    with ``fixed_taus``.
+
+    Degeneracy guard (both paths): amplitudes are bounded to ``+-amp_max`` and
+    each tau to at least half the first sample time (see
+    :func:`sequential_exp_fit`), and when a fit lands a CANCELLING pair within
+    ``degen_tau_ratio`` in tau, the model is collapsed — the fastest start
+    fraction (sequential) or the smallest-|amp| component (joint) is dropped
+    and the fit rerun — until clean (or one component remains).
     ``components``/``best_fractions`` may therefore be SHORTER than requested;
     that is the honest model. ``fixed_taus`` disables the collapse (the caller
     pinned the model deliberately). A final component with ``|amp| > amp_max``
@@ -256,6 +479,14 @@ def fit_step_response(
             )
         if any(tau <= 0 for tau in fixed_taus):
             raise ValueError("all fixed_taus values must be positive")
+    if tau_seeds is not None:
+        if fixed_taus is not None:
+            raise ValueError("tau_seeds and fixed_taus are mutually exclusive")
+        tau_seeds = [float(x) for x in tau_seeds]
+        if not tau_seeds or any(
+            not np.isfinite(tau) or tau <= 0 for tau in tau_seeds
+        ):
+            raise ValueError("tau_seeds must be non-empty positive finite taus")
 
     failed: Dict[str, Any] = {
         "success": False, "components": [],
@@ -265,6 +496,12 @@ def fit_step_response(
     }
     if t.size != y.size or t.size < MIN_SAMPLES or not np.all(np.isfinite(y)):
         return failed
+
+    if tau_seeds is not None:
+        return _joint_tau_fit(
+            t, y, tau_seeds, a_dc=a_dc, amp_max=amp_max,
+            degen_tau_ratio=degen_tau_ratio, log=log, failed=failed,
+        )
 
     def _fit_once(fracs: List[float]):
         """One full pass: Nelder-Mead over these fractions + the final fit."""

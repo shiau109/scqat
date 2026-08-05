@@ -7,7 +7,7 @@ from scipy.signal import savgol_filter
 
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
 from scqat.core.figures import render_figures
-from scqat.tools.step_response_fit import fit_step_response
+from scqat.tools.step_response_fit import fit_step_response, mpm_tau_seeds
 from scqat.estimators.ramsey_cryoscope.visualization import plot_step_response, plot_phase_freq
 
 
@@ -82,9 +82,16 @@ class RamseyCryoscopeEstimator(BaseEstimator):
 
         Kwargs — flat and fully owned; unknown names are ignored (there is no
         multi-method surface here):
+            seed_method ("mpm" | "fractions"): how the exponential fit is
+                seeded. Default ``"mpm"`` — Hankel-SVD Matrix Pencil picks the
+                model order + tau seeds from the data (the uniform 1 ns axis is
+                exactly MPM's requirement), then one bounded JOINT fit; the
+                sequential ``"fractions"`` fit always runs too and the better
+                residual wins, so the default is never worse than the old
+                behavior. ``"fractions"`` skips MPM entirely.
             start_fractions (sequence[float]): DESCENDING 0-1 fractions where each
                 exponential component's fit starts (slowest first). Default
-                ``(0.5, 0.01)``.
+                ``(0.5, 0.01)``. Used by the fractions path (and the fallback).
             stable_tail_s (float): width of the settled-tail window used to
                 normalize the step response, seconds. Default ``20e-9``.
             sg_window, sg_order (int): Savitzky-Golay window / polynomial order
@@ -95,9 +102,11 @@ class RamseyCryoscopeEstimator(BaseEstimator):
 
         Returns a dict with:
             success, component_amps, component_taus_s, a_dc, rms_residual,
-            n_components, start_fractions, stable_tail_s,
+            n_components, start_fractions, stable_tail_s, seed_method,
+            mpm_n_modes, mpm_oscillatory,
             duration_s, phase, freq_hz, step_response, best_fit, signal.
         """
+        seed_method = str(kwargs.get("seed_method", "mpm"))
         start_fractions = list(kwargs.get("start_fractions", (0.5, 0.01)))
         stable_tail_s = float(kwargs.get("stable_tail_s", 20e-9))
         sg_window = int(kwargs.get("sg_window", 3))
@@ -130,10 +139,37 @@ class RamseyCryoscopeEstimator(BaseEstimator):
         step_response = (flux / tail_mean if tail_mean and np.isfinite(tail_mean)
                          else np.full_like(flux, np.nan))
 
-        # 5. multi-exponential fit -> predistortion taps
+        # 5. multi-exponential fit -> predistortion taps. MPM-first: the
+        # Matrix Pencil picks the model order + tau seeds from the data (no
+        # fraction heuristics, no sequential-subtraction bias), then ONE
+        # bounded joint fit. The sequential start-fractions fit ALWAYS runs
+        # too, and the better residual wins — so the default is never worse
+        # than the fractions-only behavior (on clean well-separated data the
+        # fractions path tends to win; on a fast tap beneath a slow one — the
+        # real-hardware regime — MPM does).
+        used_method, mpm_n_modes, mpm_oscillatory = "fractions", 0, 0
+        candidate = None
+        if seed_method == "mpm":
+            try:
+                seeds = mpm_tau_seeds(duration_s, step_response, a_dc=a_dc or 1.0)
+                mpm_n_modes = int(seeds["n_modes"])
+                mpm_oscillatory = int(seeds["oscillatory"])
+                if seeds["taus"]:
+                    candidate = fit_step_response(
+                        duration_s, step_response, start_fractions,
+                        a_dc=a_dc, tau_seeds=seeds["taus"],
+                    )
+                    if not candidate["success"]:
+                        candidate = None
+            except (ValueError, RuntimeError):
+                pass  # non-uniform axis / too few points -> fractions only
         fit = fit_step_response(
             duration_s, step_response, start_fractions, a_dc=a_dc,
         )
+        if candidate is not None and (
+            not fit["success"] or candidate["rms"] < fit["rms"]
+        ):
+            fit, used_method = candidate, "mpm"
         amps = [amp for amp, _ in fit["components"]]
         taus = [tau for _, tau in fit["components"]]
 
@@ -145,6 +181,9 @@ class RamseyCryoscopeEstimator(BaseEstimator):
             "rms_residual": float(fit["rms"]),
             "n_components": len(fit["components"]),
             "start_fractions": [float(f) for f in fit["best_fractions"]],
+            "seed_method": used_method,
+            "mpm_n_modes": mpm_n_modes,
+            "mpm_oscillatory": mpm_oscillatory,
             "stable_tail_s": stable_tail_s,
             "duration_s": duration_s,
             "phase": phase,

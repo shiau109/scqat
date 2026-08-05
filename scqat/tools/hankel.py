@@ -219,6 +219,12 @@ def hankel_decompose(
     # Steps 4–6: eigenvalues → exponents → residues
     eigvals = _compute_eigenvalues(U, Vh, n_modes, method=recon_method)
     exponents = _compute_exponents(eigvals, dt, eigval_threshold)
+    # Overflow guard: a mode GROWING faster than exp() can represent over the
+    # record (Re(s)·span beyond the float64 exp range) is a numerical artifact
+    # of a noise pole at |z| > 1 — it can only overflow the residue solve into
+    # a hard ValueError, never contribute a usable mode. Drop it.
+    span = float(tlist[-1] - tlist[0]) if len(tlist) > 1 else 1.0
+    exponents = exponents[np.real(exponents) * span < 700.0]
     residues = _compute_residues(exponents, y_data, tlist)
 
     # Package into a list of physical mode dictionaries
