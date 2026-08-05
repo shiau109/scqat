@@ -86,6 +86,11 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
                 seeding here — the Matrix Pencil needs a UNIFORM axis and this
                 experiment's wait grid is log-spaced (see
                 ``tools.step_response_fit.mpm_tau_seeds``).
+            tau_seeds (sequence[float] | None): EXPLICIT tau seeds in seconds —
+                PRIOR KNOWLEDGE (e.g. the previous run's taps). The seeded joint
+                fit (axis-agnostic, unlike MPM) races the fractions fit and the
+                better residual wins; the winner reports
+                ``seed_method="seeded"``.
             stable_tail_frac (float): fraction of the record (longest waits) used to
                 normalize the step response. Default ``0.15``.
             a_dc (float | None): pin the settled level of the exponential fit.
@@ -96,11 +101,13 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
             :func:`scqat.tools.peak_fit.fit_peaks`.
 
         Returns a dict with: success, component_amps, component_taus_s, a_dc,
-        rms_residual, n_components, start_fractions, stable_tail_frac,
-        center_offset_hz, n_peaks_found, wait_time_s, detuning_hz, signal (2-D),
-        center_detuning, flux, step_response, best_fit.
+        rms_residual, n_components, start_fractions, seed_method,
+        stable_tail_frac, center_offset_hz, n_peaks_found, wait_time_s,
+        detuning_hz, signal (2-D), center_detuning, flux, step_response,
+        best_fit.
         """
         start_fractions = list(kwargs.get("start_fractions", (0.7, 0.3, 0.05)))
+        tau_seeds = [float(x) for x in (kwargs.get("tau_seeds") or [])]
         stable_tail_frac = float(kwargs.get("stable_tail_frac", 0.15))
         a_dc = kwargs.get("a_dc", 1.0)
         peak_knobs = {k: kwargs[k] for k in PEAK_KNOBS if k in kwargs}
@@ -142,10 +149,28 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
         # 3. multi-exponential fit on the finite points (the wait axis may be
         # log-spaced; fit_step_response is fine on a non-uniform axis)
         good = np.isfinite(step_response)
+        used_method = "fractions"
         if good.sum() >= 2:
+            candidate = None
+            if tau_seeds:
+                # explicit prior-knowledge seeds: the joint fit is axis-agnostic
+                # (only MPM needs uniformity), so it works on the log wait grid
+                try:
+                    candidate = fit_step_response(
+                        wait_s[good], step_response[good], start_fractions,
+                        a_dc=a_dc, tau_seeds=tau_seeds,
+                    )
+                    if not candidate["success"]:
+                        candidate = None
+                except (ValueError, RuntimeError):
+                    pass  # bad seeds -> fractions only
             fit = fit_step_response(
                 wait_s[good], step_response[good], start_fractions, a_dc=a_dc,
             )
+            if candidate is not None and (
+                not fit["success"] or candidate["rms"] < fit["rms"]
+            ):
+                fit, used_method = candidate, "seeded"
         else:
             # mirror fit_step_response's FULL failed-dict contract (incl. best_fit)
             fit = {"success": False, "components": [], "a_dc": float("nan"),
@@ -168,6 +193,7 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
             "rms_residual": float(fit["rms"]),
             "n_components": len(fit["components"]),
             "start_fractions": [float(f) for f in fit["best_fractions"]],
+            "seed_method": used_method,
             "stable_tail_frac": stable_tail_frac,
             "center_offset_hz": center_offset,
             "n_peaks_found": n_found,

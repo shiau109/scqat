@@ -103,6 +103,22 @@ class TestRamseyCryoscopeEstimator:
         assert taus_ns[0] == pytest.approx(2.0, rel=0.6)
         assert taus_ns[1] == pytest.approx(18.0, rel=0.4)
 
+    def test_explicit_tau_seeds_take_precedence_and_stamp_provenance(self):
+        """tau_seeds (prior knowledge, e.g. the previous run's taps) drive the
+        seeded joint fit; the winner reports seed_method='seeded' and MPM never
+        runs."""
+        ds, _ = _forward([(-0.04, 18.0), (-0.06, 2.0)], tmax_ns=80,
+                         noise=0.002, seed=7)
+        r = RamseyCryoscopeEstimator().extract_parameters(
+            ds, tau_seeds=[18e-9, 2e-9])
+        assert r["success"] is True
+        assert r["seed_method"] == "seeded"
+        assert r["mpm_n_modes"] == 0  # MPM bypassed
+        assert r["n_components"] == 2
+        taus_ns = sorted(tau * 1e9 for tau in r["component_taus_s"])
+        assert taus_ns[0] == pytest.approx(2.0, rel=0.6)
+        assert taus_ns[1] == pytest.approx(18.0, rel=0.4)
+
     def test_fractions_fallback_reachable_by_kwarg(self):
         """seed_method='fractions' forces the sequential path (also the shape
         of the automatic fallback) — provenance says so."""

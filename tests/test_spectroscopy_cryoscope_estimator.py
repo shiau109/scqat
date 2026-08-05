@@ -95,6 +95,20 @@ class TestSpectroscopyCryoscopeEstimator:
         assert 3000e-9 < tau_slow < 8000e-9
         assert amp_slow == pytest.approx(0.05, rel=0.4)
 
+    def test_explicit_tau_seeds_on_the_log_axis(self):
+        """tau_seeds work HERE too — the seeded joint fit is axis-agnostic
+        (only MPM needs uniformity). Seeding with the planted taus recovers
+        them and stamps seed_method='seeded' when the seeded fit wins."""
+        ds, _ = _forward([(0.05, 5000.0), (0.03, 400.0)])
+        r = SpectroscopyCryoscopeEstimator().extract_parameters(
+            ds, start_fractions=(0.5, 0.05), tau_seeds=[5000e-9, 400e-9])
+        assert r["success"] is True
+        assert r["seed_method"] in ("seeded", "fractions")  # the winner
+        assert r["n_components"] == 2
+        taus_us = sorted(tau * 1e6 for tau in r["component_taus_s"])
+        assert taus_us[1] == pytest.approx(5.0, rel=0.4)
+        assert taus_us[0] == pytest.approx(0.4, rel=0.5)
+
     def test_missing_center_offset_defaults_to_zero(self):
         """Without the parked-offset variable the estimator still runs (offset 0),
         exercising the fallback path."""

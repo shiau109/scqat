@@ -89,6 +89,11 @@ class RamseyCryoscopeEstimator(BaseEstimator):
                 sequential ``"fractions"`` fit always runs too and the better
                 residual wins, so the default is never worse than the old
                 behavior. ``"fractions"`` skips MPM entirely.
+            tau_seeds (sequence[float] | None): EXPLICIT tau seeds in seconds —
+                PRIOR KNOWLEDGE (e.g. the previous run's taps). When given they
+                take precedence over MPM: the seeded joint fit is the candidate
+                (racing the fractions fit as usual, better residual wins) and
+                the winner reports ``seed_method="seeded"``.
             start_fractions (sequence[float]): DESCENDING 0-1 fractions where each
                 exponential component's fit starts (slowest first). Default
                 ``(0.5, 0.01)``. Used by the fractions path (and the fallback).
@@ -107,6 +112,7 @@ class RamseyCryoscopeEstimator(BaseEstimator):
             duration_s, phase, freq_hz, step_response, best_fit, signal.
         """
         seed_method = str(kwargs.get("seed_method", "mpm"))
+        tau_seeds = [float(x) for x in (kwargs.get("tau_seeds") or [])]
         start_fractions = list(kwargs.get("start_fractions", (0.5, 0.01)))
         stable_tail_s = float(kwargs.get("stable_tail_s", 20e-9))
         sg_window = int(kwargs.get("sg_window", 3))
@@ -148,8 +154,20 @@ class RamseyCryoscopeEstimator(BaseEstimator):
         # fractions path tends to win; on a fast tap beneath a slow one — the
         # real-hardware regime — MPM does).
         used_method, mpm_n_modes, mpm_oscillatory = "fractions", 0, 0
-        candidate = None
-        if seed_method == "mpm":
+        candidate, candidate_label = None, ""
+        if tau_seeds:
+            # explicit prior-knowledge seeds take precedence over MPM
+            try:
+                candidate = fit_step_response(
+                    duration_s, step_response, start_fractions,
+                    a_dc=a_dc, tau_seeds=tau_seeds,
+                )
+                candidate_label = "seeded"
+                if not candidate["success"]:
+                    candidate = None
+            except (ValueError, RuntimeError):
+                pass  # bad seeds -> fractions only
+        elif seed_method == "mpm":
             try:
                 seeds = mpm_tau_seeds(duration_s, step_response, a_dc=a_dc or 1.0)
                 mpm_n_modes = int(seeds["n_modes"])
@@ -159,6 +177,7 @@ class RamseyCryoscopeEstimator(BaseEstimator):
                         duration_s, step_response, start_fractions,
                         a_dc=a_dc, tau_seeds=seeds["taus"],
                     )
+                    candidate_label = "mpm"
                     if not candidate["success"]:
                         candidate = None
             except (ValueError, RuntimeError):
@@ -169,7 +188,7 @@ class RamseyCryoscopeEstimator(BaseEstimator):
         if candidate is not None and (
             not fit["success"] or candidate["rms"] < fit["rms"]
         ):
-            fit, used_method = candidate, "mpm"
+            fit, used_method = candidate, candidate_label
         amps = [amp for amp, _ in fit["components"]]
         taus = [tau for _, tau in fit["components"]]
 
