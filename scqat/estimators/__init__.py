@@ -33,6 +33,7 @@ from scqat.estimators.qubit_deterministic_benchmarking import QubitDeterministic
 from scqat.estimators.parity_switch import ParitySwitchEstimator
 from scqat.estimators.pair_swap_chevron import PairSwapChevronEstimator
 from scqat.estimators.pair_swap_flux_map import PairSwapFluxMapEstimator
+from scqat.estimators.qc_n_swap_amp import QcNSwapAmpEstimator
 from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator
 from scqat.estimators.spectroscopy_cryoscope import SpectroscopyCryoscopeEstimator
 from scqat.estimators.xyz_delay import XyzDelayEstimator
@@ -71,6 +72,7 @@ __all__ = [
     "ParitySwitchEstimator",
     "PairSwapChevronEstimator",
     "PairSwapFluxMapEstimator",
+    "QcNSwapAmpEstimator",
     "RamseyCryoscopeEstimator",
     "SpectroscopyCryoscopeEstimator",
     "XyzDelayEstimator",

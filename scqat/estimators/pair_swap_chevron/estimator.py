@@ -1,14 +1,16 @@
 """Raw joint-state-population maps for the single-excitation swap chevron.
 
 Record-only: this estimator does NOT fit the swap. It draws the four joint
-two-qubit populations (``p_high`` / ``p_low`` / ``p_ee`` / ``p_gg``) over the
-flux-amplitude x pulse-duration grid so an operator can see the chevron arch,
-and it extracts a small self-describing summary of where the transfer peaks. The
-SUCCESS / ``min_transfer`` verdict stays in SCQO.
+two-qubit populations over the flux-amplitude x pulse-duration grid so an
+operator can see the chevron arch, and it extracts a small self-describing
+summary of where the transfer peaks. The SUCCESS / ``min_transfer`` verdict
+stays in SCQO.
 
-Dataset contract:
-  vars   : ``p_high`` / ``p_low`` / ``p_ee``  (``p_gg`` optional; derived if absent)
-  coords : ``flux_amp_v`` (V) / ``swap_time_ns`` (ns)
+Dataset contract (the unified readout schema's joint form):
+  vars   : ``joint_population`` — dims ``(joint_state, flux_amp_v, swap_time_ns)``
+           in any order; ``joint_state`` labels ``"00"/"01"/"10"/"11"``
+           (leftmost digit = the HIGH member)
+  coords : ``joint_state`` / ``flux_amp_v`` (V) / ``swap_time_ns`` (ns)
   kwargs : ``drive_side`` (``"high"`` | ``"low"``) — selects the transfer partner
 """
 
@@ -18,6 +20,7 @@ import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator
+from scqat.core.figures import render_figures
 from scqat.estimators._pair_swap_maps import pair_swap_plot_data, summarize_pair_swap
 from scqat.estimators.pair_swap_chevron.visualization import plot_pair_swap_chevron
 
@@ -31,13 +34,12 @@ class PairSwapChevronEstimator(BaseEstimator):
     estimator_name = "pair_swap_chevron"
 
     def _check_data(self, dataset: xr.Dataset) -> None:
-        missing = [v for v in ("p_high", "p_low", "p_ee") if v not in dataset.data_vars]
-        if missing:
+        if "joint_population" not in dataset.data_vars:
             raise ValueError(
-                f"pair_swap_chevron estimator requires joint-population variables "
-                f"p_high, p_low, p_ee (missing: {missing})"
+                "pair_swap_chevron estimator requires the joint_population "
+                f"variable (found data_vars: {list(dataset.data_vars)})"
             )
-        for axis in (AXIS0, AXIS1):
+        for axis in ("joint_state", AXIS0, AXIS1):
             if axis not in dataset.coords:
                 raise ValueError(
                     f"pair_swap_chevron estimator requires a {axis!r} coordinate"
@@ -76,4 +78,7 @@ class PairSwapChevronEstimator(BaseEstimator):
                 high_name=kwargs.get("high_name"),
                 low_name=kwargs.get("low_name"),
             )
-        return {"pair_swap_chevron": plot_pair_swap_chevron(plot_data)}
+        return render_figures(
+            {"pair_swap_chevron": lambda: plot_pair_swap_chevron(plot_data)},
+            label=self.estimator_name,
+        )

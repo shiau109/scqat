@@ -1,9 +1,11 @@
 """Synthetic-grid tests for the swap-chevron raw-population estimator.
 
-Dataset contract under test: joint-population vars ``p_high`` / ``p_low`` /
-``p_ee`` (``p_gg`` optional) on coords ``(flux_amp_v, swap_time_ns)``. The
-estimator only draws the four populations and reports where the transfer peaks —
-there is no fit and no ``min_transfer`` verdict here (that stays in SCQO).
+Dataset contract under test (the unified readout schema's joint form): one
+``joint_population`` variable over a ``joint_state`` label coordinate
+(``"00"/"01"/"10"/"11"``, leftmost digit = the HIGH member) on coords
+``(flux_amp_v, swap_time_ns)``. The estimator only draws the four populations
+and reports where the transfer peaks — there is no fit and no ``min_transfer``
+verdict here (that stays in SCQO).
 """
 
 import numpy as np
@@ -13,23 +15,22 @@ import xarray as xr
 from scqat.estimators.pair_swap_chevron import PairSwapChevronEstimator
 
 V0, T0 = 0.18, 60.0  # where the (synthetic) transfer peaks
+LABELS = ["00", "01", "10", "11"]
 
 
-def _chevron_ds(with_p_gg: bool = False) -> xr.Dataset:
+def _chevron_ds() -> xr.Dataset:
     v = np.linspace(0.0, 0.3, 9)
     t = np.linspace(1.0, 100.0, 11)
     bump = np.exp(-((v[:, None] - V0) ** 2) / 0.004) * np.exp(-((t[None, :] - T0) ** 2) / 400.0)
-    p_high = 0.85 * bump                                   # transfer onto the undriven (high) member
-    p_low = 0.9 * (1.0 - bump)                             # driven member depletes as it transfers
-    p_ee = np.full((v.size, t.size), 0.01)
-    data = {
-        "p_high": (("flux_amp_v", "swap_time_ns"), p_high),
-        "p_low": (("flux_amp_v", "swap_time_ns"), p_low),
-        "p_ee": (("flux_amp_v", "swap_time_ns"), p_ee),
-    }
-    if with_p_gg:
-        data["p_gg"] = (("flux_amp_v", "swap_time_ns"), np.clip(1.0 - (p_high + p_low) + p_ee, 0.0, 1.0))
-    return xr.Dataset(data, coords={"flux_amp_v": v, "swap_time_ns": t})
+    p11 = np.full((v.size, t.size), 0.01)
+    p10 = 0.84 * bump                       # transfer onto the undriven (high) member
+    p01 = 0.88 * (1.0 - bump)               # driven (low) member depletes as it transfers
+    p00 = np.clip(1.0 - (p01 + p10 + p11), 0.0, 1.0)
+    jp = np.stack([p00, p01, p10, p11])     # (joint_state, flux_amp_v, swap_time_ns)
+    return xr.Dataset(
+        {"joint_population": (("joint_state", "flux_amp_v", "swap_time_ns"), jp)},
+        coords={"joint_state": LABELS, "flux_amp_v": v, "swap_time_ns": t},
+    )
 
 
 def test_summarizes_transfer_peak():
@@ -50,6 +51,21 @@ def test_drive_side_high_selects_low_partner():
     assert res["partner"] == "p_low"
 
 
+def test_marginals_are_partial_traces():
+    # the summary's p_high/p_low ranges are the member marginals traced out of
+    # the joint distribution: P(high=e) = P10 + P11, P(low=e) = P01 + P11.
+    ds = _chevron_ds()
+    res = PairSwapChevronEstimator().extract_parameters(ds, drive_side="low")
+    jp = ds["joint_population"]
+    p_high = (jp.sel(joint_state="10") + jp.sel(joint_state="11")).values
+    p_low = (jp.sel(joint_state="01") + jp.sel(joint_state="11")).values
+    assert res["p_high_max"] == pytest.approx(float(np.nanmax(p_high)))
+    assert res["p_high_min"] == pytest.approx(float(np.nanmin(p_high)))
+    assert res["p_low_max"] == pytest.approx(float(np.nanmax(p_low)))
+    assert res["best_transfer"] == pytest.approx(float(np.nanmax(p_high)))
+    assert res["p_ee_max"] == pytest.approx(float(jp.sel(joint_state="11").max()))
+
+
 def test_plot_data_has_joint_basis_axes_and_attrs():
     ds = _chevron_ds()
     est = PairSwapChevronEstimator()
@@ -65,20 +81,27 @@ def test_plot_data_has_joint_basis_axes_and_attrs():
     assert pd.attrs["transfer_state"] == "p10"
 
 
+def test_plot_data_carries_joint_population_verbatim():
+    ds = _chevron_ds()
+    pd = PairSwapChevronEstimator().build_plot_data(ds, {}, drive_side="low")
+    for label in LABELS:
+        assert np.allclose(pd[f"p{label}"].values,
+                           ds["joint_population"].sel(joint_state=label).values)
+
+
+def test_axis_order_invariance():
+    # the estimator transposes by coordinate NAME, so a probe may emit the
+    # joint_state / sweep axes in any order.
+    ds = _chevron_ds().transpose("swap_time_ns", "joint_state", "flux_amp_v")
+    res = PairSwapChevronEstimator().extract_parameters(ds, drive_side="low")
+    assert res["best_flux_amp_v"] == pytest.approx(V0, abs=0.02)
+    assert res["best_swap_time_ns"] == pytest.approx(T0, abs=5.0)
+
+
 def test_joint_basis_partitions_unity():
     pd = PairSwapChevronEstimator().build_plot_data(_chevron_ds(), {}, drive_side="low")
     total = sum(pd[n].values for n in ("p00", "p01", "p10", "p11"))
     assert abs(float(total.mean()) - 1.0) < 0.05
-
-
-def test_joint_basis_reconstructed_from_marginals():
-    ds = _chevron_ds(with_p_gg=True)
-    pd = PairSwapChevronEstimator().build_plot_data(ds, {}, drive_side="low")
-    assert np.allclose(pd["p00"].values, ds["p_gg"].values)          # P00 = p_gg
-    assert np.allclose(pd["p11"].values, ds["p_ee"].values)          # P11 = p_ee
-    # single-excitation joints remove the double-excitation overlap
-    assert np.allclose(pd["p10"].values, np.clip(ds["p_high"].values - ds["p_ee"].values, 0, 1))
-    assert np.allclose(pd["p01"].values, np.clip(ds["p_low"].values - ds["p_ee"].values, 0, 1))
 
 
 def test_drive_side_flips_prepared_and_transfer():
@@ -105,16 +128,34 @@ def test_drive_flux_roles_and_qubit_names_recorded():
 
 def test_all_nan_map_is_unsuccessful_not_a_crash():
     ds = _chevron_ds()
-    ds["p_high"].values[:] = np.nan
+    ds["joint_population"].values[:] = np.nan
     res = PairSwapChevronEstimator().extract_parameters(ds, drive_side="low")
     assert res["success"] is False
     assert np.isnan(res["best_transfer"])
 
 
-def test_rejects_missing_population():
-    ds = _chevron_ds().drop_vars("p_ee")
-    with pytest.raises(ValueError, match="p_ee"):
+def test_figures_render_on_a_failed_fit(tmp_path):
+    # the raw-data figure must survive an all-NaN (failed) acquisition: the run
+    # still writes the PNG, with success=False in the metadata.
+    ds = _chevron_ds()
+    ds["joint_population"].values[:] = np.nan
+    res, figs = PairSwapChevronEstimator().analyze(
+        ds, output_dir=str(tmp_path), skip_figures=False, drive_side="low")
+    assert res["success"] is False
+    assert set(figs) == {"pair_swap_chevron"}
+    assert "pair_swap_chevron.png" in {p.name for p in tmp_path.iterdir()}
+
+
+def test_rejects_missing_joint_population():
+    ds = _chevron_ds().rename({"joint_population": "populations"})
+    with pytest.raises(ValueError, match="joint_population"):
         PairSwapChevronEstimator()._check_data(ds)
+
+
+def test_rejects_missing_basis_label():
+    ds = _chevron_ds().sel(joint_state=["00", "01", "10"])
+    with pytest.raises(ValueError, match="11"):
+        PairSwapChevronEstimator().extract_parameters(ds, drive_side="low")
 
 
 def test_rejects_missing_coordinate():

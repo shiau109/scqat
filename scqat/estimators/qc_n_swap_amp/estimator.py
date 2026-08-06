@@ -1,16 +1,16 @@
-"""Raw joint-state-population maps for the fixed-time swap flux map.
+"""Raw joint-state-population maps for the N-swap x flux-amplitude sweep.
 
-The fixed-duration sibling of ``pair_swap_chevron``: the same four joint
-populations, drawn here over the coupler-flux x member-flux grid so the swap
-**spot** and how the coupler bias moves it are visible. Record-only, extracting
-only where the transfer peaks; the SUCCESS / ``min_transfer`` verdict stays in
-SCQO.
+Record-only: this estimator does NOT fit the swap. It draws the four joint
+two-qubit populations over the flux-amplitude x swap-count grid so an operator
+can see how a small swap-amplitude miscalibration amplifies with the number of
+swaps, and it extracts a small self-describing summary of where the transfer
+peaks. The SUCCESS / ``min_transfer`` verdict stays in SCQO.
 
 Dataset contract (the unified readout schema's joint form):
-  vars   : ``joint_population`` — dims ``(joint_state, qubit_flux_v, coupler_flux_v)``
+  vars   : ``joint_population`` — dims ``(joint_state, flux_amp_v, swap_count)``
            in any order; ``joint_state`` labels ``"00"/"01"/"10"/"11"``
            (leftmost digit = the HIGH member)
-  coords : ``joint_state`` / ``qubit_flux_v`` (V) / ``coupler_flux_v`` (V)
+  coords : ``joint_state`` / ``flux_amp_v`` (V) / ``swap_count`` (dimensionless N)
   kwargs : ``drive_side`` (``"high"`` | ``"low"``) — selects the transfer partner
 """
 
@@ -22,27 +22,27 @@ import xarray as xr
 from scqat.core.base_estimator import BaseEstimator
 from scqat.core.figures import render_figures
 from scqat.estimators._pair_swap_maps import pair_swap_plot_data, summarize_pair_swap
-from scqat.estimators.pair_swap_flux_map.visualization import plot_pair_swap_flux_map
+from scqat.estimators.qc_n_swap_amp.visualization import plot_qc_n_swap_amp
 
-AXIS0 = "qubit_flux_v"
-AXIS1 = "coupler_flux_v"
+AXIS0 = "flux_amp_v"
+AXIS1 = "swap_count"
 
 
-class PairSwapFluxMapEstimator(BaseEstimator):
-    """Draw the joint state populations of the swap flux map (record-only)."""
+class QcNSwapAmpEstimator(BaseEstimator):
+    """Draw the joint state populations of the N-swap amplitude map (record-only)."""
 
-    estimator_name = "pair_swap_flux_map"
+    estimator_name = "qc_n_swap_amp"
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         if "joint_population" not in dataset.data_vars:
             raise ValueError(
-                "pair_swap_flux_map estimator requires the joint_population "
+                "qc_n_swap_amp estimator requires the joint_population "
                 f"variable (found data_vars: {list(dataset.data_vars)})"
             )
         for axis in ("joint_state", AXIS0, AXIS1):
             if axis not in dataset.coords:
                 raise ValueError(
-                    f"pair_swap_flux_map estimator requires a {axis!r} coordinate"
+                    f"qc_n_swap_amp estimator requires a {axis!r} coordinate"
                 )
 
     def extract_parameters(
@@ -79,6 +79,6 @@ class PairSwapFluxMapEstimator(BaseEstimator):
                 low_name=kwargs.get("low_name"),
             )
         return render_figures(
-            {"pair_swap_flux_map": lambda: plot_pair_swap_flux_map(plot_data)},
+            {"qc_n_swap_amp": lambda: plot_qc_n_swap_amp(plot_data)},
             label=self.estimator_name,
         )
