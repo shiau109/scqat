@@ -58,6 +58,12 @@ import time.
    receiving explicit approval from the user.
 
 ## Release checklist
+**After committing a release-worthy feature** (before any release): append ONE
+`[[unreleased.feature]]` entry to the ledger at the top of `D:\github\SCQO\RELEASES.toml`
+(format documented in its header) — especially the scqat-floor coupling when SCQO
+lazy-imports something new (silent-failure kind). The release agent consumes the
+ledger when cutting the combo.
+
 Cutting a release = **two steps, in this order**:
 1. Bump `version` in `pyproject.toml` to `X.Y.Z` and commit.
 2. Tag that commit `vX.Y.Z`.
