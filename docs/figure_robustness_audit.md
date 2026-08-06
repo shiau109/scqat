@@ -3,12 +3,15 @@
 Scopes the follow-up migration to the contract in `CLAUDE.md` ("Raw data must
 always be plottable"). **Done:** the shared mechanism `scqat/core/figures.py::render_figures`
 (per-figure isolation) + the two cryoscope estimators adopt it + a "figures render
-on a failed fit" regression test. **This doc:** which of the other 33 estimators
+on a failed fit" regression test; `parity_switch_continuous` migrated with its
+rename (and its new sibling `parity_switch_discrete` was born on `render_figures`),
+both with the failed-fit test. **This doc:** which of the other estimators
 still need migrating, and in what order.
 
-Of 35 estimators with `generate_figures`, only the 2 cryoscopes use `render_figures`.
-Of the rest, **11 are AT RISK**; 22 are effectively safe (single raw-only figure,
-or the raw is drawn unconditionally and the fit overlay is guarded/NaN-safe).
+Of the estimators with `generate_figures`, only the 2 cryoscopes and the 2
+parity-switch siblings use `render_figures`. Of the rest, **10 are AT RISK**;
+the others are effectively safe (single raw-only figure, or the raw is drawn
+unconditionally and the fit overlay is guarded/NaN-safe).
 
 ## AT RISK — migrate to `render_figures`
 
@@ -24,7 +27,6 @@ sibling raise drops the raw figure too).
 | **readout_pulse_photon** | 2 | no-isolation | `estimator.py:163-166`; raw `raw_2d` (`visualization.py:31`) |
 | **zz_interaction** | 2 | no-isolation | `estimator.py:140-143`; raw `raw_data` 2D colormap (`visualization.py:19`) |
 | **parametric_drive_decoherence** | 2 | no-isolation | `estimator.py:303-306`; raw-carrying `rho11_fits` (`visualization.py:66`) |
-| **parity_switch** | 3 (+iq) | no-isolation (fit guarded) | `estimator.py:293-297`; raw `timetrace`/`state_psd` coupled to log-log knee-fit `psd` (`visualization.py:157,164`, guarded by `np.any(isfinite)`) |
 | **readout_fidelity** | ≤9 | no-isolation (mass-drop) | `estimator.py:335-350`; plotters individually simple |
 | **qubit_tomography** | 3 | no-isolation | `estimator.py:198-202`; fragile 3D wireframe/colorbar (`:169-179`) can drop the 2D raw; unconditional `attrs['lim_I_low'…]` (`:201-202`) |
 | **ramsey** | 2 (+iq) | no-isolation (low) | `estimator.py:138-143`; both plotters guarded (`visualization.py:32` `if 'best_fit'`) — structural only |
@@ -54,7 +56,7 @@ realistic crash path, but folding it into `render_figures` removes the coupling.
 1. **state_discrimination** — the only genuine crash-on-empty-fit.
 2. **charge_gate_ramsey, ac_stark_shift, readout_pulse_photon, zz_interaction,
    parametric_drive_decoherence** — a high-value raw 2D map/trace coupled to a fit sibling.
-3. **parity_switch** (guarded, lower), **readout_fidelity** + **qubit_tomography** (mass-drop).
+3. **readout_fidelity** + **qubit_tomography** (mass-drop).
 4. **ramsey, qubit_decoherence** — structural only; migrate for consistency.
 
 ## Fix pattern (all cases)

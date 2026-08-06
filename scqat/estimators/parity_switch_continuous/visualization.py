@@ -1,7 +1,8 @@
-"""Parity-switch plotting helpers.
+"""Continuous parity-switch plotting helpers.
 
 Every function consumes the **plot_data** Dataset built by
-``ParitySwitchEstimator.build_plot_data`` and draws without any recalculation.
+``ParitySwitchContinuousEstimator.build_plot_data`` and draws without any
+recalculation.
 
 Three panels, and which series each shows matters:
 

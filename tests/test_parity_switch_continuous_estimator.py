@@ -1,4 +1,5 @@
-"""Tests for the ParitySwitchEstimator (shot-trace -> parity switching rate).
+"""Tests for the ParitySwitchContinuousEstimator (shot-trace -> parity
+switching rate; the back-to-back single-measurement variant).
 
 Two input modes, one contract: a per-shot ``state`` variable used verbatim, or
 per-shot I/Q discriminated against the stored ``ref_pos_*`` centres (the
@@ -12,8 +13,10 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scqat.estimators import ParitySwitchEstimator
-from scqat.estimators.parity_switch import ParitySwitchEstimator as SubpkgEstimator
+from scqat.estimators import ParitySwitchContinuousEstimator
+from scqat.estimators.parity_switch_continuous import (
+    ParitySwitchContinuousEstimator as SubpkgEstimator,
+)
 
 GAMMA = 50.0     # planted per-direction switching rate, Hz
 DT = 1e-4        # shot period, s
@@ -76,21 +79,22 @@ def _iq_ds(n=N, noise=_IQ_NOISE, seed=4, with_ref=True):
     return ds
 
 
-class TestParitySwitchEstimator:
+class TestParitySwitchContinuousEstimator:
 
     def test_imports_match(self):
-        assert ParitySwitchEstimator is SubpkgEstimator
-        assert ParitySwitchEstimator.estimator_name == "parity_switch"
+        assert ParitySwitchContinuousEstimator is SubpkgEstimator
+        assert (ParitySwitchContinuousEstimator.estimator_name
+                == "parity_switch_continuous")
 
     def test_state_trace_recovery(self):
-        res = ParitySwitchEstimator().extract_parameters(_state_ds())
+        res = ParitySwitchContinuousEstimator().extract_parameters(_state_ds())
         assert res["success"] is True
         assert res["state_source"] == "state_var"
         assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.2)
         assert res["dt_s"] == pytest.approx(DT)
 
     def test_iq_trace_recovery_via_stored_positions(self):
-        res = ParitySwitchEstimator().extract_parameters(_iq_ds())
+        res = ParitySwitchContinuousEstimator().extract_parameters(_iq_ds())
         assert res["success"] is True
         assert res["state_source"] == "discriminated"
         assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.25)
@@ -100,20 +104,20 @@ class TestParitySwitchEstimator:
 
     def test_user_mean_overrides_missing_reference(self):
         ds = _iq_ds(n=20_000, with_ref=False)
-        res = ParitySwitchEstimator().extract_parameters(
+        res = ParitySwitchContinuousEstimator().extract_parameters(
             ds, user_mean=[list(POS_G), list(POS_E)])
         assert res["state_source"] == "discriminated"
         assert res["success"] is True
 
     def test_missing_centres_raise(self):
         with pytest.raises(ValueError, match="ref_pos_"):
-            ParitySwitchEstimator().extract_parameters(
+            ParitySwitchContinuousEstimator().extract_parameters(
                 _iq_ds(n=2_000, with_ref=False))
 
     def test_dt_kwarg_override_scales_the_rate(self):
         ds = _state_ds(seed=5)
-        base = ParitySwitchEstimator().extract_parameters(ds)
-        halved = ParitySwitchEstimator().extract_parameters(ds, dt_s=2 * DT)
+        base = ParitySwitchContinuousEstimator().extract_parameters(ds)
+        halved = ParitySwitchContinuousEstimator().extract_parameters(ds, dt_s=2 * DT)
         # same trace, doubled claimed period -> the rate in Hz halves
         assert halved["parity_rate_hz"] == pytest.approx(
             0.5 * base["parity_rate_hz"], rel=0.05)
@@ -121,21 +125,21 @@ class TestParitySwitchEstimator:
     def test_dt_from_attr(self):
         ds = _state_ds(with_period=False)
         ds.attrs["shot_period_s"] = DT
-        res = ParitySwitchEstimator().extract_parameters(ds)
+        res = ParitySwitchContinuousEstimator().extract_parameters(ds)
         assert res["success"] is True
 
     def test_missing_dt_raises(self):
         with pytest.raises(ValueError, match="shot_period_s"):
-            ParitySwitchEstimator().extract_parameters(
+            ParitySwitchContinuousEstimator().extract_parameters(
                 _state_ds(n=2_000, with_period=False))
 
     def test_unknown_kwarg_rejected(self):
         with pytest.raises(ValueError, match="knob"):
-            ParitySwitchEstimator().extract_parameters(
+            ParitySwitchContinuousEstimator().extract_parameters(
                 _state_ds(n=2_000), bogus=1)
 
     def test_check_data_failures(self):
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         with pytest.raises(ValueError):  # no shot_idx coordinate
             est._check_data(xr.Dataset({"state": ("x", [0, 1])},
                                        coords={"x": [0, 1]}))
@@ -145,7 +149,7 @@ class TestParitySwitchEstimator:
                 coords={"shot_idx": [0, 1]}))
 
     def test_metadata_drops_arrays(self):
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         res = est.extract_parameters(_state_ds())
         meta = est.extract_metadata(res)
         for key in ("trace", "psd_freq_hz", "psd", "psd_fit"):
@@ -155,7 +159,7 @@ class TestParitySwitchEstimator:
                 "state_source"} <= set(meta)
 
     def test_plot_data_layout(self):
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         ds = _iq_ds()
         res = est.extract_parameters(ds)
         pd = est.build_plot_data(ds, res)
@@ -173,7 +177,7 @@ class TestParitySwitchEstimator:
     def test_parity_is_the_consecutive_pair_difference(self):
         """even (0) = the pair agrees, odd (1) = it differs, one shorter than
         the readout trace, and it must equal the PLANTED parity."""
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         ds = _state_ds()
         res = est.extract_parameters(ds)
         pd = est.build_plot_data(ds, res)
@@ -194,7 +198,7 @@ class TestParitySwitchEstimator:
     def test_a_single_shot_has_no_parity_at_all(self):
         """The parity IS the consecutive difference, so one shot carries no
         measurement — refuse by name rather than fit an empty array."""
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         ds = xr.Dataset({"state": ("shot_idx", np.array([1], dtype=np.int8))},
                         coords={"shot_idx": [0]})
         ds["shot_period_s"] = DT
@@ -202,23 +206,42 @@ class TestParitySwitchEstimator:
             est.extract_parameters(ds)
 
     def test_analyze_roundtrip_state_mode(self, tmp_path):
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         res, figs = est.analyze(_state_ds(), output_dir=str(tmp_path))
-        assert (tmp_path / "parity_switch_metadata.json").exists()
-        assert (tmp_path / "parity_switch_plotdata.nc").exists()
+        assert (tmp_path / "parity_switch_continuous_metadata.json").exists()
+        assert (tmp_path / "parity_switch_continuous_plotdata.nc").exists()
         # no IQ cloud in state mode
         assert set(figs) == {"timetrace", "psd", "state_psd"}
         assert isinstance(figs["timetrace"], plt.Figure)
         plt.close("all")
 
     def test_analyze_roundtrip_iq_mode_and_replot(self, tmp_path):
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         res, figs = est.analyze(_iq_ds(), output_dir=str(tmp_path))
         assert set(figs) == {"timetrace", "psd", "state_psd", "iq_plane"}
         # replot with zero re-fit, straight from the saved plotdata
         loaded = est.load_plot_data(str(tmp_path))
         refigs = est.generate_figures(None, None, plot_data=loaded)
         assert set(refigs) == {"timetrace", "psd", "state_psd", "iq_plane"}
+        plt.close("all")
+
+    def test_figures_render_on_a_failed_fit(self):
+        """A constant trace has no spectral content at all — the PSD fit fails
+        outright (empty spectrum, NaN rate) — but every figure must still
+        render: SCQO's artifact fallback drops ALL figures on any single
+        plotter exception, so the raw-data panel must survive a dead fit."""
+        est = ParitySwitchContinuousEstimator()
+        ds = xr.Dataset(
+            {"state": ("shot_idx", np.zeros(4096, dtype=np.int8))},
+            coords={"shot_idx": np.arange(4096)},
+        )
+        ds["shot_period_s"] = DT
+        res = est.extract_parameters(ds)
+        assert res["success"] is False
+        assert np.isnan(res["parity_rate_hz"])
+        pd = est.build_plot_data(ds, res)
+        figs = est.generate_figures(None, None, plot_data=pd)
+        assert {"timetrace", "psd", "state_psd"} <= set(figs)
         plt.close("all")
 
 
@@ -254,7 +277,7 @@ class TestTheReadoutIsNotTheParity:
         """THE regression test: feed the estimator what the instrument really
         returns and require the PLANTED rate back. Fitting the readout instead
         of the parity fails this outright."""
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         res = est.extract_parameters(_state_ds())
         assert res["success"] is True
         assert res["parity_rate_hz"] == pytest.approx(GAMMA, rel=0.2)
@@ -264,14 +287,14 @@ class TestTheReadoutIsNotTheParity:
         half the time, and that fraction carries no rate information. Only
         p_switch (how often the parity CHANGES) decides resolvability, and it
         must be small for a well-sampled telegraph."""
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         res = est.extract_parameters(_state_ds())
         assert res["p_parity_odd"] == pytest.approx(0.5, abs=0.1)
         assert res["p_switch"] < 0.05
         assert res["p_switch"] == pytest.approx(GAMMA * DT, rel=0.3)
 
     def test_the_readout_spectrum_is_kept_but_never_fitted(self):
-        est = ParitySwitchEstimator()
+        est = ParitySwitchContinuousEstimator()
         ds = _state_ds()
         res = est.extract_parameters(ds)
         pd = est.build_plot_data(ds, res)
@@ -308,7 +331,7 @@ class TestReadoutErrorBias:
         # the 1 + 2*eps/(Gamma*dt) bias is the FREE-corner behaviour, which the
         # tool's bias table measured under the independent fit; pin it here so
         # this class keeps documenting that fit rather than the coupled default.
-        return ParitySwitchEstimator().extract_parameters(
+        return ParitySwitchContinuousEstimator().extract_parameters(
             ds, model="independent")["parity_rate_hz"]
 
     def test_clean_readout_recovers_the_planted_rate(self):
@@ -334,7 +357,7 @@ def test_state_mean_is_distinct_from_the_parity_level():
       p_parity_odd  -- the PARITY's level, ~0.5 on a healthy run
       p_switch      -- how often the PARITY CHANGES; the only one about the rate
     """
-    est = ParitySwitchEstimator()
+    est = ParitySwitchContinuousEstimator()
     ds = _state_ds()
     res = est.extract_parameters(ds)
 

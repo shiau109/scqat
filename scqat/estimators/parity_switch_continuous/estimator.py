@@ -10,8 +10,9 @@ from scqat.core.base_estimator import (
     stored_positions,
     with_iqdata,
 )
+from scqat.core.figures import render_figures
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
-from scqat.estimators.parity_switch.visualization import (
+from scqat.estimators.parity_switch_continuous.visualization import (
     plot_psd,
     plot_state_psd,
     plot_timetrace,
@@ -28,9 +29,12 @@ from scqat.tools.telegraph_psd import (
 _IQ_PANEL_MAX = 4096
 
 
-class ParitySwitchEstimator(BaseEstimator):
-    """Estimator for the parity-switch monitor: a fixed-sequence single-shot
-    time trace -> the charge-parity switching rate.
+class ParitySwitchContinuousEstimator(BaseEstimator):
+    """Estimator for the CONTINUOUS parity-switch monitor: a fixed-sequence
+    single-shot time trace -> the charge-parity switching rate.
+    (The two-measurement-per-cycle sibling lives in
+    ``estimators/parity_switch_discrete`` and fits the within-cycle
+    ``m1 XOR m2`` instead of the consecutive-pair difference.)
 
     Pipeline: resolve the per-shot 0/1 readout (a ``state`` variable verbatim,
     or nearest-centre discrimination of per-shot I/Q against the stored blob
@@ -59,7 +63,7 @@ class ParitySwitchEstimator(BaseEstimator):
           ``user_mean`` is passed.
     """
 
-    estimator_name = "parity_switch"
+    estimator_name = "parity_switch_continuous"
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         if "shot_idx" not in dataset.coords:
@@ -84,9 +88,9 @@ class ParitySwitchEstimator(BaseEstimator):
                 dt_s = float(dataset.attrs["shot_period_s"])
             else:
                 raise ValueError(
-                    "parity_switch needs the shot cadence: attach a scalar "
-                    "'shot_period_s' variable/attr to the dataset (the "
-                    "acquisition layer's job) or pass dt_s= in seconds."
+                    "parity_switch_continuous needs the shot cadence: attach "
+                    "a scalar 'shot_period_s' variable/attr to the dataset "
+                    "(the acquisition layer's job) or pass dt_s= in seconds."
                 )
         if not (np.isfinite(dt_s) and dt_s > 0):
             raise ValueError(
@@ -142,7 +146,7 @@ class ParitySwitchEstimator(BaseEstimator):
                 pos = stored_positions(dataset)
                 if pos is None:
                     raise ValueError(
-                        "parity_switch needs the |0>/|1> centres to "
+                        "parity_switch_continuous needs the |0>/|1> centres to "
                         "discriminate the shot trace: attach the stored "
                         "ref_pos_g_i/ref_pos_g_q/ref_pos_e_i/ref_pos_e_q "
                         "variables (single_shot_readout's accepted pos_* "
@@ -175,9 +179,9 @@ class ParitySwitchEstimator(BaseEstimator):
         # (module docstring of scqat.tools.telegraph_psd).
         if trace.size < 2:
             raise ValueError(
-                f"parity_switch needs at least 2 shots to form a parity "
-                f"(the parity is the difference between consecutive shots), "
-                f"got {trace.size}."
+                f"parity_switch_continuous needs at least 2 shots to form a "
+                f"parity (the parity is the difference between consecutive "
+                f"shots), got {trace.size}."
             )
         parity = (trace[:-1] != trace[1:]).astype(np.int8)
 
@@ -290,9 +294,10 @@ class ParitySwitchEstimator(BaseEstimator):
         the input carried quadratures). Draws only from ``plot_data``."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        figs = {"timetrace": plot_timetrace(plot_data),
-                "psd": plot_psd(plot_data),
-                "state_psd": plot_state_psd(plot_data)}
-        if has_iq_plane(plot_data):
-            figs["iq_plane"] = plot_iq_plane(plot_data)
-        return figs
+        pd = plot_data
+        builders = {"timetrace": lambda: plot_timetrace(pd),
+                    "psd": lambda: plot_psd(pd),
+                    "state_psd": lambda: plot_state_psd(pd)}
+        if has_iq_plane(pd):
+            builders["iq_plane"] = lambda: plot_iq_plane(pd)
+        return render_figures(builders, label=self.estimator_name)
