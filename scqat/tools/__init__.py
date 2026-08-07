@@ -46,6 +46,18 @@ from .telegraph_psd import (
     telegraph_spectrum,
     validate_telegraph_psd_kwargs,
 )
+from .timeseries_psd import (
+    TIMESERIES_PSD_KNOBS,
+    timeseries_psd,
+    validate_timeseries_psd_kwargs,
+)
+from .allan import overlapping_allan_deviation
+from .ade_decay import (
+    ADE_BOOTSTRAP_MIN_FINITE,
+    ade_bootstrap_sigma_t1,
+    ade_gamma,
+    ade_sigma_gamma,
+)
 from . import fit_abscos  # noqa: F401
 from . import fit_cosine  # noqa: F401
 from . import fit_damped_oscillation  # noqa: F401

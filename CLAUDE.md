@@ -305,6 +305,9 @@ Who consumes each tool (re-check with `grep -rl "tools.<x>" scqat/estimators/`):
 | `iq_reduce` | power_rabi, qubit_echo, qubit_relaxation, qubit_spectroscopy_flux, ramsey (+ `tests/test_stored_positions.py`, the `reduced_signal` priority chain) |
 | `discriminate` | qubit_tomography, readout_fidelity, state_discrimination, parity_switch_continuous, parity_switch_discrete |
 | `telegraph_psd` | parity_switch_continuous, parity_switch_discrete |
+| `timeseries_psd` | qubit_t1_bayesian |
+| `allan` | qubit_t1_bayesian |
+| `ade_decay` | qubit_t1_ade |
 | `hankel_analysis` | none — workflows only; `tests/test_hankel_analysis.py` alone |
 
 **Coverage gap — do not paper over it.** 9 of 27 estimators are imported by NO test, by module

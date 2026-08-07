@@ -26,6 +26,8 @@ from scqat.estimators.swap_oscillation import SwapOscillationEstimator
 from scqat.estimators.qubit_tomography import QubitTomographyEstimator
 from scqat.estimators.qubit_sqrb import QubitSQRBEstimator
 from scqat.estimators.qubit_relaxation_flux import QubitRelaxationFluxEstimator
+from scqat.estimators.qubit_t1_ade import QubitT1AdeEstimator
+from scqat.estimators.qubit_t1_bayesian import QubitT1BayesianEstimator
 from scqat.estimators.qubit_echo_flux import QubitEchoFluxEstimator
 from scqat.estimators.qubit_drag_equator import QubitDragEquatorEstimator
 from scqat.estimators.qubit_drag_alternating import QubitDragAlternatingEstimator
@@ -66,6 +68,8 @@ __all__ = [
     "QubitTomographyEstimator",
     "QubitSQRBEstimator",
     "QubitRelaxationFluxEstimator",
+    "QubitT1AdeEstimator",
+    "QubitT1BayesianEstimator",
     "QubitEchoFluxEstimator",
     "QubitDragEquatorEstimator",
     "QubitDragAlternatingEstimator",
