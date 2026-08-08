@@ -69,6 +69,9 @@ Cutting a release = **two steps, in this order**:
 1. Bump `version` in `pyproject.toml` to `X.Y.Z` and commit.
 2. Tag that commit `vX.Y.Z`.
 
+The digit choice follows SCQO `RELEASING.md`'s version rule, applied to scqat's
+own line (0.x: any breaking/additive fragment → y+1, fix-only → z+1).
+
 The pyproject version MUST equal the tag: dependents (SCQO) declare real floors
 like `scqat>=0.1.4`, resolved from package metadata (`importlib.metadata`), so a
 tag whose tree still carries the old version breaks every downstream install.
