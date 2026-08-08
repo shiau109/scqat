@@ -60,6 +60,26 @@ class QubitTomographyEstimator(BaseEstimator):
         states = dataset.coords["prepared_state"].values
         I_train = np.stack([dataset["I_train"].sel(prepared_state=s).values.ravel() for s in states])
         Q_train = np.stack([dataset["Q_train"].sel(prepared_state=s).values.ravel() for s in states])
+
+        # noise_mode spectator: the probe wrote all-zero dummy I/Q (no
+        # measurement was played), so there is nothing to discriminate.
+        # Populations degrade to the maximally-ignorant 0.5 and success stays
+        # False — a spectator record must never pass for a real tomography fit.
+        if not I_train.any() and not Q_train.any():
+            gate_counts = dataset.coords["gate_count"].values
+            n_gc = len(gate_counts)
+            return {
+                "centers": {"0": [0.0, 0.0], "1": [0.0, 0.0]},
+                "readout_fidelity": 0.5,
+                "confusion_matrix": [[0.5, 0.5], [0.5, 0.5]],
+                "gate_counts": gate_counts.tolist(),
+                "population_x": [0.5] * n_gc,
+                "population_y": [0.5] * n_gc,
+                "population_z": [0.5] * n_gc,
+                "noise_mode": 1.0,
+                "success": 0.0,
+            }
+
         sd_res = discriminate_states(I_train, Q_train, **kwargs)
         centers = sd_res["trained_paras"]["mean"]  # shape (2, 2)
         counts = sd_res["direct_counts"]           # fixed (n_state, n_center)

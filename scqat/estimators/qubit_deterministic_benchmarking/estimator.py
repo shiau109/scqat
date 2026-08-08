@@ -112,20 +112,46 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
         omegas, signed_omegas, gammas, fit_curves = [], [], [], []
         reps_fine = np.linspace(reps.min(), reps.max(), 200)
 
+        max_omega_bound = 0.45
         for i_a, a_val in enumerate(amp_prefactors):
             pz_curve = pz_data[i_a]
-            p0_guess = [0.45, 0.01, 0.05, 0.5]
-            try:
-                popt, _ = curve_fit(
-                    damped_cosine_zero_phase,
-                    reps,
-                    pz_curve,
-                    p0=p0_guess,
-                    bounds=([0.0, 0.0, 0.0, 0.0], [0.6, 0.5, np.pi, 1.0]),
-                    maxfev=2000,
-                )
-                omega_fit, gamma_fit = popt[2], popt[1]
-                curve_fine = damped_cosine_zero_phase(reps_fine, *popt)
+
+            # Extract dominant frequency candidate via FFT
+            n_pts = len(reps)
+            dt = float(np.mean(np.diff(reps))) if n_pts > 1 else 1.0
+            fft_vals = np.abs(np.fft.rfft(pz_curve - np.mean(pz_curve)))
+            freqs = np.fft.rfftfreq(n_pts, d=dt)
+            valid_mask = (freqs > 0) & (freqs * 2 * np.pi <= max_omega_bound)
+            w_fft = float(2 * np.pi * freqs[valid_mask][np.argmax(fft_vals[valid_mask])]) if np.any(valid_mask) else 0.05
+
+            w_candidates = sorted(list(set([w_fft, 0.005, 0.01, 0.03, 0.05, 0.1, 0.2])))
+            best_popt = None
+            best_cost = float("inf")
+
+            for w_g in w_candidates:
+                if w_g > max_omega_bound:
+                    continue
+                p0_guess = [0.45, 0.01, w_g, 0.5]
+                try:
+                    popt, _ = curve_fit(
+                        damped_cosine_zero_phase,
+                        reps,
+                        pz_curve,
+                        p0=p0_guess,
+                        bounds=([0.0, 0.0, 0.0, 0.0], [0.6, 0.5, max_omega_bound, 1.0]),
+                        maxfev=2000,
+                    )
+                    pred = damped_cosine_zero_phase(reps, *popt)
+                    cost = np.sum((pz_curve - pred) ** 2)
+                    if cost < best_cost:
+                        best_cost = cost
+                        best_popt = popt
+                except Exception:
+                    continue
+
+            if best_popt is not None:
+                omega_fit, gamma_fit = best_popt[2], best_popt[1]
+                curve_fine = damped_cosine_zero_phase(reps_fine, *best_popt)
 
                 w_val = float(omega_fit)
                 s_w = w_val if a_val >= 1.0 else -w_val
@@ -133,7 +159,7 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
                 signed_omegas.append(s_w)
                 gammas.append(float(gamma_fit))
                 fit_curves.append([float(x) for x in curve_fine])
-            except Exception:
+            else:
                 omegas.append(0.0)
                 signed_omegas.append(0.0)
                 gammas.append(0.0)
