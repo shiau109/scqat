@@ -57,6 +57,7 @@ _AXIS_LABELS = {
     "swap_count": "swap count N",
     "qubit_flux_v": "qubit flux (V)",
     "coupler_flux_v": "coupler flux (V)",
+    "stark_amp": "AC-Stark amplitude",
 }
 
 #: panel titles: (P-label, ket) per joint basis state, digit order (high, low).
