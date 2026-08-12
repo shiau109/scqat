@@ -41,6 +41,7 @@ from scqat.estimators.qc_n_stark_amp import QcNStarkAmpEstimator
 from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator
 from scqat.estimators.spectroscopy_cryoscope import SpectroscopyCryoscopeEstimator
 from scqat.estimators.xyz_delay import XyzDelayEstimator
+from scqat.estimators.qubit_stark_phase_echo import QubitStarkPhaseEchoEstimator
 
 __all__ = [
     "QubitDecoherenceEstimator",
@@ -84,6 +85,7 @@ __all__ = [
     "RamseyCryoscopeEstimator",
     "SpectroscopyCryoscopeEstimator",
     "XyzDelayEstimator",
+    "QubitStarkPhaseEchoEstimator",
 ]
 
 
