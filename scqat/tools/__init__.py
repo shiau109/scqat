@@ -8,6 +8,11 @@ to remain discoverable.
 
 from .function_fitting import FunctionFitting, register_fitter, get_fitter
 from .dip_fit import DIP_KNOBS, DIP_METHODS, fit_dip, validate_dip_kwargs
+from .dip_finder import (
+    DIP_FINDER_KNOBS,
+    find_resonator_dips,
+    validate_dip_finder_kwargs,
+)
 from .peak_fit import PEAK_KNOBS, fit_peaks, validate_peak_kwargs
 from .peak_map import track_peaks
 from .iq_reduce import (
