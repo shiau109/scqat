@@ -163,34 +163,6 @@ def plot_fidelity_vs_sweep(plot_data):
     return fig
 
 
-def _plot_mean_component_vs_sweep(plot_data, comp, label):
-    """Shared helper: plot one I/Q component (``comp`` = 0 for I, 1 for Q) of every
-    trained GMM center as a function of the sweep, one line per center."""
-    coord, sweep = _sweep(plot_data)
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-    mean = plot_data['mean'].values  # (sweep, center, iq)
-    for c in range(mean.shape[1]):
-        ax.plot(sweep, mean[:, c, comp], 'o-', label=f'center {c}')
-    ax.set_xlabel(coord, fontsize=14)
-    ax.set_ylabel(f'mean {label}', fontsize=14)
-    ax.set_title(f'GMM center {label} vs sweep')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_mean_i_vs_sweep(plot_data):
-    """Mean I of each trained GMM center as a function of the sweep."""
-    return _plot_mean_component_vs_sweep(plot_data, 0, 'I')
-
-
-def plot_mean_q_vs_sweep(plot_data):
-    """Mean Q of each trained GMM center as a function of the sweep."""
-    return _plot_mean_component_vs_sweep(plot_data, 1, 'Q')
-
-
 def plot_means_on_iq_plane(plot_data):
     """Trained GMM centers in the I/Q plane, coloured by the sweep value."""
     coord, sweep = _sweep(plot_data)

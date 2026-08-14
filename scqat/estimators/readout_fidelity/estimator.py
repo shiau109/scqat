@@ -14,8 +14,6 @@ from scqat.estimators.readout_fidelity.visualization import (
     plot_std_vs_sweep,
     plot_snr_vs_sweep,
     plot_mean_distance_vs_sweep,
-    plot_mean_i_vs_sweep,
-    plot_mean_q_vs_sweep,
     plot_norm_res_vs_sweep,
     plot_fidelity_vs_sweep,
     plot_means_on_iq_plane,
@@ -341,8 +339,6 @@ class ReadoutFidelityEstimator(BaseEstimator):
             figs['outlier'] = plot_outlier_vs_sweep(plot_data)
         if 'mean' in plot_data:
             figs['mean_distance'] = plot_mean_distance_vs_sweep(plot_data)
-            figs['mean_I'] = plot_mean_i_vs_sweep(plot_data)
-            figs['mean_Q'] = plot_mean_q_vs_sweep(plot_data)
             figs['means_on_IQ'] = plot_means_on_iq_plane(plot_data)
         if 'norm_res' in plot_data:
             figs['norm_res'] = plot_norm_res_vs_sweep(plot_data)

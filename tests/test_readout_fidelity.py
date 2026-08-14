@@ -111,7 +111,10 @@ class TestReadoutFidelityEstimators:
         _, figs = est.analyze(ds, output_dir=str(tmp_path))
         assert (tmp_path / "readout_power_fidelity_metadata.json").exists()
         assert (tmp_path / "readout_power_fidelity_plotdata.nc").exists()
-        assert {"std", "snr", "fidelity", "mean_I", "mean_Q"} <= set(figs)
+        assert {"std", "snr", "fidelity"} <= set(figs)
+        # the per-component GMM-center traces were removed; mean_distance +
+        # means_on_IQ carry the center information now
+        assert not {"mean_I", "mean_Q"} & set(figs)
         assert all(isinstance(f, plt.Figure) for f in figs.values())
         plt.close("all")
 

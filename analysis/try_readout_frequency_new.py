@@ -8,7 +8,7 @@ cell-by-cell in VS Code (each ``# %%`` is a cell) or headless:
 
     (A) RE-FIT + REPLOT  — re-fit the saved raw data per qubit, regenerate the estimator's
                             own figures (std / outlier / norm_res / fidelity / mean_distance
-                            / mean_I / mean_Q / means_on_IQ), and print the metadata.
+                            / means_on_IQ), and print the metadata.
     (B) SUMMARY TABLE    — best detuning / fidelity / success per qubit.
 
 Per experiment you only set the data path; the readout estimator consumes I/Q directly,

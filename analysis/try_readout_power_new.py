@@ -8,7 +8,7 @@ cell) or headless: ``python analysis/try_readout_power_new.py``.
 
     (A) RE-FIT + REPLOT  — re-fit the saved raw data per qubit, regenerate the estimator's
                             own figures (std / outlier / norm_res / fidelity / mean_distance
-                            / mean_I / mean_Q / means_on_IQ), and print the metadata.
+                            / means_on_IQ), and print the metadata.
     (B) SUMMARY TABLE    — best amp_prefactor / fidelity / success per qubit.
 
 Per experiment you only set the data path and ``OUTLIERS_THRESHOLD`` (mirrors the node's
