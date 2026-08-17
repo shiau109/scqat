@@ -56,6 +56,13 @@ def _make_sweep_ds(coord, n_sweep=7, best_idx=4, n_shots=600, sigma=1.0, seed=0)
     )
 
 
+def _make_averaged_ds(coord, **kwargs):
+    """The FPGA-AVERAGED form of the same experiment: one I/Q point per prepared
+    state, no ``shot_idx`` axis at all — what an ``readout_mode="average"`` probe
+    returns."""
+    return _make_sweep_ds(coord, **kwargs).mean("shot_idx")
+
+
 class TestReadoutFidelityEstimators:
 
     def test_imports_match(self):
@@ -111,16 +118,17 @@ class TestReadoutFidelityEstimators:
         _, figs = est.analyze(ds, output_dir=str(tmp_path))
         assert (tmp_path / "readout_power_fidelity_metadata.json").exists()
         assert (tmp_path / "readout_power_fidelity_plotdata.nc").exists()
-        assert {"std", "snr", "fidelity"} <= set(figs)
-        # the per-component GMM-center traces were removed; mean_distance +
-        # means_on_IQ carry the center information now
-        assert not {"mean_I", "mean_Q"} & set(figs)
+        assert {"separation", "snr", "fidelity", "outlier", "means_on_IQ"} <= set(figs)
+        # separation and std share one axes now (same IQ units), and the
+        # per-component center traces are gone
+        assert not {"std", "mean_distance", "mean_I", "mean_Q"} & set(figs)
         assert all(isinstance(f, plt.Figure) for f in figs.values())
         plt.close("all")
 
     # --- power outlier-threshold selection (deterministic, no fitting) ---------
     def _power_results(self):
         return {
+            "metric": "fidelity",
             "fidelity": np.array([0.90, 0.99, 0.95]),
             # in-distribution fraction = 1 - max_k p_outlier -> [0.97, 0.90, 0.99]
             "p_outlier": np.array([[0.03, 0.0], [0.10, 0.10], [0.01, 0.01]]),
@@ -148,3 +156,102 @@ class TestReadoutFidelityEstimators:
         idx = est._select_best_index(res, outliers_threshold=0.999)
         assert idx == 1
         assert est._selection_ok(res, idx, outliers_threshold=0.999) is False
+
+
+class TestAverageMethod:
+    """``method="average"``: centres by averaging, no fit, no fidelity."""
+
+    def test_registry_matches_the_method_names(self):
+        from scqat.estimators.readout_fidelity.methods import METHODS
+
+        assert set(METHODS) == {"gmm", "average"}
+        assert METHODS["gmm"].requires_shots is True
+        assert METHODS["average"].requires_shots is False
+
+    def test_averaged_data_has_no_gmm_products(self):
+        best_idx = 4
+        ds = _make_averaged_ds("frequency", best_idx=best_idx)
+        assert "shot_idx" not in ds.dims  # the acquisition really did average
+        results = ReadoutFreqFidelityEstimator().extract_parameters(ds, method="average")
+
+        assert results["method"] == "average"
+        assert results["metric"] == "separation"
+        assert results["best_index"] == best_idx
+        assert results["success"] is True
+        assert results["best_metric"] == pytest.approx(results["best_separation"])
+        # nothing a Gaussian fit would have produced
+        for gmm_only in ("std", "snr", "p_outlier", "norm_res", "gaussian_norms",
+                         "direct_counts", "fidelity"):
+            assert gmm_only not in results
+        assert results["best_fidelity"] is None if "best_fidelity" in results else True
+
+    def test_gmm_refuses_averaged_data_by_name(self):
+        ds = _make_averaged_ds("frequency")
+        with pytest.raises(ValueError, match="shot_idx"):
+            ReadoutFreqFidelityEstimator().extract_parameters(ds)
+
+    def test_average_refuses_the_gmm_knobs(self):
+        ds = _make_averaged_ds("frequency")
+        est = ReadoutFreqFidelityEstimator()
+        for knob, value in (("user_std", 1.0), ("outlier_sigma", 3),
+                            ("outliers_threshold", 0.98)):
+            with pytest.raises(ValueError, match=knob):
+                est.extract_parameters(ds, method="average", **{knob: value})
+
+    def test_unknown_method_refused_by_name(self):
+        ds = _make_averaged_ds("frequency")
+        with pytest.raises(ValueError, match="mixture-of-experts"):
+            ReadoutFreqFidelityEstimator().extract_parameters(
+                ds, method="mixture-of-experts")
+
+    def test_methods_agree_on_the_common_physics(self):
+        """Multi-method rule 6: a method changes robustness, not physics. On
+        well-separated blobs the fitted centres and the plain per-state means
+        must land on the same answer."""
+        ds = _make_sweep_ds("frequency", best_idx=4)
+        est = ReadoutFreqFidelityEstimator()
+        gmm = est.extract_parameters(ds)
+        avg = est.extract_parameters(ds, method="average")
+
+        assert avg["best_index"] == gmm["best_index"]
+        assert avg["best_sweep_value"] == gmm["best_sweep_value"]
+        # ...at the answer, where the blobs are RESOLVED: same centres, same
+        # separation. They are compared there and not across the whole sweep
+        # because the sweep edges are deliberately ~1 sigma apart, and a merged
+        # pair is exactly where a mixture fit and a plain mean must differ —
+        # that difference in robustness is why both methods exist.
+        best = gmm["best_index"]
+        np.testing.assert_allclose(avg["mean"][best], gmm["mean"][best], atol=0.15)
+        assert avg["separation"][best] == pytest.approx(
+            gmm["separation"][best], rel=0.1)
+
+    def test_average_figures_are_separation_and_iq_only(self, tmp_path):
+        ds = _make_averaged_ds("amp_prefactor")
+        est = ReadoutPowerFidelityEstimator()
+        _, figs = est.analyze(ds, output_dir=str(tmp_path), method="average")
+        assert set(figs) == {"separation", "means_on_IQ"}
+        assert all(isinstance(f, plt.Figure) for f in figs.values())
+        plot_data = xr.open_dataset(
+            tmp_path / "readout_power_fidelity_plotdata.nc")
+        assert plot_data.attrs["method"] == "average"
+        assert "std" not in plot_data
+        plot_data.close()
+        plt.close("all")
+
+    def test_figures_render_when_every_slice_failed(self, monkeypatch):
+        """A dead reduction must still leave figures: NaN curves, no crash."""
+        from scqat.estimators.readout_fidelity.methods import METHODS
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("no centres here")
+
+        monkeypatch.setattr(METHODS["average"], "reduce", boom)
+        ds = _make_averaged_ds("frequency")
+        est = ReadoutFreqFidelityEstimator()
+        results = est.extract_parameters(ds, method="average")
+        assert results["failed"].all()
+        assert results["success"] is False
+        figs = est.generate_figures(ds, results,
+                                    plot_data=est.build_plot_data(ds, results))
+        assert all(isinstance(f, plt.Figure) for f in figs.values())
+        plt.close("all")

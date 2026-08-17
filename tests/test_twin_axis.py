@@ -215,7 +215,7 @@ def test_readout_fidelity_sweep_figures_carry_the_twin_axis():
     carrying = {name for name, fig in figures.items() if fig.axes[0].child_axes}
     # the answer-carrying figure plus the two other 1-D sweep curves; the IQ-plane
     # panel deliberately stays out (its sweep is a colourbar, not an axis)
-    assert {"fidelity", "snr", "std"} <= carrying
+    assert {"fidelity", "snr", "separation"} <= carrying
     assert "means_on_IQ" in figures and "means_on_IQ" not in carrying
 
 

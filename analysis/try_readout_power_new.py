@@ -7,7 +7,7 @@ LCH_readout_power run's ``ds_raw.h5``. Run cell-by-cell in VS Code (each ``# %%`
 cell) or headless: ``python analysis/try_readout_power_new.py``.
 
     (A) RE-FIT + REPLOT  — re-fit the saved raw data per qubit, regenerate the estimator's
-                            own figures (std / outlier / norm_res / fidelity / mean_distance
+                            own figures (separation / snr / outlier / norm_res / fidelity
                             / means_on_IQ), and print the metadata.
     (B) SUMMARY TABLE    — best amp_prefactor / fidelity / success per qubit.
 
