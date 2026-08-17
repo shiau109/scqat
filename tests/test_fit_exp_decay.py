@@ -57,3 +57,20 @@ class TestFitExponentialDecay:
         x = np.linspace(0.0, 1.0, 3)
         fitter = FitExponentialDecay(np.array([3.0, 2.0, 1.0]), x=x)
         assert np.allclose(fitter.x, x)
+
+    @pytest.mark.parametrize("kind", ["flat", "equal-endpoints", "flat-zero"])
+    def test_degenerate_data_does_not_raise(self, kind):
+        """When the first and last samples coincide the naive offset bounds
+        collapse to ``min == max`` and lmfit rejects the fit with
+        ``ValueError: Parameter 'c' has min == max``. The guess must widen them
+        so a flat / dead-qubit trace fits (to a≈0) instead of sinking the run."""
+        x = np.linspace(0.0, 2.0, 50)
+        if kind == "flat":
+            y = np.full_like(x, 0.3)
+        elif kind == "flat-zero":
+            y = np.zeros_like(x)  # spread AND |c| are 0 -> fall through to 1.0
+        else:
+            y = 0.5 + 0.1 * np.exp(-x / 0.4)
+            y[-1] = y[0]
+        result = FitExponentialDecay(xr.DataArray(y, coords={"x": x}, dims="x")).fit()
+        assert np.isfinite(result.params["c"].value)

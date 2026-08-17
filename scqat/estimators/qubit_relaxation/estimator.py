@@ -15,6 +15,7 @@ The dataset should have the ``qubit`` dimension already removed (e.g. via
 ``repetition_data`` from ``scqat.parsers``).
 """
 
+import warnings
 from typing import Any, Dict, Optional
 
 import matplotlib.pyplot as plt
@@ -22,6 +23,7 @@ import numpy as np
 import xarray as xr
 
 from scqat.core.base_estimator import POS_ATTRS, BaseEstimator, reduced_signal, with_iqdata
+from scqat.core.figures import render_figures
 from scqat.tools.fit_exp_decay import FitExponentialDecay
 from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
 
@@ -55,22 +57,45 @@ class QubitRelaxationEstimator(BaseEstimator):
         """
         validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
         sig = reduced_signal(dataset, **kwargs)
+        signal = np.asarray(sig.values, dtype=float)
         da = sig.rename({"wait_time": "x"})
-        fit_result = FitExponentialDecay(da).fit()
-        t1 = float(fit_result.params["tau"].value)
         t_span = float(da["x"].values[-1] - da["x"].values[0])
+
+        # A degenerate or non-converging fit must NEVER sink the raw-data
+        # artifact. If the fit raises (e.g. flat data collapses the fitter's
+        # bounds) degrade to a NaN fit with success=False, keeping the raw
+        # signal so build_plot_data / the figure still draw the measured trace.
+        try:
+            fit_result = FitExponentialDecay(da).fit()
+            t1 = float(fit_result.params["tau"].value)
+            t1_stderr = float(fit_result.params["tau"].stderr or np.nan)
+            amplitude = float(fit_result.params["a"].value)
+            offset = float(fit_result.params["c"].value)
+            redchi = float(fit_result.redchi)
+            best_fit = np.asarray(fit_result.best_fit, dtype=float)
+            converged = bool(fit_result.success)
+        except Exception as err:  # noqa: BLE001 - a failed fit must not lose the raw data
+            warnings.warn(
+                f"{self.estimator_name}: exponential fit failed "
+                f"({type(err).__name__}: {err}); reporting raw data with no fit",
+                stacklevel=2,
+            )
+            t1 = t1_stderr = amplitude = offset = redchi = float("nan")
+            best_fit = np.full_like(signal, np.nan)
+            converged = False
+
         results = {
             "t1": t1,
-            "t1_stderr": float(fit_result.params["tau"].stderr or np.nan),
-            "amplitude": float(fit_result.params["a"].value),
-            "offset": float(fit_result.params["c"].value),
-            "redchi": float(fit_result.redchi),
+            "t1_stderr": t1_stderr,
+            "amplitude": amplitude,
+            "offset": offset,
+            "redchi": redchi,
             # physical: converged, positive, and not absurdly beyond the swept window
-            "success": bool(fit_result.success) and np.isfinite(t1) and 0 < t1 < 10 * t_span,
-            "signal": np.asarray(sig.values, dtype=float),
+            "success": bool(converged and np.isfinite(t1) and 0 < t1 < 10 * t_span),
+            "signal": signal,
             "reduction_method": sig.attrs.get("reduction_method"),
             "reduction_angle": sig.attrs.get("reduction_angle"),
-            "best_fit": np.asarray(fit_result.best_fit, dtype=float),
+            "best_fit": best_fit,
         }
         # the stored |0>/|1> centroids the axis came from (absent otherwise)
         for key in POS_ATTRS:
@@ -119,8 +144,10 @@ class QubitRelaxationEstimator(BaseEstimator):
     ) -> Dict[str, plt.Figure]:
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        # single-figure idiom: key == estimator_name -> saved as qubit_relaxation.png
-        figs = {"qubit_relaxation": plot_decay(plot_data)}
+        # Per-figure isolation: a failed fit (or a plotter that trips on an
+        # all-NaN fit) must never take the raw-data figure down with it. The
+        # single-figure idiom keeps key == estimator_name -> qubit_relaxation.png.
+        builders = {self.estimator_name: lambda: plot_decay(plot_data)}
         if has_iq_plane(plot_data):
-            figs["iq_plane"] = plot_iq_plane(plot_data)
-        return figs
+            builders["iq_plane"] = lambda: plot_iq_plane(plot_data)
+        return render_figures(builders, label=self.estimator_name)

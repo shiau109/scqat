@@ -80,6 +80,41 @@ class TestQubitRelaxationEstimator:
         with pytest.raises(ValueError):
             QubitRelaxationEstimator().analyze(xr.Dataset({"other": ("x", [1.0])}, coords={"x": [0.0]}))
 
+    def test_flat_data_keeps_raw_signal_and_figure(self):
+        """Flat data (first == last sample) used to raise 'Parameter c has
+        min == max' straight out of analyze(), losing the whole run. It must now
+        return with the raw signal intact and still draw the raw-data figure."""
+        t = np.linspace(0.0, 200e-6, 51)
+        flat = np.full(51, 0.3)
+        ds = xr.Dataset({"signal": ("wait_time", flat)}, coords={"wait_time": t})
+        results, figs = QubitRelaxationEstimator().analyze(ds)
+        assert np.array_equal(results["signal"], flat)
+        assert "qubit_relaxation" in figs  # raw-data figure always renders
+
+    def test_raw_data_survives_a_raising_fit(self, monkeypatch, tmp_path):
+        """Even if the fitter RAISES, the estimator must degrade to a NaN fit with
+        success=False and still produce the raw-data figure (written to disk) — a
+        run must never end figure-less because the fit blew up. Direct guard for
+        'even when the estimator fails, show raw data at least'."""
+        import scqat.estimators.qubit_relaxation.estimator as est_mod
+
+        def _raise(*_a, **_k):
+            raise ValueError("Parameter 'c' has min == max")
+
+        monkeypatch.setattr(est_mod, "FitExponentialDecay", _raise)
+
+        ds = _make_decay()  # healthy data, but the fit is forced to blow up
+        est = QubitRelaxationEstimator()
+        with pytest.warns(UserWarning):
+            results, figs = est.analyze(ds, output_dir=str(tmp_path))
+        assert results["success"] is False
+        assert np.isnan(results["t1"])
+        assert np.all(np.isnan(results["best_fit"]))
+        assert results["signal"].shape == ds["signal"].shape  # raw trace kept
+        assert "qubit_relaxation" in figs
+        assert (tmp_path / "qubit_relaxation.png").exists()
+        assert (tmp_path / "qubit_relaxation_metadata.json").exists()
+
     def test_stored_positions_resolve_axis(self):
         """ref_pos_* variables resolve the axis deterministically (method
         'positions') and the blob centers reach the plotdata attrs."""

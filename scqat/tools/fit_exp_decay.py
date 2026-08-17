@@ -1,7 +1,7 @@
 from xarray import DataArray
 from lmfit import Model
 from lmfit.model import ModelResult
-from numpy import exp
+from numpy import exp, ptp
 
 from .function_fitting import FunctionFitting, register_fitter, parse_xy
 
@@ -51,9 +51,14 @@ class FitExponentialDecay(FunctionFitting):
         x_span = float(abs(x[-1] - x[0])) or 1.0
         tau_dict = dict(value=x_span / 2.0, min=0.0, max=x_span * 4.0)
 
-        # Offset: the asymptotic (last) value
+        # Offset: the asymptotic (last) value, bounded within one amplitude of it.
+        # When the first and last samples coincide (a_guess == 0 — flat or
+        # otherwise degenerate data) that width collapses to zero and lmfit
+        # rejects min == max at fit time; fall back to the data spread (then
+        # |c_guess|, then 1.0) so the bound stays strictly open.
         c_guess = float(y[-1])
-        c_dict = dict(value=c_guess, min=c_guess - abs(a_guess), max=c_guess + abs(a_guess))
+        c_halfwidth = abs(a_guess) or float(ptp(y)) or abs(c_guess) or 1.0
+        c_dict = dict(value=c_guess, min=c_guess - c_halfwidth, max=c_guess + c_halfwidth)
 
         self.params = self.model.make_params(a=a_dict, tau=tau_dict, c=c_dict)
         return self.params
