@@ -21,8 +21,8 @@ from scqat.estimators.resonator_spectroscopy_flux import (
 from scqat.estimators.resonator_spectroscopy_flux.visualization import plot_combined
 
 
-def _flux_dispersion(flux, f_r0, g, phi0, phi_off, f_q_max):
-    f_q = f_q_max * np.sqrt(np.abs(np.cos(np.pi * (flux - phi_off) / phi0)))
+def _flux_dispersion(flux, f_r0, g, phi0, phi_off, f_q_max, ec=0.0):
+    f_q = (f_q_max + ec) * np.sqrt(np.abs(np.cos(np.pi * (flux - phi_off) / phi0))) - ec
     return f_r0 + g ** 2 / (f_r0 - f_q)
 
 
@@ -289,9 +289,52 @@ class TestResonatorSpectroscopyFluxComposite:
         meta = estimator.extract_metadata(results)
         # Flat, JSON-friendly scalars only — no nested stage dicts.
         for key in ("n_flux", "n_good", "method", "sweet_spot_flux", "sweet_spot_res",
-                    "dv_phi0", "f_r0", "g", "dispersion_success"):
+                    "dv_phi0", "f_r0", "g", "ec", "dispersion_success"):
             assert key in meta
         assert "vs_flux" not in meta and "dispersion" not in meta
+
+    def test_ec_corrected_arch_recovers_g_within_physical_bound(self):
+        """With f_q_max and E_C supplied (the control repo sources both), the
+        E_C-corrected arch recovers the true coupling — and the fit honours the
+        physical 0 < g < f_r0/10 bound. Realistic small detuning + large g, where
+        the E_C arch-shape correction actually bites (unlike the wide-detuning
+        _make_dataset)."""
+        f_r0, f_q_max, ec, g_true = 6.0e9, 5.2e9, 0.2e9, 90e6
+        T, phi_off = 0.6, 0.1
+        flux = np.linspace(-0.4, 0.4, 61)
+        y = _flux_dispersion(flux, f_r0=f_r0, g=g_true, phi0=T,
+                             phi_off=phi_off, f_q_max=f_q_max, ec=ec)
+        trace = xr.Dataset({"center_freq": ("flux_bias", y)},
+                           coords={"flux_bias": flux})
+        res = fit_flux_trace(trace, method="dispersive", f_q_max=f_q_max, ec=ec)
+        assert res["success"] is True
+        assert res["ec"] == pytest.approx(ec)           # held fixed, echoed back
+        assert res["g"] == pytest.approx(g_true, rel=0.05)
+        assert 0.0 < res["g"] < f_r0 / 10.0             # the physical bound
+
+    def test_wrong_ec_biases_g(self):
+        """E_C is not fitted, so an assumed value the data can't correct shows up
+        as a biased g — the motivation for sourcing it. Fitting the same
+        E_C-corrected data with ec=0 recovers a g measurably off the truth."""
+        f_r0, f_q_max, ec, g_true = 6.0e9, 5.2e9, 0.2e9, 90e6
+        flux = np.linspace(-0.4, 0.4, 61)
+        y = _flux_dispersion(flux, f_r0=f_r0, g=g_true, phi0=0.6,
+                             phi_off=0.1, f_q_max=f_q_max, ec=ec)
+        trace = xr.Dataset({"center_freq": ("flux_bias", y)},
+                           coords={"flux_bias": flux})
+        right = fit_flux_trace(trace, method="dispersive", f_q_max=f_q_max, ec=ec)
+        wrong = fit_flux_trace(trace, method="dispersive", f_q_max=f_q_max, ec=0.0)
+        assert abs(right["g"] - g_true) < abs(wrong["g"] - g_true)
+
+    def test_ec_and_g_init_kwargs_thread_without_error(self):
+        """ec / g_init are recognised flux-model kwargs (not misrouted to the dip
+        stage), and ec is stamped through metadata and plot_data."""
+        ds, _ = _make_dataset()
+        est = ResonatorSpectroscopyFluxEstimator()
+        res = est.extract_parameters(ds, ec=0.25e9, g_init=40e6)
+        assert res["dispersion"]["ec"] == pytest.approx(0.25e9)
+        assert est.extract_metadata(res)["ec"] == pytest.approx(0.25e9)
+        assert est.build_plot_data(ds, res).attrs["ec"] == pytest.approx(0.25e9)
 
     def test_plot_data_is_self_sufficient(self):
         ds, _ = _make_dataset()

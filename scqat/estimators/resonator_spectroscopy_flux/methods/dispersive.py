@@ -1,10 +1,15 @@
 """Dispersive method — full flux-tunable-transmon resonator pull.
 
-The transmon frequency is periodic in flux (symmetric junction)::
+The transmon frequency is periodic in flux (symmetric junction). The SQUID
+Josephson energy is ``E_J(phi) = E_JSigma |cos(pi (phi - phi_off) / phi0)|`` and
+``f_q = sqrt(8 E_C E_J) - E_C``, which factorizes (pinning the sweet-spot value to
+``f_q_max``) to::
 
-    f_q(phi)  = f_q_max * sqrt(|cos(pi * (phi - phi_off) / phi0)|)
+    f_q(phi)  = (f_q_max + E_C) * sqrt(|cos(pi * (phi - phi_off) / phi0)|) - E_C
 
-and the dispersively coupled resonator is pulled by ``g^2 / (f_r0 - f_q)``::
+``E_C`` is the charging energy, held fixed (``ec`` argument); ``E_C -> 0`` recovers
+the bare ``f_q_max * sqrt(|cos|)``, and keeping it corrects the arch shape near the
+low sweet spot. The dispersively coupled resonator is pulled by ``g^2 / (f_r0 - f_q)``::
 
     f_r(phi)  = f_r0 + g**2 / (f_r0 - f_q(phi))
 
@@ -41,10 +46,29 @@ from .base import (
 # when no f_q_max is supplied. Only affects the (conditional) reported g.
 _DEFAULT_SWEET_SPOT_DETUNING = 1.5e9
 
+# Charging energy E_C (Hz) held fixed in the arch. The exact SQUID relation is
+# E_J(phi) = E_JSigma |cos(pi phi / phi0)| and f_q = sqrt(8 E_C E_J) - E_C, which
+# factorizes (pinning the sweet-spot value to f_q_max) to
+# f_q = (f_q_max + E_C) sqrt(|cos|) - E_C. The E_C -> 0 limit is the bare
+# f_q_max sqrt(|cos|); keeping E_C corrects the arch shape near the LOW sweet
+# spot. The control repo sources it (fact -> design -> this default); 0.2 GHz is
+# a typical transmon E_C and equals the codebase's ec_ghz convention.
+_DEFAULT_EC_HZ = 0.2e9
 
-def flux_dispersion(flux, f_r0, g, phi0, phi_off, f_q_max):
-    """Full-transmon dispersive resonator pull (see module docstring)."""
-    f_q = f_q_max * np.sqrt(np.abs(np.cos(np.pi * (flux - phi_off) / phi0)))
+# Physical initial guess for the coupling g (Hz) when the caller supplies none.
+# g is fitted (the arch amplitude fixes it once f_q_max is held), so this is only
+# a seed; the control repo overrides it with a stored/design g_hz when known.
+_DEFAULT_G_INIT_HZ = 50e6
+
+
+def flux_dispersion(flux, f_r0, g, phi0, phi_off, f_q_max, ec):
+    """Full-transmon dispersive resonator pull (see module docstring).
+
+    ``ec`` is the charging energy E_C (Hz), held fixed; the arch is the exact
+    SQUID form ``f_q = (f_q_max + ec) sqrt(|cos|) - ec`` (``ec=0`` recovers the
+    bare ``f_q_max sqrt(|cos|)``).
+    """
+    f_q = (f_q_max + ec) * np.sqrt(np.abs(np.cos(np.pi * (flux - phi_off) / phi0))) - ec
     return f_r0 + g ** 2 / (f_r0 - f_q)
 
 
@@ -63,11 +87,13 @@ class DispersiveMethod(FluxModel):
         f_q_max_fixed = f_q_max is None and not fit_f_q_max
         if f_q_max is None:
             f_q_max = f_r0_guess - _DEFAULT_SWEET_SPOT_DETUNING
+        ec = float(kwargs.get("ec", _DEFAULT_EC_HZ))
+        g_init = float(kwargs.get("g_init", _DEFAULT_G_INIT_HZ))
 
         extra_defaults = {
             "f_r0": float("nan"), "g": float("nan"), "phi_off": float("nan"),
-            "f_q_max": float(f_q_max), "f_r0_err": float("nan"), "g_err": float("nan"),
-            "phi_off_err": float("nan"), "max_pull": float("nan"),
+            "f_q_max": float(f_q_max), "ec": float(ec), "f_r0_err": float("nan"),
+            "g_err": float("nan"), "phi_off_err": float("nan"), "max_pull": float("nan"),
             "f_q_max_fixed": bool(f_q_max_fixed),
         }
         if n_valid < 5:
@@ -76,8 +102,6 @@ class DispersiveMethod(FluxModel):
         # ROBUST seed: median-smooth before argmax so one spurious high point
         # (e.g. an edge-pinned dip on a low-SNR slice) can't capture the phase.
         phi_off_guess = robust_peak_flux(flux, center)
-        detuning_guess = max(f_r0_guess - f_q_max, 1e6)
-        g_guess = float(np.sqrt(max(amp, 1.0) * detuning_guess))
         dx = float(np.median(np.diff(flux)))
         span = float(flux.max() - flux.min())
 
@@ -87,14 +111,18 @@ class DispersiveMethod(FluxModel):
         result = None
         for phi0_guess in period_candidates(flux, center):
             params = model.make_params(
-                f_r0=f_r0_guess, g=g_guess, phi0=phi0_guess,
-                phi_off=phi_off_guess, f_q_max=f_q_max,
+                f_r0=f_r0_guess, g=g_init, phi0=phi0_guess,
+                phi_off=phi_off_guess, f_q_max=f_q_max, ec=ec,
             )
             params["f_r0"].set(min=f_q_max + 1e6, max=float(np.max(center)) + 5 * amp + 1.0)
-            params["g"].set(min=0.0, max=10 * g_guess + 1.0)
+            # Physical coupling bound: 0 < g < f_r0/10 (a resonator is never
+            # coupled harder than ~a tenth of its frequency), independent of the
+            # data-derived seed. f_r0_guess = min(center) ~ the resonator freq.
+            params["g"].set(min=0.0, max=f_r0_guess / 10.0)
             params["phi0"].set(min=2 * abs(dx) + 1e-12, max=1e4 * span + 1.0)
             params["phi_off"].set(min=flux.min() - phi0_guess, max=flux.max() + phi0_guess)
             params["f_q_max"].set(vary=fit_f_q_max, max=params["f_r0"].max)
+            params["ec"].set(vary=False)
             try:
                 cand = model.fit(center, params, flux=flux)
             except Exception:
@@ -118,17 +146,17 @@ class DispersiveMethod(FluxModel):
         def _e(name):
             return float(p[name].stderr) if p[name].stderr is not None else float("nan")
 
-        f_r0, g, phi0, phi_off, f_q_max_fit = (
-            _v("f_r0"), _v("g"), _v("phi0"), _v("phi_off"), _v("f_q_max")
+        f_r0, g, phi0, phi_off, f_q_max_fit, ec_fit = (
+            _v("f_r0"), _v("g"), _v("phi0"), _v("phi_off"), _v("f_q_max"), _v("ec")
         )
         dense = dense_flux(flux_all)
-        fit_freq = flux_dispersion(dense, f_r0, g, phi0, phi_off, f_q_max_fit)
+        fit_freq = flux_dispersion(dense, f_r0, g, phi0, phi_off, f_q_max_fit, ec_fit)
 
         # Report both sweet spots mapped into the swept range (kills the
         # periodic-image ambiguity of a bare phi_off): the UPPER spot (arch top,
         # max qubit frequency) at phi_off images, the LOWER spot (arch bottom)
         # half a period away.
-        model_at = lambda ff: flux_dispersion(ff, f_r0, g, phi0, phi_off, f_q_max_fit)  # noqa: E731
+        model_at = lambda ff: flux_dispersion(ff, f_r0, g, phi0, phi_off, f_q_max_fit, ec_fit)  # noqa: E731
         # Extrema are mapped into the FULL swept flux range (flux_all), not the
         # good-point subset — an arch bottom often sits where per-slice fits were
         # rejected, and clamping it to the good range would misreport it.
@@ -156,6 +184,7 @@ class DispersiveMethod(FluxModel):
             "sweet_spot_flux_err": _e("phi_off"),
             "dv_phi0_err": _e("phi0"),
             "f_r0": f_r0, "g": g, "phi_off": phi_off, "f_q_max": f_q_max_fit,
+            "ec": ec_fit,
             "f_r0_err": _e("f_r0"), "g_err": _e("g"), "phi_off_err": _e("phi_off"),
             "max_pull": max_pull,
             "f_q_max_fixed": bool(f_q_max_fixed),
@@ -183,6 +212,7 @@ class DispersiveMethod(FluxModel):
             "g": float(results["g"]),
             "max_pull": float(results["max_pull"]),
             "f_q_max": float(results["f_q_max"]),
+            "ec": float(results["ec"]),
             "f_q_max_fixed": int(bool(results["f_q_max_fixed"])),
             "success": int(bool(results["success"])),
         }

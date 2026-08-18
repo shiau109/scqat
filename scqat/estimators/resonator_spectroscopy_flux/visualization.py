@@ -108,7 +108,7 @@ def plot_flux_model(plot_data: xr.Dataset) -> plt.Figure:
     plot_data layout: coords ``flux_bias``/``fit_flux``; vars ``center_freq``
     (flux_bias), ``fit_freq`` (fit_flux); attrs ``method``, ``sweet_spot_flux``,
     ``sweet_spot_res``, ``dv_phi0``, ``success`` (+ ``f_r0``/``g``/``f_q_max``/
-    ``f_q_max_fixed`` for dispersive; ``amp``/``offset`` for sine).
+    ``ec``/``f_q_max_fixed`` for dispersive; ``amp``/``offset`` for sine).
     """
     method = str(plot_data.attrs.get("method", "dispersive"))
     flux = plot_data.coords["flux_bias"].values.astype(float)
