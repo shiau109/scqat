@@ -19,10 +19,18 @@ In the dispersive limit ``f_r ~ f_r0 + (g^2 / f_r0**2) * f_q(phi)``, so the trac
 amplitude only fixes the **product** ``g^2 * f_q_max`` — ``g`` and ``f_q_max`` are
 **not separable** from resonator data alone. Therefore ``f_q_max`` is held
 **fixed** at a nominal value by default (override via the ``f_q_max`` kwarg, e.g.
-from qubit spectroscopy / the QUAM state, to make ``g`` physical). The quantities
-that *are* well determined independently of this choice — ``dv_phi0``,
-``sweet_spot_flux``, ``f_r0`` and ``sweet_spot_res`` — are the primary outputs; ``g``
-is *conditional* on the assumed ``f_q_max``.
+from qubit spectroscopy / the QUAM state, to make ``g`` physical).
+
+``f_r0`` carries a SECOND degeneracy with ``g``: the trace constrains only the pull
+``g^2 / (f_r0 - f_q)``, so lowering ``f_r0`` and raising ``g`` traces a valley of
+near-equal fits. Supplying a MEASURED ``f_r0`` (kwarg, pinned unless
+``fit_f_r0=True``) breaks it and makes ``g`` quantitative; supplying a merely
+nominal one is worse than fitting free, because the whole flux-dependent signal is
+only the few-MHz pull and an error in ``f_r0`` lands almost entirely in ``g``.
+
+The quantities that *are* well determined independently of both choices —
+``dv_phi0``, ``sweet_spot_flux`` and ``sweet_spot_res`` — are the primary outputs;
+``g`` is *conditional* on the assumed ``f_q_max`` and ``f_r0``.
 """
 
 from typing import Any, Dict
@@ -90,11 +98,23 @@ class DispersiveMethod(FluxModel):
         ec = float(kwargs.get("ec", _DEFAULT_EC_HZ))
         g_init = float(kwargs.get("g_init", _DEFAULT_G_INIT_HZ))
 
+        # The BARE resonator frequency. Supplying it PINS the fit (vary=False),
+        # which breaks the f_r0/g degeneracy: the trace constrains the pull
+        # g^2/(f_r0 - f_q), so f_r0 and g trade off along a valley and only an
+        # independently MEASURED f_r0 makes g quantitative. Pass fit_f_r0=True to
+        # supply it as a mere starting guess (the right choice for a value that
+        # is only nominal — an error here goes straight into g). None keeps the
+        # historical behaviour: seed from min(center), fit it free.
+        f_r0_in = kwargs.get("f_r0", None)
+        fit_f_r0 = bool(kwargs.get("fit_f_r0", f_r0_in is None))
+        f_r0_fixed = f_r0_in is not None and not fit_f_r0
+        f_r0_seed = f_r0_guess if f_r0_in is None else float(f_r0_in)
+
         extra_defaults = {
             "f_r0": float("nan"), "g": float("nan"), "phi_off": float("nan"),
             "f_q_max": float(f_q_max), "ec": float(ec), "f_r0_err": float("nan"),
             "g_err": float("nan"), "phi_off_err": float("nan"), "max_pull": float("nan"),
-            "f_q_max_fixed": bool(f_q_max_fixed),
+            "f_q_max_fixed": bool(f_q_max_fixed), "f_r0_fixed": bool(f_r0_fixed),
         }
         if n_valid < 5:
             return fail_result(flux_all, center_all, n_valid, extra_defaults)
@@ -111,17 +131,28 @@ class DispersiveMethod(FluxModel):
         result = None
         for phi0_guess in period_candidates(flux, center):
             params = model.make_params(
-                f_r0=f_r0_guess, g=g_init, phi0=phi0_guess,
+                f_r0=f_r0_seed, g=g_init, phi0=phi0_guess,
                 phi_off=phi_off_guess, f_q_max=f_q_max, ec=ec,
             )
-            params["f_r0"].set(min=f_q_max + 1e6, max=float(np.max(center)) + 5 * amp + 1.0)
+            # A PINNED f_r0 must not be clipped by the free-fit bounds (a
+            # measured bare resonator may legitimately sit below min(center)).
+            if f_r0_fixed:
+                params["f_r0"].set(vary=False)
+            else:
+                params["f_r0"].set(
+                    min=f_q_max + 1e6, max=float(np.max(center)) + 5 * amp + 1.0)
             # Physical coupling bound: 0 < g < f_r0/10 (a resonator is never
             # coupled harder than ~a tenth of its frequency), independent of the
-            # data-derived seed. f_r0_guess = min(center) ~ the resonator freq.
-            params["g"].set(min=0.0, max=f_r0_guess / 10.0)
+            # data-derived seed.
+            params["g"].set(min=0.0, max=f_r0_seed / 10.0)
             params["phi0"].set(min=2 * abs(dx) + 1e-12, max=1e4 * span + 1.0)
             params["phi_off"].set(min=flux.min() - phi0_guess, max=flux.max() + phi0_guess)
-            params["f_q_max"].set(vary=fit_f_q_max, max=params["f_r0"].max)
+            # The arch top must stay BELOW the bare resonator (the pull
+            # g^2/(f_r0 - f_q) diverges as f_q -> f_r0). A pinned f_r0 has no
+            # upper bound of its own, so derive the ceiling from its value.
+            params["f_q_max"].set(
+                vary=fit_f_q_max,
+                max=(f_r0_seed - 1e6) if f_r0_fixed else params["f_r0"].max)
             params["ec"].set(vary=False)
             try:
                 cand = model.fit(center, params, flux=flux)
@@ -188,6 +219,7 @@ class DispersiveMethod(FluxModel):
             "f_r0_err": _e("f_r0"), "g_err": _e("g"), "phi_off_err": _e("phi_off"),
             "max_pull": max_pull,
             "f_q_max_fixed": bool(f_q_max_fixed),
+            "f_r0_fixed": bool(f_r0_fixed),
             "n_points": int(n_valid),
             "success": success,
         }
@@ -214,6 +246,7 @@ class DispersiveMethod(FluxModel):
             "f_q_max": float(results["f_q_max"]),
             "ec": float(results["ec"]),
             "f_q_max_fixed": int(bool(results["f_q_max_fixed"])),
+            "f_r0_fixed": int(bool(results["f_r0_fixed"])),
             "success": int(bool(results["success"])),
         }
         return xr.Dataset(data_vars, coords=coords, attrs=attrs)

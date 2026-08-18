@@ -326,6 +326,39 @@ class TestResonatorSpectroscopyFluxComposite:
         wrong = fit_flux_trace(trace, method="dispersive", f_q_max=f_q_max, ec=0.0)
         assert abs(right["g"] - g_true) < abs(wrong["g"] - g_true)
 
+    def test_pinned_f_r0_breaks_the_degeneracy(self):
+        """f_r0 and g trade off along a valley (the trace fixes only the pull
+        g^2/(f_r0-f_q)). Pinning f_r0 at the TRUE bare frequency must return it
+        untouched and recover the true g."""
+        f_r0, f_q_max, ec, g_true = 6.0e9, 5.2e9, 0.2e9, 90e6
+        flux = np.linspace(-0.4, 0.4, 61)
+        y = _flux_dispersion(flux, f_r0=f_r0, g=g_true, phi0=0.6,
+                             phi_off=0.1, f_q_max=f_q_max, ec=ec)
+        trace = xr.Dataset({"center_freq": ("flux_bias", y)},
+                           coords={"flux_bias": flux})
+        res = fit_flux_trace(trace, method="dispersive",
+                             f_q_max=f_q_max, ec=ec, f_r0=f_r0)
+        assert res["success"] is True
+        assert res["f_r0_fixed"] is True
+        assert res["f_r0"] == pytest.approx(f_r0)        # held, not fitted
+        assert res["g"] == pytest.approx(g_true, rel=0.02)
+
+    def test_f_r0_free_by_default_and_seedable(self):
+        """Default = today's behaviour (f_r0 free, seeded from the trace).
+        Passing fit_f_r0=True supplies a mere STARTING guess — the right choice
+        for a nominal value, since an error in a pinned f_r0 lands in g."""
+        ds, _ = _make_dataset()
+        est = ResonatorSpectroscopyFluxEstimator()
+        default = est.extract_parameters(ds)["dispersion"]
+        assert default["f_r0_fixed"] is False
+
+        # a deliberately-off seed, left free, must still converge near the truth
+        seeded = est.extract_parameters(
+            ds, f_r0=6.99e9, fit_f_r0=True)["dispersion"]
+        assert seeded["f_r0_fixed"] is False
+        assert seeded["success"] is True
+        assert seeded["sweet_spot_flux"] == pytest.approx(0.0, abs=0.012)
+
     def test_ec_and_g_init_kwargs_thread_without_error(self):
         """ec / g_init are recognised flux-model kwargs (not misrouted to the dip
         stage), and ec is stamped through metadata and plot_data."""

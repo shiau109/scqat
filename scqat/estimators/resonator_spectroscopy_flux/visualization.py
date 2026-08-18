@@ -135,10 +135,18 @@ def plot_flux_model(plot_data: xr.Dataset) -> plt.Figure:
 
     ax.set_xlabel("Flux bias (V)")
     ax.set_ylabel("Resonator centre frequency (GHz)")
-    # dispersive-only caveat: g is conditional on the assumed f_q_max.
+    # dispersive-only caveat: g is conditional on whichever of the two fixed
+    # inputs was merely ASSUMED (f_q_max held at a placeholder, or f_r0 fitted
+    # free rather than pinned to a measured bare frequency).
     cond = ""
-    if method == "dispersive" and plot_data.attrs.get("f_q_max_fixed", 1) != 0:
-        cond = " (g conditional on assumed f_q_max)"
+    if method == "dispersive":
+        loose = []
+        if plot_data.attrs.get("f_q_max_fixed", 1) != 0:
+            loose.append("assumed f_q_max")
+        if plot_data.attrs.get("f_r0_fixed", 0) == 0:
+            loose.append("unpinned f_r0")
+        if loose:
+            cond = f" (g conditional on {' + '.join(loose)})"
     ax.set_title(f"Resonator flux model — {method}{cond}")
     ax.legend(fontsize=8)
     fig.tight_layout()

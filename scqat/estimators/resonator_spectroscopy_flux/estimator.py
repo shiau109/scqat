@@ -58,7 +58,8 @@ from .visualization import plot_combined
 
 # kwargs consumed by the flux-model (stage-2) fit; everything else (n_sigma,
 # edge_margin_frac, per-slice dip kwargs) flows to stage 1.
-_DISPERSION_KWARGS = ("method", "f_q_max", "fit_f_q_max", "ec", "g_init")
+_DISPERSION_KWARGS = ("method", "f_q_max", "fit_f_q_max", "ec", "g_init",
+                      "f_r0", "fit_f_r0")
 
 
 class ResonatorSpectroscopyFluxEstimator(BaseEstimator):
@@ -156,8 +157,9 @@ class ResonatorSpectroscopyFluxEstimator(BaseEstimator):
         for k in ("f_r0", "g", "f_q_max", "ec"):
             if k in disp:
                 meta[k] = float(disp[k])
-        if "f_q_max_fixed" in disp:
-            meta["f_q_max_fixed"] = bool(disp["f_q_max_fixed"])
+        for k in ("f_q_max_fixed", "f_r0_fixed"):
+            if k in disp:
+                meta[k] = bool(disp[k])
         return meta
 
     def build_plot_data(
