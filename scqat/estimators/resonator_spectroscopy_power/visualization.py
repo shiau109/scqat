@@ -15,7 +15,10 @@ vars   : ``amplitude`` + power-normalized ``amplitude_db`` (power, detuning);
          ``power`` — drawn as an amp/chain subplot under the map, the ONE shared
          figure form both scqo punchouts emit)
 attrs  : ``n_power``, ``n_success``, ``n_good``, ``n_outlier``, ``has_full_freq``,
-         ``optimal_power``, ``frequency_shift`` (+ optional ``resonator_frequency``;
+         ``optimal_power``, ``crossing_power``, ``frequency_shift``, the two
+         punchout branches ``f_dress0`` / ``f_bare`` with ``lamb_shift`` and
+         ``branch_success`` (drawn only on the absolute axis)
+         (+ optional ``resonator_frequency``;
          + optional ``chain_name`` labeling ``chain_setting``, ``power_axis_kind``
          for the x-label, and ``mode_label`` tagging the mechanism in the title)
 """
@@ -83,6 +86,21 @@ def plot_power_map(plot_data: xr.Dataset) -> plt.Figure:
     if bool(plot_data.attrs.get("optimal_success", 0)) and np.isfinite(optimal_power):
         ax.axvline(optimal_power, color="magenta", ls="--", lw=1.5,
                    label=f"optimal power = {optimal_power:.1f} {opt_unit}")
+
+    # The two punchout branches. Absolute Hz, so they can only be drawn on the
+    # absolute axis — which is exactly the axis `full_freq` provides, the same
+    # gate the estimator uses to report them at all. Each is guarded on its own:
+    # a punchout that only reached the dispersive regime still shows its dressed
+    # line rather than losing both.
+    for attr, color, name in (("f_dress0", "cyan", "f_dress0 (qubit |0>)"),
+                              ("f_bare", "white", "f_bare (saturated)")):
+        value = float(plot_data.attrs.get(attr, np.nan))
+        if use_full and np.isfinite(value):
+            ax.axhline(value / 1e9, color=color, ls=":", lw=1.6,
+                       label=f"{name} = {value / 1e9:.5f} GHz")
+    lamb = float(plot_data.attrs.get("lamb_shift", np.nan))
+    if use_full and np.isfinite(lamb):
+        ax.plot([], [], " ", label=f"Lamb shift = {lamb / 1e6:.2f} MHz")
 
     ax.set_ylabel(ylabel)
     n_good = int(plot_data.attrs.get("n_good", int(good.sum())))

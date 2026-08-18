@@ -22,6 +22,20 @@ in place of ``flux_bias``), a second stage picks the
 derivative-crossing heuristic the official ``02b`` node uses, but run on the
 robust fitted centre trace instead of a raw ``idxmin`` proxy.
 
+A third stage reads the TWO BRANCHES the same crossing separates. Below it the
+qubit stays in |0> and dresses the resonator, so the dip sits at ``f_dress0``;
+above it the qubit saturates and the dip walks to the bare resonator ``f_bare``.
+Their difference is the Lamb shift ``g^2/Delta`` (reported as ``lamb_shift``).
+This is what makes a punchout the independent source of a BARE resonator
+frequency — a dispersive flux fit can only trade ``f_r0`` off against ``g``.
+
+.. warning::
+   ``frequency_shift`` is NOT a branch difference. It is the dip *detuning from
+   the LO* at the chosen optimal power — i.e. the dressed frequency expressed as
+   a detuning. The branch difference is ``lamb_shift``. The names are kept apart
+   deliberately; renaming ``frequency_shift`` would break its consumers for no
+   physics gain.
+
 Expected xarray.Dataset contract
 ---------------------------------
 The dataset should have the ``qubit`` dimension already removed (e.g. via
@@ -54,13 +68,14 @@ cross-power amplitude outlier test normalizes by each row's baseline scale, so
 both raw-instrument and pre-normalized maps are handled.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
 import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
+from scqat.core.figures import render_figures
 from scqat.tools.dip_fit import fit_dip, validate_dip_kwargs
 from scqat.tools.robust import mad_outliers
 from scqat.estimators.resonator_spectroscopy_power.visualization import plot_power_map
@@ -95,20 +110,31 @@ def _pick_optimal_power(
     smoothing_window: int,
     init_filter_window: int,
     buffer_dbm: float,
-) -> float:
-    """Optimal readout power (dBm), or NaN when no crossing is found.
+) -> "Tuple[float, float, float]":
+    """``(optimal_power, crossing_power, settled_power)`` in dBm; NaNs when no
+    crossing is found.
 
     Ports the official 02b heuristic: differentiate the resonator-centre trace
     with respect to power, smooth it, scale down the noisy leading edge, and take
     the first power whose smoothed ``d(center)/d(power)`` drops below the
     (negative) ``threshold_hz_per_dbm``; then step ``buffer_dbm`` below it. Runs on
     the robust fitted ``center_detuning(power)`` rather than a raw ``idxmin``.
+
+    The three returns answer different questions and all are needed. The CROSSING
+    is where the centre STARTS moving; the SETTLED power is the last point where
+    it is still moving, i.e. where the transition ENDS. Together they bracket the
+    punchout transition, which is what separates the dressed (low-power) branch
+    from the bare (high-power) one — and the bracket matters: the derivative
+    crosses the threshold several dB before the knee, so a bare plateau measured
+    from the crossing would swallow the whole transition and understate the Lamb
+    shift. The OPTIMAL power is the crossing stepped ``buffer_dbm`` lower, i.e. a
+    safe operating point inside the dispersive regime.
     """
     power = np.asarray(power, dtype=float)
     center = np.asarray(center_detuning, dtype=float)
     finite = np.isfinite(center)
     if power.size < 3 or finite.sum() < 2:
-        return float("nan")
+        return float("nan"), float("nan"), float("nan")
 
     # Fill fit gaps so the derivative is defined on the full power grid.
     center_filled = np.interp(power, power[finite], center[finite])
@@ -127,9 +153,81 @@ def _pick_optimal_power(
 
     below = np.isfinite(avg) & (avg < threshold_hz_per_dbm)
     if not below.any():
-        return float("nan")
+        return float("nan"), float("nan"), float("nan")
     idx = int(np.argmax(below))  # first power below the threshold
-    return float(power[idx]) - float(buffer_dbm)
+    end = int(len(below) - 1 - np.argmax(below[::-1]))  # last one still moving
+    crossing = float(power[idx])
+    return crossing - float(buffer_dbm), crossing, float(power[end])
+
+
+def _grow_plateau(center: np.ndarray, tol: float) -> int:
+    """How many leading points of ``center`` stay flat within ``tol`` of the
+    running median. Always at least 1 for a non-empty input."""
+    if center.size == 0:
+        return 0
+    kept = 1
+    for i in range(1, center.size):
+        if abs(center[i] - float(np.median(center[:kept]))) > tol:
+            break
+        kept = i + 1
+    return kept
+
+
+def _branch_frequencies(
+    power: np.ndarray,
+    center_full_freq: np.ndarray,
+    good: np.ndarray,
+    *,
+    tol_frac: float,
+    min_points: int,
+) -> "Tuple[float, float, int, int]":
+    """``(f_dress0, f_bare, n_low, n_high)`` — the two punchout branches, in Hz.
+
+    THE PHYSICS: at LOW power the resonator is dressed by a qubit that stays in
+    |0>, so the dip sits at ``f_dress0``. Driven hard enough the qubit saturates
+    and stops dressing it, so the dip walks to the BARE resonator ``f_bare``. The
+    gap between the two plateaus is the Lamb shift ``g^2/Delta`` — which is why a
+    punchout measures the bare frequency that a flux-map dispersive fit can only
+    trade off against ``g``.
+
+    Each plateau is GROWN inward from its end of the power axis for as long as
+    the centre stays within ``tol_frac`` of the full centre span, and the moving
+    middle simply never gets reached. Deliberately NOT derived from the
+    optimal-power derivative: that derivative is smoothed over ~10 points so the
+    threshold trips several dB early and clears several dB late, which would put
+    the whole transition inside the bare plateau and halve the reported Lamb
+    shift. The trace's own flatness is the honest test of where a plateau is.
+
+    MEDIAN of each plateau, not mean, for the same reason the acceptance gates
+    are MAD-based: one TLS jump in one slice must not move the answer. A side
+    with fewer than ``min_points`` good points yields NaN for that branch alone;
+    a punchout whose window only reached the dispersive regime still reports
+    ``f_dress0``.
+    """
+    power = np.asarray(power, dtype=float)
+    center = np.asarray(center_full_freq, dtype=float)
+    keep = np.asarray(good, dtype=bool) & np.isfinite(center)
+    if keep.sum() < 2:
+        return float("nan"), float("nan"), 0, 0
+
+    order = np.argsort(power)
+    p_sorted = power[order][keep[order]]
+    c_sorted = center[order][keep[order]]
+    span = float(np.max(c_sorted) - np.min(c_sorted))
+    tol = max(tol_frac * span, 1.0)  # a flat trace has no branches to separate
+
+    n_low = _grow_plateau(c_sorted, tol)             # from the lowest power up
+    n_high = _grow_plateau(c_sorted[::-1], tol)      # from the highest power down
+    # A trace that never left one plateau (no punchout in the window) must not be
+    # cut into two "branches" of itself.
+    if n_low + n_high > p_sorted.size:
+        return float(np.median(c_sorted)), float("nan"), int(p_sorted.size), 0
+
+    f_dress0 = (float(np.median(c_sorted[:n_low]))
+                if n_low >= min_points else float("nan"))
+    f_bare = (float(np.median(c_sorted[-n_high:]))
+              if n_high >= min_points else float("nan"))
+    return f_dress0, f_bare, int(n_low), int(n_high)
 
 
 class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
@@ -141,7 +239,9 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
     absolute ``center_full_freq`` when available), the ``fwhm`` and a per-point
     ``success`` flag, alongside the 2-D ``amplitude`` map kept for plotting; plus
     the scalar deliverables ``optimal_power`` / ``frequency_shift`` /
-    ``resonator_frequency`` and an overall ``optimal_success`` flag.
+    ``resonator_frequency`` and an overall ``optimal_success`` flag; plus the two
+    punchout branches ``f_dress0`` / ``f_bare`` with their ``lamb_shift`` and
+    ``branch_success``.
     """
 
     estimator_name = "resonator_spectroscopy_power"
@@ -197,6 +297,15 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             (default 10).
         buffer_from_crossing_threshold_in_dbm : float, optional
             dBm stepped below the crossing to set the optimal power (default 1).
+        branch_tol_frac : float, optional
+            Flatness tolerance for growing each branch plateau inward from its end
+            of the power axis, as a fraction of the full centre span (default
+            0.15). Deliberately NOT derived from the optimal-power derivative,
+            which is smoothed over ~10 points and so brackets the transition far
+            too generously.
+        branch_min_points : int, optional
+            Minimum good points a plateau needs before its branch frequency is
+            reported; a shorter side yields NaN for that branch alone (default 3).
 
         Returns
         -------
@@ -205,13 +314,17 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             fwhm, dip_amplitude, success, in_window, outlier, good,
             fwhm_median, fwhm_mad, dip_amplitude_median, dip_amplitude_mad,
             amplitude_map, n_power, n_success, n_good, n_outlier,
-            optimal_power, frequency_shift, resonator_frequency, optimal_success}``
+            optimal_power, crossing_power, frequency_shift, resonator_frequency,
+            optimal_success, f_dress0, f_bare, lamb_shift, n_low_plateau,
+            n_high_plateau, branch_success}``
         """
         n_sigma = float(kwargs.pop("n_sigma", 3.0))
         threshold = float(kwargs.pop("derivative_crossing_threshold_in_hz_per_dbm", -50_000.0))
         smoothing_window = int(kwargs.pop("derivative_smoothing_window_num_points", 10))
         init_filter_window = int(kwargs.pop("moving_average_filter_window_num_points", 10))
         buffer_dbm = float(kwargs.pop("buffer_from_crossing_threshold_in_dbm", 1.0))
+        branch_tol_frac = float(kwargs.pop("branch_tol_frac", 0.15))
+        branch_min_points = int(kwargs.pop("branch_min_points", 3))
         dip_method = str(kwargs.pop("dip_method", "lorentzian"))
         # Fail loudly BEFORE the per-slice loop — a typo'd knob must never be
         # swallowed by the per-slice fallback.
@@ -283,7 +396,7 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         # Optimal readout power from where the centre trace stops shifting, using
         # only the good (in-window, non-outlier) centres.
         center_for_pick = np.where(good, center_detuning, np.nan)
-        optimal_power = _pick_optimal_power(
+        optimal_power, crossing_power, settled_power = _pick_optimal_power(
             power,
             center_for_pick,
             threshold_hz_per_dbm=threshold,
@@ -306,6 +419,19 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             and det_lo < frequency_shift < det_hi
         )
 
+        # The two punchout BRANCHES. Absolute frequencies only: a bare/dressed
+        # pair is meaningless as a detuning from a readout LO that may move, and
+        # they are written to the device as absolute facts.
+        f_dress0 = f_bare = lamb_shift = float("nan")
+        n_low = n_high = 0
+        if has_full_freq:
+            f_dress0, f_bare, n_low, n_high = _branch_frequencies(
+                power, center_full_freq, good,
+                tol_frac=branch_tol_frac, min_points=branch_min_points,
+            )
+            lamb_shift = f_dress0 - f_bare
+        branch_success = bool(np.isfinite(f_dress0) and np.isfinite(f_bare))
+
         results: Dict[str, Any] = {
             "power": power,
             "detuning": detuning,
@@ -327,9 +453,17 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             "n_good": int(good.sum()),
             "n_outlier": int(outlier.sum()),
             "optimal_power": float(optimal_power),
+            "crossing_power": float(crossing_power),
+            "settled_power": float(settled_power),
             "frequency_shift": frequency_shift,
             "resonator_frequency": resonator_frequency,
             "optimal_success": optimal_success,
+            "f_dress0": f_dress0,
+            "f_bare": f_bare,
+            "lamb_shift": lamb_shift,
+            "n_low_plateau": int(n_low),
+            "n_high_plateau": int(n_high),
+            "branch_success": branch_success,
         }
         if has_full_freq:
             results["full_freq"] = ds.coords["full_freq"].values.ravel().astype(float)
@@ -381,8 +515,16 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             "n_good": int(results["n_good"]),
             "n_outlier": int(results["n_outlier"]),
             "optimal_power": float(results["optimal_power"]),
+            "crossing_power": float(results["crossing_power"]),
             "frequency_shift": float(results["frequency_shift"]),
             "optimal_success": int(bool(results["optimal_success"])),
+            # the two punchout branches, so the figure redraws them with no re-fit
+            "f_dress0": float(results["f_dress0"]),
+            "f_bare": float(results["f_bare"]),
+            "lamb_shift": float(results["lamb_shift"]),
+            "n_low_plateau": int(results["n_low_plateau"]),
+            "n_high_plateau": int(results["n_high_plateau"]),
+            "branch_success": int(bool(results["branch_success"])),
         }
 
         if "full_freq" in results:
@@ -429,8 +571,15 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         **kwargs,
     ) -> Dict[str, plt.Figure]:
         """Single figure: the power-normalized ``20*log10|IQ| - power`` map over
-        (power, frequency) with the fitted resonator-centre trace and the
-        optimal-power marker overlaid, drawn from plot_data."""
+        (power, frequency) with the fitted resonator-centre trace, the
+        optimal-power marker and the two branch frequencies overlaid, drawn from
+        plot_data.
+
+        Passed as a THUNK through ``render_figures`` so a plotter failure is
+        skipped with a warning rather than dropping the run's only figure."""
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results)
-        return {"resonator_spectroscopy_power": plot_power_map(plot_data)}
+        return render_figures(
+            {"resonator_spectroscopy_power": lambda: plot_power_map(plot_data)},
+            label=self.estimator_name,
+        )

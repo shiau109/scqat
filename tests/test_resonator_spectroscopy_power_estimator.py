@@ -90,6 +90,69 @@ class TestResonatorSpectroscopyPower:
         assert np.isfinite(results["resonator_frequency"])
         assert abs(results["resonator_frequency"] - truth["lo"]) < 3e6
 
+    def test_recovers_both_punchout_branches(self):
+        """THE punchout physics: the low-power plateau is the DRESSED resonator
+        (qubit in |0>), the high-power plateau is the BARE one (qubit saturated),
+        and their gap is the Lamb shift. The generator plants dressed = lo+0.8 MHz
+        and bare = lo."""
+        ds, truth = _make_dataset()
+        r = ResonatorSpectroscopyPowerEstimator().extract_parameters(ds)
+        assert r["branch_success"] is True
+        assert r["f_dress0"] == pytest.approx(truth["lo"] + 0.8e6, abs=60e3)
+        assert r["f_bare"] == pytest.approx(truth["lo"], abs=60e3)
+        # dressed sits ABOVE bare here (the planted shift is positive)
+        assert r["f_dress0"] > r["f_bare"]
+        assert r["lamb_shift"] == pytest.approx(0.8e6, abs=100e3)
+        assert r["lamb_shift"] == pytest.approx(r["f_dress0"] - r["f_bare"])
+        # both plateaus were actually populated, and split about the crossing
+        assert r["n_low_plateau"] >= 3 and r["n_high_plateau"] >= 3
+        assert truth["power"].min() < r["crossing_power"] < truth["power"].max()
+
+    def test_missing_high_plateau_reports_only_the_dressed_branch(self):
+        """A window that never reaches saturation has no bare branch. The dressed
+        one must still be reported — losing both would throw away the half of the
+        punchout that DID resolve."""
+        ds, truth = _make_dataset()
+        # keep only the dispersive side of the transition
+        ds = ds.sel(power=ds.coords["power"].values <= truth["p_trans"])
+        r = ResonatorSpectroscopyPowerEstimator().extract_parameters(
+            ds, branch_min_points=3)
+        assert np.isfinite(r["f_dress0"])
+        assert not np.isfinite(r["f_bare"])
+        assert r["branch_success"] is False
+        assert r["n_high_plateau"] < 3
+
+    def test_branches_need_the_absolute_axis(self):
+        """f_bare/f_dress0 are absolute frequencies — a bare/dressed pair means
+        nothing as a detuning from an LO that may move. Without `full_freq` they
+        are NaN rather than silently reported in the wrong frame."""
+        ds, _ = _make_dataset()
+        r = ResonatorSpectroscopyPowerEstimator().extract_parameters(
+            ds.drop_vars("full_freq"))
+        assert not np.isfinite(r["f_dress0"]) and not np.isfinite(r["f_bare"])
+        assert r["branch_success"] is False
+
+    def test_figures_render_on_a_failed_fit(self):
+        """A run whose fit resolved nothing must still produce its raw map — the
+        artifact fallback drops ALL figures on any single plotter exception."""
+        ds, _ = _make_dataset()
+        estimator = ResonatorSpectroscopyPowerEstimator()
+        results = estimator.extract_parameters(ds)
+        # degrade every fit-derived scalar/array the plotter might touch
+        results = dict(results)
+        results["center_detuning"] = np.full_like(results["center_detuning"], np.nan)
+        results["center_full_freq"] = np.full_like(results["center_full_freq"], np.nan)
+        results["good"] = np.zeros_like(results["good"], dtype=bool)
+        for scalar in ("optimal_power", "crossing_power", "frequency_shift",
+                       "resonator_frequency", "f_dress0", "f_bare", "lamb_shift"):
+            results[scalar] = float("nan")
+        results["optimal_success"] = False
+        results["branch_success"] = False
+        plot_data = estimator.build_plot_data(ds, results)
+        figs = estimator.generate_figures(ds, results, plot_data=plot_data)
+        assert "resonator_spectroscopy_power" in figs
+        plt.close("all")
+
     def test_metadata_drops_bulky_arrays(self):
         ds, _ = _make_dataset()
         estimator = ResonatorSpectroscopyPowerEstimator()
