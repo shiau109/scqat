@@ -22,12 +22,19 @@ in place of ``flux_bias``), a second stage picks the
 derivative-crossing heuristic the official ``02b`` node uses, but run on the
 robust fitted centre trace instead of a raw ``idxmin`` proxy.
 
-A third stage reads the TWO BRANCHES the same crossing separates. Below it the
-qubit stays in |0> and dresses the resonator, so the dip sits at ``f_dress0``;
-above it the qubit saturates and the dip walks to the bare resonator ``f_bare``.
-Their difference is the Lamb shift ``g^2/Delta`` (reported as ``lamb_shift``).
-This is what makes a punchout the independent source of a BARE resonator
-frequency — a dispersive flux fit can only trade ``f_r0`` off against ``g``.
+A third stage reads the TWO BRANCHES of the punchout. At low power the qubit
+stays in |0> and dresses the resonator, so the dip sits at ``f_dress0``; driven
+hard enough the qubit saturates and the dip walks to the bare resonator
+``f_bare``. Their difference is the Lamb shift ``g^2/Delta`` (reported as
+``lamb_shift``). This is what makes a punchout the independent source of a BARE
+resonator frequency — a dispersive flux fit can only trade ``f_r0`` off against
+``g``. The branches are found by ANCHORED TWO-BAND CLASSIFICATION
+(:func:`_branch_frequencies`): each plateau is anchored at its own end of the
+power axis, every point is classified against the two FIXED anchors, and the
+contiguous in-band run from each end is the plateau — the points between the
+two runs are the transition and belong to NEITHER branch. The run edges are
+reported as ``dress_max_power`` / ``bare_min_power``: the highest power that is
+still dispersive and the lowest that is fully punched out.
 
 .. warning::
    ``frequency_shift`` is NOT a branch difference. It is the dip *detuning from
@@ -63,9 +70,18 @@ Data variables:
     - I, Q   : (power, detuning) – the two quadratures, combined into IQdata.
 
 Rows may carry a power-dependent overall scale (the measured |IQ| grows with the
-readout drive amplitude) — per-slice dip fits are scale-invariant, and the
-cross-power amplitude outlier test normalizes by each row's baseline scale, so
-both raw-instrument and pre-normalized maps are handled.
+readout drive amplitude) — the per-slice dip fits are scale-invariant, so both
+raw-instrument and pre-normalized maps are handled.
+
+.. warning::
+   Per-slice acceptance is in-window + FITTABLE-width only — deliberately NOT a
+   cross-power population test. The dip's width and depth legitimately CHANGE
+   across a punchout (the dressed dip is qubit-broadened, the bare one is not;
+   measured 8 -> 3 MHz on 5Q4C q2), so a global median/MAD gate systematically
+   flags the smaller population — on run 20260818-204626 it deleted the entire
+   bare plateau before branch extraction ever saw it. The linewidth drop is
+   reported (``fwhm``/``fwhm_median``) as the honest "did we truly saturate?"
+   diagnostic, but nothing gates on it.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -77,7 +93,6 @@ import xarray as xr
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
 from scqat.core.figures import render_figures
 from scqat.tools.dip_fit import fit_dip, validate_dip_kwargs
-from scqat.tools.robust import mad_outliers
 from scqat.estimators.resonator_spectroscopy_power.visualization import plot_power_map
 
 
@@ -110,9 +125,8 @@ def _pick_optimal_power(
     smoothing_window: int,
     init_filter_window: int,
     buffer_dbm: float,
-) -> "Tuple[float, float, float]":
-    """``(optimal_power, crossing_power, settled_power)`` in dBm; NaNs when no
-    crossing is found.
+) -> "Tuple[float, float]":
+    """``(optimal_power, crossing_power)`` in dBm; NaNs when no crossing is found.
 
     Ports the official 02b heuristic: differentiate the resonator-centre trace
     with respect to power, smooth it, scale down the noisy leading edge, and take
@@ -120,21 +134,18 @@ def _pick_optimal_power(
     (negative) ``threshold_hz_per_dbm``; then step ``buffer_dbm`` below it. Runs on
     the robust fitted ``center_detuning(power)`` rather than a raw ``idxmin``.
 
-    The three returns answer different questions and all are needed. The CROSSING
-    is where the centre STARTS moving; the SETTLED power is the last point where
-    it is still moving, i.e. where the transition ENDS. Together they bracket the
-    punchout transition, which is what separates the dressed (low-power) branch
-    from the bare (high-power) one — and the bracket matters: the derivative
-    crosses the threshold several dB before the knee, so a bare plateau measured
-    from the crossing would swallow the whole transition and understate the Lamb
-    shift. The OPTIMAL power is the crossing stepped ``buffer_dbm`` lower, i.e. a
-    safe operating point inside the dispersive regime.
+    The CROSSING is where the centre STARTS moving; the OPTIMAL power is the
+    crossing stepped ``buffer_dbm`` lower, i.e. a safe operating point inside the
+    dispersive regime. Deliberately NOT used for the branch plateaus: the
+    derivative is smoothed over ~10 points, so it trips several dB early and
+    clears several dB late — the plateaus are classified against their own
+    anchors instead (:func:`_branch_frequencies`).
     """
     power = np.asarray(power, dtype=float)
     center = np.asarray(center_detuning, dtype=float)
     finite = np.isfinite(center)
     if power.size < 3 or finite.sum() < 2:
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan")
 
     # Fill fit gaps so the derivative is defined on the full power grid.
     center_filled = np.interp(power, power[finite], center[finite])
@@ -153,24 +164,35 @@ def _pick_optimal_power(
 
     below = np.isfinite(avg) & (avg < threshold_hz_per_dbm)
     if not below.any():
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan")
     idx = int(np.argmax(below))  # first power below the threshold
-    end = int(len(below) - 1 - np.argmax(below[::-1]))  # last one still moving
     crossing = float(power[idx])
-    return crossing - float(buffer_dbm), crossing, float(power[end])
+    return crossing - float(buffer_dbm), crossing
 
 
-def _grow_plateau(center: np.ndarray, tol: float) -> int:
-    """How many leading points of ``center`` stay flat within ``tol`` of the
-    running median. Always at least 1 for a non-empty input."""
-    if center.size == 0:
-        return 0
-    kept = 1
-    for i in range(1, center.size):
-        if abs(center[i] - float(np.median(center[:kept]))) > tol:
+def _plateau_members(in_band: np.ndarray) -> np.ndarray:
+    """Member mask of the LEADING plateau run, tolerating isolated glitches.
+
+    The run extends while points stay in-band, bridging a SINGLE out-of-band
+    point whenever the very next point is back in-band — one TLS-jumped or
+    glitched slice must not amputate an otherwise consistent plateau (run
+    20260818-205631: one 2.9 MHz glitch at the 3rd slice cost the whole dressed
+    branch under strict contiguity). Never two consecutive out-of-band points:
+    a real transition departs the FIXED band monotonically and cannot re-enter
+    after exactly one point, so this keeps the anti-creep guarantee. Bridged
+    points are NOT members — they feed neither the median nor the boundary.
+    """
+    members = np.zeros(in_band.size, dtype=bool)
+    i = 0
+    while i < in_band.size:
+        if in_band[i]:
+            members[i] = True
+            i += 1
+        elif i + 1 < in_band.size and in_band[i + 1]:
+            i += 1  # isolated glitch, bridged (and excluded)
+        else:
             break
-        kept = i + 1
-    return kept
+    return members
 
 
 def _branch_frequencies(
@@ -178,10 +200,14 @@ def _branch_frequencies(
     center_full_freq: np.ndarray,
     good: np.ndarray,
     *,
-    tol_frac: float,
+    band_frac: float,
     min_points: int,
-) -> "Tuple[float, float, int, int]":
-    """``(f_dress0, f_bare, n_low, n_high)`` — the two punchout branches, in Hz.
+    anchor_points: int,
+) -> "Tuple[float, float, float, float, int, int, np.ndarray]":
+    """``(f_dress0, f_bare, dress_max_power, bare_min_power, n_low, n_high,
+    branch_class)`` — the two punchout branches (Hz), their plateau boundary
+    powers (dBm), and the per-point class over the INPUT power order
+    (1 = dressed member, 2 = bare member, 0 = neither).
 
     THE PHYSICS: at LOW power the resonator is dressed by a qubit that stays in
     |0>, so the dip sits at ``f_dress0``. Driven hard enough the qubit saturates
@@ -190,44 +216,115 @@ def _branch_frequencies(
     punchout measures the bare frequency that a flux-map dispersive fit can only
     trade off against ``g``.
 
-    Each plateau is GROWN inward from its end of the power axis for as long as
-    the centre stays within ``tol_frac`` of the full centre span, and the moving
-    middle simply never gets reached. Deliberately NOT derived from the
-    optimal-power derivative: that derivative is smoothed over ~10 points so the
-    threshold trips several dB early and clears several dB late, which would put
-    the whole transition inside the bare plateau and halve the reported Lamb
-    shift. The trace's own flatness is the honest test of where a plateau is.
+    ANCHORED TWO-BAND CLASSIFICATION. Each plateau is ANCHORED at its own end of
+    the power axis (median of the ``anchor_points`` extreme slices — a median of
+    3 survives one bad end slice), every point is classified against the two
+    FIXED anchors with a per-side band tolerance, and each plateau is the
+    leading in-band run from its window end (isolated one-point glitches
+    bridged — :func:`_plateau_members`). Two anti-creep devices, both learned
+    from real data (run 20260818-204626, 5Q4C q2): the anchor never moves — a
+    previous implementation grew each plateau against a LAGGING median and
+    crept point-by-point into a gradual transition — and the run-from-the-end
+    structure stops a transition point that wanders back into a band (the
+    bifurcation-regime centre OVERSHOOTS below f_bare, then recovers toward it)
+    from joining a plateau it is not connected to. Points in neither band are
+    the transition and belong to NO branch.
 
-    MEDIAN of each plateau, not mean, for the same reason the acceptance gates
-    are MAD-based: one TLS jump in one slice must not move the answer. A side
-    with fewer than ``min_points`` good points yields NaN for that branch alone;
-    a punchout whose window only reached the dispersive regime still reports
-    ``f_dress0``.
+    The band tolerance is ``band_frac x anchor separation`` — derived from the
+    branch separation ONLY, never from the full centre span (which the
+    transition overshoot inflates) and never from the anchor's own scatter (a
+    glitched anchor slice would then WIDEN its own band and readmit exactly the
+    transition creep this function exists to reject). The anchor scatter is
+    used the other way round, as a CREDIBILITY gate: a side whose 2 robust
+    sigmas exceed the band cannot certify a plateau at all and is refused —
+    that is what a window truncated MID-TRANSITION looks like from its end.
+    Plateaus noisier than the band lose points to the band test pseudo-randomly
+    and, past isolated-glitch bridging, terminate early — for data that noisy
+    relative to the Lamb shift, widening ``band_frac`` is the explicit,
+    documented lever.
+
+    MEDIAN of each plateau, not mean: one TLS jump in one slice must not move
+    the answer. A side with fewer than ``min_points`` member points yields NaN
+    for that branch (and its boundary power) alone; a punchout whose window only
+    reached the dispersive regime still reports ``f_dress0``. When the anchors
+    are closer than the plateau noise — or NEITHER side is credible — the trace
+    resolved no punchout and is reported wholly as the dressed branch: this
+    layer cannot tell an all-dispersive window from an all-punched-out one
+    (a window that STARTED above the knee), unchanged from the previous
+    behaviour.
     """
     power = np.asarray(power, dtype=float)
     center = np.asarray(center_full_freq, dtype=float)
     keep = np.asarray(good, dtype=bool) & np.isfinite(center)
+    nan = float("nan")
+    branch_class = np.zeros(power.size, dtype=int)
     if keep.sum() < 2:
-        return float("nan"), float("nan"), 0, 0
+        return nan, nan, nan, nan, 0, 0, branch_class
 
     order = np.argsort(power)
-    p_sorted = power[order][keep[order]]
-    c_sorted = center[order][keep[order]]
-    span = float(np.max(c_sorted) - np.min(c_sorted))
-    tol = max(tol_frac * span, 1.0)  # a flat trace has no branches to separate
+    kept_idx = order[keep[order]]          # original indices, ascending power
+    p_sorted = power[kept_idx]
+    c_sorted = center[kept_idx]
+    n = p_sorted.size
 
-    n_low = _grow_plateau(c_sorted, tol)             # from the lowest power up
-    n_high = _grow_plateau(c_sorted[::-1], tol)      # from the highest power down
-    # A trace that never left one plateau (no punchout in the window) must not be
-    # cut into two "branches" of itself.
-    if n_low + n_high > p_sorted.size:
-        return float(np.median(c_sorted)), float("nan"), int(p_sorted.size), 0
+    k = max(1, min(int(anchor_points), n // 2))
+    low_anchor_pts = c_sorted[:k]
+    high_anchor_pts = c_sorted[-k:]
+    anchor_d = float(np.median(low_anchor_pts))
+    anchor_b = float(np.median(high_anchor_pts))
+    separation = abs(anchor_d - anchor_b)
 
-    f_dress0 = (float(np.median(c_sorted[:n_low]))
-                if n_low >= min_points else float("nan"))
-    f_bare = (float(np.median(c_sorted[-n_high:]))
-              if n_high >= min_points else float("nan"))
-    return f_dress0, f_bare, int(n_low), int(n_high)
+    # Robust sigma of each anchor's own scatter -> the plateau noise floor.
+    sigma_d = 1.4826 * float(np.median(np.abs(low_anchor_pts - anchor_d)))
+    sigma_b = 1.4826 * float(np.median(np.abs(high_anchor_pts - anchor_b)))
+    band = band_frac * separation
+    credible_d = 2.0 * sigma_d <= band
+    credible_b = 2.0 * sigma_b <= band
+
+    def _one_plateau():
+        branch_class[kept_idx] = 1
+        return (float(np.median(c_sorted)), nan,
+                float(p_sorted[-1]), nan, n, 0, branch_class)
+
+    # No punchout resolved in the window: anchors indistinguishable, or no end
+    # of the trace is settled enough to certify a plateau.
+    if separation <= max(5.0 * sigma_d, 5.0 * sigma_b, 1.0):
+        return _one_plateau()
+    if not credible_d and not credible_b:
+        return _one_plateau()
+
+    # The tolerance is the band alone — see the docstring on why the anchor
+    # scatter must never widen it.
+    tol = max(band, 1.0)
+    members_low = np.zeros(n, dtype=bool)
+    members_high = np.zeros(n, dtype=bool)
+    if credible_d:
+        members_low = _plateau_members(np.abs(c_sorted - anchor_d) <= tol)
+    if credible_b:
+        members_high = _plateau_members(
+            np.abs(c_sorted[::-1] - anchor_b) <= tol)[::-1]
+    # Overlapping spans: no transition resolved between the bands, so there is
+    # only one plateau to report.
+    if members_low.any() and members_high.any():
+        if int(np.flatnonzero(members_low)[-1]) >= int(np.flatnonzero(members_high)[0]):
+            return _one_plateau()
+
+    n_low = int(members_low.sum())
+    n_high = int(members_high.sum())
+    if n_low >= min_points:
+        f_dress0 = float(np.median(c_sorted[members_low]))
+        dress_max_power = float(p_sorted[np.flatnonzero(members_low)[-1]])
+        branch_class[kept_idx[members_low]] = 1
+    else:
+        f_dress0, dress_max_power = nan, nan
+    if n_high >= min_points:
+        f_bare = float(np.median(c_sorted[members_high]))
+        bare_min_power = float(p_sorted[np.flatnonzero(members_high)[0]])
+        branch_class[kept_idx[members_high]] = 2
+    else:
+        f_bare, bare_min_power = nan, nan
+    return (f_dress0, f_bare, dress_max_power, bare_min_power,
+            n_low, n_high, branch_class)
 
 
 class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
@@ -240,7 +337,9 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
     ``success`` flag, alongside the 2-D ``amplitude`` map kept for plotting; plus
     the scalar deliverables ``optimal_power`` / ``frequency_shift`` /
     ``resonator_frequency`` and an overall ``optimal_success`` flag; plus the two
-    punchout branches ``f_dress0`` / ``f_bare`` with their ``lamb_shift`` and
+    punchout branches ``f_dress0`` / ``f_bare`` with their ``lamb_shift``, the
+    plateau boundary powers ``dress_max_power`` / ``bare_min_power``, the
+    per-power ``branch_class`` (1 = dressed run, 2 = bare run, 0 = neither) and
     ``branch_success``.
     """
 
@@ -274,19 +373,17 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         (``baseline_order`` / ``delay``) are that method's knobs, validated
         BEFORE the slice loop (unknown names raise ValueError).
 
-        Acceptance per power point happens in two stages: (1) the fitted dip centre
-        must lie strictly **inside** the swept detuning window, and (2) the dip
-        ``fwhm`` and the **baseline-normalized** dip amplitude (``|dip_amplitude|``
-        divided by the row's 90th-percentile ``|IQ|`` squared — rows scale with the
-        readout drive on real instruments) must not be robust (median/MAD) outliers
-        across power. ``dip_amplitude_median``/``dip_amplitude_mad`` report the
-        normalized statistic; ``dip_amplitude`` itself stays in raw ``|IQ|^2`` units.
+        Acceptance per power point: (1) the fitted dip centre must lie strictly
+        **inside** the swept detuning window, and (2) the fitted ``fwhm`` must be
+        FITTABLE — wider than two frequency-grid steps and narrower than the
+        swept window. Deliberately NO cross-power population test: a punchout's
+        dip width and depth legitimately change between the dressed and bare
+        branches (the dressed dip is qubit-broadened), so a global median/MAD
+        gate systematically deletes the smaller plateau — see the module
+        warning. ``fwhm_median``/``fwhm_mad`` are reported as diagnostics only.
 
         Keyword arguments
         -----------------
-        n_sigma : float, optional
-            Robust-sigma threshold for the width / amplitude outlier test
-            (default 3.0). Not forwarded to the per-slice estimator.
         derivative_crossing_threshold_in_hz_per_dbm : float, optional
             Smoothed ``d(center)/d(power)`` threshold (negative) that marks the
             optimal-power crossing (default -50_000).
@@ -297,33 +394,35 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             (default 10).
         buffer_from_crossing_threshold_in_dbm : float, optional
             dBm stepped below the crossing to set the optimal power (default 1).
-        branch_tol_frac : float, optional
-            Flatness tolerance for growing each branch plateau inward from its end
-            of the power axis, as a fraction of the full centre span (default
-            0.15). Deliberately NOT derived from the optimal-power derivative,
-            which is smoothed over ~10 points and so brackets the transition far
-            too generously.
+        branch_band_frac : float, optional
+            Half-width of each plateau's classification band as a fraction of the
+            anchor separation (default 0.08). Never span-derived: the transition
+            overshoot inflates the full centre span.
+        branch_anchor_points : int, optional
+            Extreme-power slices whose median anchors each plateau (default 3).
         branch_min_points : int, optional
-            Minimum good points a plateau needs before its branch frequency is
-            reported; a shorter side yields NaN for that branch alone (default 3).
+            Minimum in-band points a plateau needs before its branch frequency
+            and boundary power are reported; a shorter side yields NaN for that
+            branch alone (default 3).
 
         Returns
         -------
         dict
             ``{power, detuning, full_freq?, center_detuning, center_full_freq?,
             fwhm, dip_amplitude, success, in_window, outlier, good,
-            fwhm_median, fwhm_mad, dip_amplitude_median, dip_amplitude_mad,
+            fwhm_median, fwhm_mad,
             amplitude_map, n_power, n_success, n_good, n_outlier,
             optimal_power, crossing_power, frequency_shift, resonator_frequency,
-            optimal_success, f_dress0, f_bare, lamb_shift, n_low_plateau,
-            n_high_plateau, branch_success}``
+            optimal_success, f_dress0, f_bare, lamb_shift, dress_max_power,
+            bare_min_power, branch_class, n_low_plateau, n_high_plateau,
+            branch_success}``
         """
-        n_sigma = float(kwargs.pop("n_sigma", 3.0))
         threshold = float(kwargs.pop("derivative_crossing_threshold_in_hz_per_dbm", -50_000.0))
         smoothing_window = int(kwargs.pop("derivative_smoothing_window_num_points", 10))
         init_filter_window = int(kwargs.pop("moving_average_filter_window_num_points", 10))
         buffer_dbm = float(kwargs.pop("buffer_from_crossing_threshold_in_dbm", 1.0))
-        branch_tol_frac = float(kwargs.pop("branch_tol_frac", 0.15))
+        branch_band_frac = float(kwargs.pop("branch_band_frac", 0.08))
+        branch_anchor_points = int(kwargs.pop("branch_anchor_points", 3))
         branch_min_points = int(kwargs.pop("branch_min_points", 3))
         dip_method = str(kwargs.pop("dip_method", "lorentzian"))
         # Fail loudly BEFORE the per-slice loop — a typo'd knob must never be
@@ -373,30 +472,29 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         in_window = np.isfinite(center_detuning) & (center_detuning > det_lo) & (center_detuning < det_hi)
         valid = success & in_window
 
-        # 2-D |IQ| amplitude map, oriented (power, detuning) — kept for plotting,
-        # and its per-row median doubles as the row's baseline scale below.
+        # 2-D |IQ| amplitude map, oriented (power, detuning) — kept for plotting.
         amplitude_map = np.abs(iq_map)
 
-        # (2) Robust outlier rejection on the dip width and amplitude. The measured
-        # |IQ| grows with the readout drive, so rows carry a power-dependent overall
-        # scale and raw dip amplitudes are NOT comparable across power. Divide out
-        # each row's baseline scale — a HIGH quantile of |IQ| over detuning (the top
-        # decile sits on the off-resonant baseline even when the dip covers a sizable
-        # fraction of the span; the median does not, and its dip-depth bias can flip
-        # borderline flags) — squared to match the |IQ|^2 units of the fitted dip
-        # amplitude. For pre-normalized data the row scale is ~constant across rows,
-        # leaving the flags as before.
-        row_scale = np.quantile(amplitude_map, 0.9, axis=1) ** 2
-        rel_amp = np.abs(dip_amplitude) / np.maximum(row_scale, np.finfo(float).tiny)
-        outlier_fwhm, fwhm_med, fwhm_mad = mad_outliers(fwhm, valid, n_sigma)
-        outlier_amp, amp_med, amp_mad = mad_outliers(rel_amp, valid, n_sigma)
-        outlier = valid & (outlier_fwhm | outlier_amp)
+        # (2) Fittable-width gate ONLY: a width narrower than two grid steps or
+        # wider than the swept window is unfittable garbage; anything between is
+        # legal physics. Never a cross-power population test — the dressed and
+        # bare branches have genuinely different widths, and a global median/MAD
+        # gate deletes the smaller plateau (the run-20260818-204626 failure).
+        grid = float(np.median(np.abs(np.diff(detuning)))) if detuning.size > 1 else 0.0
+        fittable = (fwhm > 2.0 * grid) & (fwhm < (det_hi - det_lo))
+        outlier = valid & ~fittable
         good = valid & ~outlier
+        # Diagnostics only, nothing gates on them: the fwhm DROP across the
+        # transition is the honest "did we truly saturate?" witness.
+        fwhm_good = fwhm[good]
+        fwhm_med = float(np.median(fwhm_good)) if fwhm_good.size else float("nan")
+        fwhm_mad = (float(np.median(np.abs(fwhm_good - fwhm_med)))
+                    if fwhm_good.size else float("nan"))
 
         # Optimal readout power from where the centre trace stops shifting, using
         # only the good (in-window, non-outlier) centres.
         center_for_pick = np.where(good, center_detuning, np.nan)
-        optimal_power, crossing_power, settled_power = _pick_optimal_power(
+        optimal_power, crossing_power = _pick_optimal_power(
             power,
             center_for_pick,
             threshold_hz_per_dbm=threshold,
@@ -423,11 +521,18 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         # pair is meaningless as a detuning from a readout LO that may move, and
         # they are written to the device as absolute facts.
         f_dress0 = f_bare = lamb_shift = float("nan")
+        dress_max_power = bare_min_power = float("nan")
         n_low = n_high = 0
+        # Per-power class for diagnosis/plotting: 1 = dressed member, 2 = bare
+        # member, 0 = neither (transition, bridged glitch, rejected, failed) —
+        # exactly the points each branch median used.
+        branch_class = np.zeros(n_power, dtype=int)
         if has_full_freq:
-            f_dress0, f_bare, n_low, n_high = _branch_frequencies(
+            (f_dress0, f_bare, dress_max_power, bare_min_power,
+             n_low, n_high, branch_class) = _branch_frequencies(
                 power, center_full_freq, good,
-                tol_frac=branch_tol_frac, min_points=branch_min_points,
+                band_frac=branch_band_frac, min_points=branch_min_points,
+                anchor_points=branch_anchor_points,
             )
             lamb_shift = f_dress0 - f_bare
         branch_success = bool(np.isfinite(f_dress0) and np.isfinite(f_bare))
@@ -445,8 +550,6 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             "dip_method": dip_method,
             "fwhm_median": fwhm_med,
             "fwhm_mad": fwhm_mad,
-            "dip_amplitude_median": amp_med,
-            "dip_amplitude_mad": amp_mad,
             "amplitude_map": amplitude_map,
             "n_power": int(n_power),
             "n_success": int(success.sum()),
@@ -454,13 +557,15 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             "n_outlier": int(outlier.sum()),
             "optimal_power": float(optimal_power),
             "crossing_power": float(crossing_power),
-            "settled_power": float(settled_power),
             "frequency_shift": frequency_shift,
             "resonator_frequency": resonator_frequency,
             "optimal_success": optimal_success,
             "f_dress0": f_dress0,
             "f_bare": f_bare,
             "lamb_shift": lamb_shift,
+            "dress_max_power": float(dress_max_power),
+            "bare_min_power": float(bare_min_power),
+            "branch_class": branch_class,
             "n_low_plateau": int(n_low),
             "n_high_plateau": int(n_high),
             "branch_success": branch_success,
@@ -506,6 +611,7 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             "success": ("power", np.asarray(results["success"], bool)),
             "good": ("power", np.asarray(results["good"], bool)),
             "outlier": ("power", np.asarray(results["outlier"], bool)),
+            "branch_class": ("power", np.asarray(results["branch_class"], np.int8)),
         }
         coords: Dict[str, Any] = {"power": power, "detuning": detuning}
         attrs: Dict[str, Any] = {
@@ -522,6 +628,8 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
             "f_dress0": float(results["f_dress0"]),
             "f_bare": float(results["f_bare"]),
             "lamb_shift": float(results["lamb_shift"]),
+            "dress_max_power": float(results["dress_max_power"]),
+            "bare_min_power": float(results["bare_min_power"]),
             "n_low_plateau": int(results["n_low_plateau"]),
             "n_high_plateau": int(results["n_high_plateau"]),
             "branch_success": int(bool(results["branch_success"])),

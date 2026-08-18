@@ -10,14 +10,17 @@ plot_data layout
 coords : ``power``, ``detuning`` (+ optional ``full_freq``)
 vars   : ``amplitude`` + power-normalized ``amplitude_db`` (power, detuning);
          per-power ``center_detuning`` / ``fwhm`` / ``dip_amplitude`` /
-         ``success`` / ``good`` / ``outlier`` (+ optional ``center_full_freq``;
+         ``success`` / ``good`` / ``outlier`` / ``branch_class``
+         (+ optional ``center_full_freq``;
          + optional chain provenance ``digital_amp`` / ``chain_setting`` over
          ``power`` — drawn as an amp/chain subplot under the map, the ONE shared
          figure form both scqo punchouts emit)
 attrs  : ``n_power``, ``n_success``, ``n_good``, ``n_outlier``, ``has_full_freq``,
          ``optimal_power``, ``crossing_power``, ``frequency_shift``, the two
          punchout branches ``f_dress0`` / ``f_bare`` with ``lamb_shift`` and
-         ``branch_success`` (drawn only on the absolute axis)
+         ``branch_success`` (drawn only on the absolute axis) and their plateau
+         boundary powers ``dress_max_power`` / ``bare_min_power`` (vertical
+         dashed lines bracketing the transition)
          (+ optional ``resonator_frequency``;
          + optional ``chain_name`` labeling ``chain_setting``, ``power_axis_kind``
          for the x-label, and ``mode_label`` tagging the mechanism in the title)
@@ -101,6 +104,17 @@ def plot_power_map(plot_data: xr.Dataset) -> plt.Figure:
     lamb = float(plot_data.attrs.get("lamb_shift", np.nan))
     if use_full and np.isfinite(lamb):
         ax.plot([], [], " ", label=f"Lamb shift = {lamb / 1e6:.2f} MHz")
+
+    # The plateau boundary powers bracketing the transition: everything at or
+    # below dress_max is the dressed run, at or above bare_min the bare run —
+    # the points between fed NEITHER branch. Each guarded on its own (a window
+    # that never saturated has no bare boundary).
+    for attr, color, name in (("dress_max_power", "cyan", "dressed ≤"),
+                              ("bare_min_power", "white", "bare ≥")):
+        value = float(plot_data.attrs.get(attr, np.nan))
+        if np.isfinite(value):
+            ax.axvline(value, color=color, ls="--", lw=1.2,
+                       label=f"{name} {value:.1f} {opt_unit}")
 
     ax.set_ylabel(ylabel)
     n_good = int(plot_data.attrs.get("n_good", int(good.sum())))
