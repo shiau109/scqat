@@ -10,7 +10,8 @@ other.
 
 Pipeline (single method): distance signal -> polynomial baseline through the
 quietest quantile -> ``scipy.signal.find_peaks`` on both polarities (keep the
-stronger; a MAD-based ``min_snr`` gate rejects noise-only traces) -> windowed
+stronger; a ``min_snr`` gate over :func:`robust_noise` rejects noise-only
+traces) -> windowed
 Lorentzian fit per peak (:class:`scqat.tools.fit_lorentzian.FitLorentzian`) ->
 merge duplicate fits of one line -> ``max_peaks`` area cap.
 
@@ -124,6 +125,41 @@ def _merge_overlapping_peaks(peaks: List[Dict[str, Any]],
         kept.pop(drop_idx)
 
 
+def robust_noise(y: np.ndarray) -> float:
+    """Point-to-point noise sigma of a trace, immune to the LINE in it.
+
+    ``1.4826 / sqrt(6) * median(|2 y[i] - y[i-2] - y[i+2]|)`` — the three-point
+    (DER_SNR) estimator. The middle combination cancels any locally LINEAR trend,
+    so a peak's steep flanks contribute nothing and only curvature plus noise
+    survives; the median then discards the few points at the line's crown.
+
+    Why not ``1.4826 * MAD(y)``, which this replaced: that measures the spread of
+    the VALUES, which is the noise only when most sweep points sit off resonance.
+    Once a line fills a large fraction of the window the MAD measures the LINE, and
+    ``min_snr * sigma`` climbs past the signal span, so ``find_peaks`` returns
+    nothing at all — a wide, clean, high-contrast line silently reported as "no
+    peak". Measured on 5Q4C q1 (2026-08-19, three spectroscopy-cryoscope runs at
+    one setting, only the drive envelope changed): a line filling 25% of the window
+    inflated the value-MAD 5x over the true noise and cleared the gate by only
+    1.07x, while the same line at 41-45% inflated it 39-42x and could not be
+    detected at all. This estimator reads 1.4-2.5x instead, and every trace clears
+    the gate by 3.8x.
+
+    Both estimators are unbiased on pure noise (+/-1% over 2000 traces of 51
+    points), so the noise-only rejection the gate exists for is unchanged — the
+    difference appears only when there is real structure to be confused by.
+
+    Falls back to a first-difference estimate below 5 points, and to the value
+    spread below 2 (too few samples for either).
+    """
+    y = np.asarray(y, dtype=float).ravel()
+    if y.size < 2:
+        return 0.0
+    if y.size < 5:
+        return float(1.4826 * np.median(np.abs(np.diff(y))) / np.sqrt(2))
+    return float(1.4826 / np.sqrt(6) * np.median(np.abs(2 * y[2:-2] - y[:-4] - y[4:])))
+
+
 def fit_peaks(
     detuning: np.ndarray,
     signal: np.ndarray,
@@ -158,9 +194,10 @@ def fit_peaks(
         subtracted signal span.  Default 0.1 (10 %).
     min_snr : float, optional
         Significance gate: a peak's prominence must also exceed
-        ``min_snr * robust_sigma`` (robust_sigma = 1.4826 * MAD of the
-        baseline-corrected signal). Rejects noise-only sweeps (returns no
-        peaks) and keeps all genuine lines regardless of count. Default 6.0.
+        ``min_snr * robust_noise(signal_corrected)`` — a point-to-point noise
+        estimate that a wide line cannot inflate (see :func:`robust_noise`).
+        Rejects noise-only sweeps (returns no peaks) and keeps all genuine lines
+        regardless of count or WIDTH. Default 6.0.
     max_peaks : int or None, optional
         Maximum number of peaks to return.  Applied *after* merging, so a
         duplicate fit can never consume a slot ahead of a genuine line.
@@ -205,10 +242,12 @@ def fit_peaks(
     # peak is larger (handles both absorption dips and emission peaks).
     span = signal_corrected.max() - signal_corrected.min()
     # Significance gate: a peak must rise above the noise, not merely be the most
-    # prominent bump within the span. robust sigma = 1.4826 * MAD (median-based, so a
-    # few strong peaks don't inflate it). This rejects noise-only sweeps (no peak found)
-    # while keeping every genuine line, e.g. both peaks of a two-transition sweep.
-    robust_sigma = 1.4826 * np.median(np.abs(signal_corrected - np.median(signal_corrected)))
+    # prominent bump within the span. The sigma is POINT-TO-POINT (robust_noise), not
+    # the spread of the values: a line wide enough to fill much of the window inflates
+    # a value-based MAD until the gate exceeds the signal span itself, and the trace
+    # reports no peak at all. This rejects noise-only sweeps while keeping every
+    # genuine line, e.g. both peaks of a two-transition sweep, at any width.
+    robust_sigma = robust_noise(signal_corrected)
     abs_prom = max(prominence * span, min_snr * robust_sigma)
 
     idx_pos, props_pos = find_peaks(

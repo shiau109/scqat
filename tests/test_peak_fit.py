@@ -12,7 +12,12 @@ import numpy as np
 import pytest
 
 from scqat.tools.fit_lorentzian import lorentzian
-from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks, validate_peak_kwargs
+from scqat.tools.peak_fit import (
+    PEAK_KNOBS,
+    fit_peaks,
+    robust_noise,
+    validate_peak_kwargs,
+)
 
 
 def _trace(peaks, n=801, span=100e6, noise=1e-3, seed=0, complex_signal=True):
@@ -65,6 +70,44 @@ def test_noise_only_finds_no_peaks():
     detuning = np.linspace(-50e6, 50e6, 801)
     iq = 1e-3 * (rng.standard_normal(801) + 1j * rng.standard_normal(801))
     assert fit_peaks(detuning, iq)["peaks"] == []
+
+
+def test_robust_noise_is_unbiased_on_pure_noise():
+    """The min_snr gate exists to reject noise-only traces, so its sigma must be
+    the real sigma — this is the property the estimator may not trade away for
+    immunity to wide lines."""
+    rng = np.random.default_rng(0)
+    for sigma in (1e-3, 3e-2):
+        est = np.mean([robust_noise(rng.normal(0, sigma, 51)) for _ in range(400)])
+        assert est == pytest.approx(sigma, rel=0.06)
+
+
+def test_robust_noise_ignores_the_line_however_wide():
+    """A line is smooth, so a POINT-TO-POINT estimator cannot see it. The value
+    spread it replaced could: a line filling much of the window made
+    ``1.4826 * MAD(values)`` measure the LINE, and min_snr * sigma then exceeded
+    the whole signal span (5Q4C q1, 2026-08-19 — three drive envelopes at one
+    setting; the two whose line filled 41-45% of the window returned NO peak
+    while carrying 0.89 contrast at 2.5x lower noise than the one that passed)."""
+    detuning = np.linspace(-15e6, 15e6, 51)
+    sigma = 0.02
+    rng = np.random.default_rng(1)
+    noise = rng.normal(0, sigma, 51)
+    for gamma in (2e6, 8e6):  # narrow line, then one filling most of the window
+        trace = lorentzian(detuning, 0.0, 0.9, gamma, 0.0) + noise
+        assert robust_noise(trace) == pytest.approx(sigma, rel=0.6)
+
+
+def test_wide_line_is_still_detected():
+    """The regression: a clean, high-contrast line filling ~half the sweep must be
+    found. Widening the line is a legitimate experimental choice (a shorter or
+    smoother drive pulse), and it must not silently return zero peaks."""
+    detuning = np.linspace(-15e6, 15e6, 51)
+    rng = np.random.default_rng(2)
+    trace = lorentzian(detuning, 1.5e6, 0.9, 7e6, 0.0) + rng.normal(0, 0.02, 51)
+    peaks = fit_peaks(detuning, trace, max_peaks=1)["peaks"]
+    assert len(peaks) == 1
+    assert peaks[0]["detuning"] == pytest.approx(1.5e6, abs=0.6e6)
 
 
 def test_two_peaks_and_max_peaks_cap():
