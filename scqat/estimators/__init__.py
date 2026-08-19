@@ -40,10 +40,18 @@ from scqat.estimators.qc_n_swap_amp import QcNSwapAmpEstimator
 from scqat.estimators.qc_n_stark_amp import QcNStarkAmpEstimator
 from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator
 from scqat.estimators.spectroscopy_cryoscope import SpectroscopyCryoscopeEstimator
+from scqat.estimators.broadband_resonator_spectroscopy import (
+    BroadbandResonatorSpectroscopyEstimator,
+)
+from scqat.estimators.broadband_qubit_spectroscopy import (
+    BroadbandQubitSpectroscopyEstimator,
+)
 from scqat.estimators.xyz_delay import XyzDelayEstimator
 from scqat.estimators.qubit_stark_phase_echo import QubitStarkPhaseEchoEstimator
 
 __all__ = [
+    "BroadbandQubitSpectroscopyEstimator",
+    "BroadbandResonatorSpectroscopyEstimator",
     "QubitDecoherenceEstimator",
     "StateDiscriminationEstimator",
     "RamseyEstimator",
