@@ -46,6 +46,8 @@ from scqat.estimators.broadband_resonator_spectroscopy import (
 from scqat.estimators.broadband_qubit_spectroscopy import (
     BroadbandQubitSpectroscopyEstimator,
 )
+from scqat.estimators.xyz_delay import XyzDelayEstimator
+from scqat.estimators.qubit_stark_phase_echo import QubitStarkPhaseEchoEstimator
 
 __all__ = [
     "BroadbandQubitSpectroscopyEstimator",
@@ -91,6 +93,7 @@ __all__ = [
     "RamseyCryoscopeEstimator",
     "SpectroscopyCryoscopeEstimator",
     "XyzDelayEstimator",
+    "QubitStarkPhaseEchoEstimator",
 ]
 
 

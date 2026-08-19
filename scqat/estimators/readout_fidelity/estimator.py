@@ -6,16 +6,13 @@ import xarray as xr
 import matplotlib.pyplot as plt
 
 from scqat.core.base_estimator import BaseEstimator
-from scqat.tools.discriminate import DISCRIMINATE_KNOBS, discriminate_states
 from scqat.estimators.state_discrimination import state_iq_arrays
 from scqat.estimators._twin_axis import TWIN_KNOBS, twin_values
+from scqat.estimators.readout_fidelity.methods import METHODS, ReadoutFidelityMethod
 from scqat.estimators.readout_fidelity.visualization import (
     plot_outlier_vs_sweep,
-    plot_std_vs_sweep,
+    plot_separation_vs_sweep,
     plot_snr_vs_sweep,
-    plot_mean_distance_vs_sweep,
-    plot_mean_i_vs_sweep,
-    plot_mean_q_vs_sweep,
     plot_norm_res_vs_sweep,
     plot_fidelity_vs_sweep,
     plot_means_on_iq_plane,
@@ -34,14 +31,25 @@ class ReadoutFidelityEstimator(BaseEstimator):
           :class:`StateDiscriminationEstimator`)
         - Coordinate:  the swept axis named by :attr:`sweep_coord`
 
-    For each value of ``sweep_coord`` the data is sliced and handed to the
-    family-shared reduction
-    :func:`scqat.tools.discriminate.discriminate_states`; the per-slice trained
-    GMM std/means, outlier probability, normalised residue, Gaussian norms and
-    direct counts are collected as a function of the sweep. The **fidelity** at each point is the
-    mean of the confusion-matrix diagonal (``direct_counts[k, k]`` = fraction of
-    prepared-state-k shots assigned to label k), and the reported answer
-    (``best_sweep_value`` / ``best_fidelity``) is the point that maximises it.
+    For each value of ``sweep_coord`` the data is sliced and summarised by the
+    selected METHOD (``method="gmm"``, the default, or ``"average"`` — see
+    :mod:`scqat.estimators.readout_fidelity.methods`), and the summaries are
+    collected as a function of the sweep.
+
+    * ``gmm`` hands every slice to the family-shared reduction
+      :func:`scqat.tools.discriminate.discriminate_states`, collecting the
+      trained std/means, outlier probability, normalised residue, Gaussian norms
+      and direct counts. The **fidelity** at each point is the mean of the
+      confusion-matrix diagonal (``direct_counts[k, k]`` = fraction of
+      prepared-state-k shots assigned to label k), and the answer is the point
+      that maximises it.
+    * ``average`` fits nothing: each prepared state's centre is the average of
+      its I/Q, which also makes it the method for FPGA-averaged data with no
+      shot axis at all. With no fitted width there is no fidelity, so the answer
+      is the point of largest centre **separation**.
+
+    Either way ``best_sweep_value`` is the chosen point and ``best_metric`` its
+    metric value (``metric`` names which curve that is).
 
     This unifies qcat's near-duplicate ``ROFidelityPower`` (``amp_prefactor``) and
     ``ROFidelityFreq`` (``frequency``); use the :class:`ReadoutPowerFidelityEstimator`
@@ -53,6 +61,13 @@ class ReadoutFidelityEstimator(BaseEstimator):
     estimator_name = "readout_fidelity"
     sweep_coord: Optional[str] = None  # subclasses set this; or pass sweep_coord kwarg
     fidelity_floor: float = 0.5  # below this the best point is flagged unsuccessful
+    #: same name => same meaning AND unit in EVERY method; orchestration (SCQO)
+    #: may rely only on these. Validated right after the per-slice loop.
+    COMMON_KEYS = (
+        'sweep_coord', 'sweep_values', 'method', 'metric', 'mean', 'separation',
+        'failed', 'best_index', 'best_sweep_value', 'best_metric',
+        'best_separation', 'success',
+    )
     #: optional companion scale for the swept axis — a coordinate over the same
     #: points plus its label, drawn as a secondary axis (see
     #: :mod:`scqat.estimators._twin_axis`). Overridable per call via kwargs.
@@ -70,95 +85,118 @@ class ReadoutFidelityEstimator(BaseEstimator):
             )
         return coord
 
+    @staticmethod
+    def _resolve_method(kwargs: Dict[str, Any]) -> ReadoutFidelityMethod:
+        name = kwargs.get('method', 'gmm')
+        try:
+            return METHODS[name]
+        except KeyError:
+            raise ValueError(
+                f"Unknown method {name!r}; valid: {sorted(METHODS)}"
+            ) from None
+
     def _check_data(self, dataset: xr.Dataset) -> None:
+        """What EVERY method needs. The per-shot requirement is method-owned and
+        checked in :meth:`extract_parameters`, which is where the method is
+        known (``analyze`` does not forward kwargs here)."""
         for var in ("I", "Q"):
             if var not in dataset:
                 raise ValueError(f"Readout fidelity requires a '{var}' variable.")
-        for coord in ("shot_idx", "prepared_state"):
-            if coord not in dataset.coords:
-                raise ValueError(f"Readout fidelity requires a '{coord}' coordinate.")
+        if "prepared_state" not in dataset.coords:
+            raise ValueError("Readout fidelity requires a 'prepared_state' coordinate.")
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
         """
-        Run state discrimination per sweep point, collect the summary curves, and
-        select the fidelity-optimal sweep value.
+        Summarise every sweep point with the selected method and pick the
+        metric-optimal sweep value.
 
         Kwargs — flat and fully owned; unknown names raise:
+            method (str): ``"gmm"`` (default) or ``"average"``; see
+                :mod:`scqat.estimators.readout_fidelity.methods`.
             sweep_coord (str): Override the swept coordinate name.
             user_std / user_mean / outlier_sigma: Knobs of
-                :func:`scqat.tools.discriminate.discriminate_states`.
+                :func:`scqat.tools.discriminate.discriminate_states` — ``gmm``
+                only; the average method fits nothing and REFUSES them.
             outliers_threshold (float): Selection constraint consumed by
-                :class:`ReadoutPowerFidelityEstimator` (accepted, unused here).
+                :class:`ReadoutPowerFidelityEstimator` (accepted, unused here);
+                ``gmm`` only, since it is answerable only from p_outlier.
             twin_coord, twin_label: optional companion scale for the swept axis
                 (see :mod:`scqat.estimators._twin_axis`) — a coordinate over the
                 same points plus its axis label. Absent/non-finite/non-monotone is
                 simply not drawn.
 
-        Returns the sweep axis, per-sweep arrays, and the best point:
-            sweep_coord (name), sweep_values (S,),
-            std (S,), mean (S, center, iq), p_outlier (S, prepared_state),
+        Returns the sweep axis, the per-sweep arrays of the chosen method, and
+        the best point. COMMON to every method:
+            sweep_coord (name), sweep_values (S,), method, metric,
+            mean (S, center, iq), separation (S,), failed (S,), best_index,
+            best_sweep_value, best_metric, best_separation, success.
+        ``gmm`` adds: std (S,), p_outlier (S, prepared_state),
             norm_res (S, prepared_state), gaussian_norms (S, prepared_state, gauss),
             direct_counts (S, prepared_state, count), fidelity (S,), snr (S,),
-            failed (S,), best_index, best_sweep_value, best_fidelity, success —
-            plus twin_values / twin_label / best_twin_value when a drawable
-            companion scale was supplied.
+            best_fidelity.
+        Plus twin_values / twin_label / best_twin_value when a drawable companion
+        scale was supplied.
         """
         coord = self._resolve_coord(kwargs)
-        # Fail loudly BEFORE any per-slice fit — a typo'd knob must never be
-        # swallowed by the per-slice try/except. Unioned, never loosened.
-        valid = DISCRIMINATE_KNOBS | {'sweep_coord', 'outliers_threshold'} | TWIN_KNOBS
+        method = self._resolve_method(kwargs)
+        # Fail loudly BEFORE any per-slice work — a typo'd knob must never be
+        # swallowed by the per-slice try/except, and a knob belonging to the
+        # OTHER method is a typo too (it would silently do nothing here).
+        valid = {'method', 'sweep_coord'} | TWIN_KNOBS | method.knobs
         unknown = set(kwargs) - valid
         if unknown:
             raise ValueError(
                 f"Unknown keyword argument(s) {sorted(unknown)} for "
-                f"{type(self).__name__}; valid: {sorted(valid)}"
+                f"{type(self).__name__} with method={method.name!r}; "
+                f"valid: {sorted(valid)}"
             )
-        sd_knobs = {k: kwargs[k] for k in DISCRIMINATE_KNOBS if k in kwargs}
+        if method.requires_shots and 'shot_idx' not in dataset.coords:
+            raise ValueError(
+                f"method={method.name!r} needs per-shot data: no 'shot_idx' "
+                f"coordinate in the dataset. Averaged acquisition is analysed "
+                f"with method='average'."
+            )
+        slice_knobs = {k: kwargs[k] for k in method.knobs if k in kwargs}
 
         sweep_values = np.asarray(dataset.coords[coord].values)
 
-        std_list, mean_list, p_outlier_list, norm_res_list = [], [], [], []
-        gaussian_norms_list, direct_counts_list, failed_list = [], [], []
-
+        collected: Dict[str, List[Optional[np.ndarray]]] = {
+            key: [] for key in method.slice_keys
+        }
+        failed_list: List[bool] = []
         for val in sweep_values:
             subdata = dataset.sel({coord: val})
             try:
                 I, Q = state_iq_arrays(subdata)
-                res = discriminate_states(I, Q, **sd_knobs)
-                tp = res['trained_paras']
-                std_list.append(float(tp['std']))
-                mean_list.append(np.asarray(tp['mean'], dtype=float))
-                p_outlier_list.append(np.asarray(res['outlier_probability'], dtype=float))
-                norm_res_list.append(np.asarray(res['norm_res'], dtype=float))
-                gaussian_norms_list.append(np.asarray(res['gaussian_norms'], dtype=float))
-                direct_counts_list.append(np.asarray(res['direct_counts'], dtype=float))
+                summary = method.reduce(I, Q, **slice_knobs)
+                for key in method.slice_keys:
+                    collected[key].append(np.asarray(summary[key], dtype=float))
                 failed_list.append(False)
             except Exception:
-                std_list.append(np.nan)
-                mean_list.append(None)
-                p_outlier_list.append(None)
-                norm_res_list.append(None)
-                gaussian_norms_list.append(None)
-                direct_counts_list.append(None)
+                for key in method.slice_keys:
+                    collected[key].append(None)
                 failed_list.append(True)
 
-        # Determine common shapes from the first successful slice, then stack
+        # Common shapes come from the first successful slice, then stack
         # (filling failed slices with NaN of the right shape).
-        direct_counts = self._stack(direct_counts_list)
         results: Dict[str, Any] = {
             'sweep_coord': coord,
             'sweep_values': sweep_values,
-            'std': np.asarray(std_list, dtype=float),
-            'mean': self._stack(mean_list),
-            'p_outlier': self._stack(p_outlier_list),
-            'norm_res': self._stack(norm_res_list),
-            'gaussian_norms': self._stack(gaussian_norms_list),
-            'direct_counts': direct_counts,
-            'fidelity': self._fidelity_curve(direct_counts),
+            'method': method.name,
+            'metric': method.metric,
             'failed': np.asarray(failed_list, dtype=bool),
         }
-        results['snr'] = self._snr_curve(results['mean'], results['std'])
-        self._set_best(results, **kwargs)
+        for key in method.slice_keys:
+            results[key] = self._stack(collected[key])
+        results['separation'] = self._separation_curve(results.get('mean'))
+        method.derive(results)
+        self._set_best(results, method, **kwargs)
+        missing = [k for k in self.COMMON_KEYS if k not in results]
+        if missing:
+            raise ValueError(
+                f"method={method.name!r} did not produce the common keys "
+                f"{missing} — every method must (two-tier result contract)."
+            )
 
         # the optional companion scale. Indexed identically to sweep_values, so the
         # answer needs a lookup, not an interpolation. Keys are absent entirely when
@@ -187,54 +225,61 @@ class ReadoutFidelityEstimator(BaseEstimator):
         return np.stack(filled, axis=0)
 
     @staticmethod
-    def _fidelity_curve(direct_counts: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Per-sweep readout fidelity: mean of the confusion-matrix diagonal
-        ``direct_counts[s, k, k]`` over the available states. Failed slices (all
-        NaN) yield NaN."""
-        if direct_counts is None:
+    def _separation_curve(mean: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """Per-sweep centre separation ``|center₁ − center₀|`` (raw IQ units) —
+        COMMON to every method, since every method locates centres. ``None``
+        when centres are unavailable or there are fewer than two; failed slices
+        (NaN centres) yield NaN."""
+        if mean is None or mean.shape[1] < 2:
             return None
-        _, n_state, n_count = direct_counts.shape
-        n = min(n_state, n_count)
-        diag = direct_counts[:, np.arange(n), np.arange(n)]  # (S, n)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN rows -> NaN
-            return np.nanmean(diag, axis=1)
+        return np.linalg.norm(mean[:, 0, :] - mean[:, 1, :], axis=1)  # (S,)
 
     @staticmethod
-    def _snr_curve(mean: Optional[np.ndarray], std: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Per-sweep readout SNR: the |center₁ − center₀| separation in units of one
-        blob's GMM std. ``None`` when centers are unavailable or there are fewer than two;
-        failed slices (NaN std/mean) yield NaN."""
-        if mean is None or std is None or mean.shape[1] < 2:
-            return None
-        sep = np.linalg.norm(mean[:, 0, :] - mean[:, 1, :], axis=1)  # (S,)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            return sep / np.asarray(std, dtype=float)
+    def _metric_curve(results: Dict[str, Any]) -> Optional[np.ndarray]:
+        """The per-sweep curve the best point maximises, named by the method."""
+        return results.get(results['metric'])
 
     # --- best-point selection (overridable) ---------------------------
-    def _set_best(self, results: Dict[str, Any], **kwargs) -> None:
-        """Populate best_index / best_sweep_value / best_fidelity / success."""
+    def _set_best(
+        self, results: Dict[str, Any], strategy: ReadoutFidelityMethod, **kwargs
+    ) -> None:
+        """Populate best_index / best_sweep_value / best_metric / success, plus
+        the named ``best_fidelity`` / ``best_separation`` twins for whichever
+        curves this method produced.
+
+        ``strategy`` is the resolved method object; it cannot be called
+        ``method`` because ``kwargs`` still carries the caller's method NAME."""
         idx = self._select_best_index(results, **kwargs)
+        # the `best_<curve>` twins exist for every curve this method HAS (the
+        # key, not a finite value) — a dead sweep answers None, never nothing
+        curves = [key for key in ('fidelity', 'separation') if key in results]
         if idx is None:
             results.update(best_index=None, best_sweep_value=None,
-                           best_fidelity=None, success=False)
+                           best_metric=None, success=False)
+            for key in curves:
+                results[f'best_{key}'] = None
             return
-        best_fid = float(results['fidelity'][idx])
+        best = float(self._metric_curve(results)[idx])
         ok = self._selection_ok(results, idx, **kwargs)
         results.update(
             best_index=int(idx),
             best_sweep_value=float(results['sweep_values'][idx]),
-            best_fidelity=best_fid,
-            success=bool(ok and np.isfinite(best_fid) and best_fid >= self.fidelity_floor),
+            best_metric=best,
+            success=bool(ok and strategy.metric_ok(best, self.fidelity_floor)),
         )
+        # the answer in every curve this method has, so a downstream record can
+        # state the metric it optimised AND the separation it settled for
+        for key in curves:
+            curve = results[key]
+            results[f'best_{key}'] = float(curve[idx]) if curve is not None else None
 
     def _select_best_index(self, results: Dict[str, Any], **kwargs) -> Optional[int]:
-        """Index of the fidelity-maximising sweep point (NaN-safe), or ``None``
-        when no point yielded a finite fidelity."""
-        fidelity = results.get('fidelity')
-        if fidelity is None or not np.any(np.isfinite(fidelity)):
+        """Index of the metric-maximising sweep point (NaN-safe), or ``None``
+        when no point yielded a finite metric value."""
+        metric = self._metric_curve(results)
+        if metric is None or not np.any(np.isfinite(metric)):
             return None
-        return int(np.nanargmax(fidelity))
+        return int(np.nanargmax(metric))
 
     def _selection_ok(self, results: Dict[str, Any], idx: int, **kwargs) -> bool:
         """Whether the selected point satisfies any subclass constraint. Base
@@ -243,12 +288,14 @@ class ReadoutFidelityEstimator(BaseEstimator):
 
     # ------------------------------------------------------------------
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Persist the small answer — the sweep axis, the fidelity curve, and the
+        """Persist the small answer — the sweep axis, the scalar curves, and the
         chosen best point — and drop the bulky per-slice arrays (mean, p_outlier,
         norm_res, gaussian_norms, direct_counts), which live in the plot data."""
         keep = (
-            'sweep_coord', 'sweep_values', 'fidelity', 'snr',
-            'best_index', 'best_sweep_value', 'best_fidelity', 'success',
+            'sweep_coord', 'sweep_values', 'method', 'metric',
+            'fidelity', 'snr', 'separation',
+            'best_index', 'best_sweep_value', 'best_metric', 'best_fidelity',
+            'best_separation', 'success',
         )
         metadata = {k: results.get(k) for k in keep}
         # the answer in the companion scale rides along; the per-point twin array
@@ -268,16 +315,23 @@ class ReadoutFidelityEstimator(BaseEstimator):
         coord = results['sweep_coord']
         sweep = np.asarray(results['sweep_values'])
 
-        data_vars: Dict[str, Any] = {'std': (coord, np.asarray(results['std'], dtype=float))}
+        data_vars: Dict[str, Any] = {}
         coords: Dict[str, Any] = {coord: sweep}
 
-        fidelity = results.get('fidelity')
-        if fidelity is not None:
-            data_vars['fidelity'] = (coord, np.asarray(fidelity, dtype=float))
-
-        snr = results.get('snr')
-        if snr is not None:
-            data_vars['snr'] = (coord, np.asarray(snr, dtype=float))
+        # `separation` is COMMON, so it is always carried — NaN when every slice
+        # failed, never absent (the merged figure must still draw)
+        separation = results.get('separation')
+        data_vars['separation'] = (
+            coord,
+            np.full(sweep.shape, np.nan) if separation is None
+            else np.asarray(separation, dtype=float),
+        )
+        # the method-owned 1-D curves; absent ones are simply not there, and
+        # each figure gates on what it needs
+        for key in ('std', 'fidelity', 'snr'):
+            curve = results.get(key)
+            if curve is not None:
+                data_vars[key] = (coord, np.asarray(curve, dtype=float))
 
         mean = results.get('mean')
         if mean is not None:
@@ -307,10 +361,16 @@ class ReadoutFidelityEstimator(BaseEstimator):
             coords['count'] = np.arange(dcounts.shape[2])
             data_vars['direct_counts'] = ([coord, 'prepared_state', 'count'], dcounts)
 
-        attrs: Dict[str, Any] = {'sweep_coord': coord}
+        attrs: Dict[str, Any] = {
+            'sweep_coord': coord,
+            'method': str(results['method']),
+            'metric': str(results['metric']),
+        }
         if results.get('best_sweep_value') is not None:
             attrs['best_sweep_value'] = float(results['best_sweep_value'])
-            attrs['best_fidelity'] = float(results['best_fidelity'])
+            attrs['best_metric'] = float(results['best_metric'])
+            if results.get('best_fidelity') is not None:
+                attrs['best_fidelity'] = float(results['best_fidelity'])
         # the companion scale + its label, so every sweep figure can draw the
         # secondary axis from plot_data ALONE (the self-enforcing rule)
         if results.get('twin_values') is not None:
@@ -332,17 +392,17 @@ class ReadoutFidelityEstimator(BaseEstimator):
         if plot_data is None:
             plot_data = self.build_plot_data(dataset, results, **kwargs)
 
+        # the centre separation and the blob width are the SAME IQ quantity —
+        # one axes, so "is the separation outgrowing the width?" is read, not
+        # inferred. The average method has no width and draws separation alone.
         figs: Dict[str, plt.Figure] = {
-            'std': plot_std_vs_sweep(plot_data),
+            'separation': plot_separation_vs_sweep(plot_data),
         }
         if 'snr' in plot_data:
             figs['snr'] = plot_snr_vs_sweep(plot_data)
         if 'p_outlier' in plot_data:
             figs['outlier'] = plot_outlier_vs_sweep(plot_data)
         if 'mean' in plot_data:
-            figs['mean_distance'] = plot_mean_distance_vs_sweep(plot_data)
-            figs['mean_I'] = plot_mean_i_vs_sweep(plot_data)
-            figs['mean_Q'] = plot_mean_q_vs_sweep(plot_data)
             figs['means_on_IQ'] = plot_means_on_iq_plane(plot_data)
         if 'norm_res' in plot_data:
             figs['norm_res'] = plot_norm_res_vs_sweep(plot_data)
@@ -355,11 +415,17 @@ class ReadoutPowerFidelityEstimator(ReadoutFidelityEstimator):
     """Readout fidelity swept over readout amplitude (``amp_prefactor``).
 
     ``best_sweep_value`` is the optimal **amp_prefactor** — a multiplier on the
-    current readout-pulse amplitude. The optimum is the fidelity-maximising point
+    current readout-pulse amplitude. The optimum is the metric-maximising point
     among amplitudes that keep the outlier population in check: pass
     ``outliers_threshold`` (e.g. 0.98) and only points whose in-distribution
     fraction ``1 - max_k p_outlier`` meets it are eligible; if none qualify the
-    global fidelity maximum is returned with ``success=False``.
+    global maximum is returned with ``success=False``.
+
+    That constraint is GMM-only — ``p_outlier`` is a product of the mixture fit.
+    With ``method="average"`` the metric is the bare centre separation, which
+    keeps growing with amplitude past the onset of measurement-induced
+    transitions: use it as the fast coarse scan, not as the final amplitude
+    calibration.
 
     Ported from qcat ``readout_power.ROFidelityPower`` (its linear mean-drift refit
     ``fit_means_vs_amp_prefactor`` is intentionally not ported — see MIGRATION.md).
@@ -370,9 +436,9 @@ class ReadoutPowerFidelityEstimator(ReadoutFidelityEstimator):
     def _candidate_mask(self, results: Dict[str, Any], **kwargs) -> np.ndarray:
         """Boolean mask of sweep points allowed by ``outliers_threshold``: a point
         qualifies when its in-distribution fraction ``1 - max_k p_outlier`` is at
-        least the threshold. With no threshold, all finite-fidelity points pass."""
-        fidelity = results.get('fidelity')
-        finite = np.isfinite(fidelity)
+        least the threshold. With no threshold — or a method that has no
+        p_outlier — all finite-metric points pass."""
+        finite = np.isfinite(self._metric_curve(results))
         threshold = kwargs.get('outliers_threshold')
         p_outlier = results.get('p_outlier')
         if threshold is None or p_outlier is None:
@@ -383,13 +449,13 @@ class ReadoutPowerFidelityEstimator(ReadoutFidelityEstimator):
         return finite & (in_dist >= threshold)
 
     def _select_best_index(self, results: Dict[str, Any], **kwargs) -> Optional[int]:
-        fidelity = results.get('fidelity')
-        if fidelity is None or not np.any(np.isfinite(fidelity)):
+        metric = self._metric_curve(results)
+        if metric is None or not np.any(np.isfinite(metric)):
             return None
         mask = self._candidate_mask(results, **kwargs)
         if np.any(mask):
-            return int(np.argmax(np.where(mask, fidelity, -np.inf)))
-        return int(np.nanargmax(fidelity))  # constraint unmet -> global best
+            return int(np.argmax(np.where(mask, metric, -np.inf)))
+        return int(np.nanargmax(metric))  # constraint unmet -> global best
 
     def _selection_ok(self, results: Dict[str, Any], idx: int, **kwargs) -> bool:
         return bool(self._candidate_mask(results, **kwargs)[idx])
@@ -400,7 +466,9 @@ class ReadoutFreqFidelityEstimator(ReadoutFidelityEstimator):
 
     ``best_sweep_value`` is the optimal **detuning** (Hz), expressed relative to the
     current readout IF the sweep was centred on; the consuming node maps it onto an
-    absolute readout frequency. The optimum is simply the fidelity-maximising point.
+    absolute readout frequency. The optimum is simply the metric-maximising point
+    (fidelity under ``method="gmm"``, centre separation under ``"average"`` —
+    both peak at the best detuning).
 
     Ported from qcat ``readout_freq.ROFidelityFreq``.
     """

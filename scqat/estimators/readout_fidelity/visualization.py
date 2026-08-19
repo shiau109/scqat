@@ -7,19 +7,25 @@ so the figures reproduce from the saved ``*_plotdata.nc`` alone. The swept axis
 name is taken from ``plot_data.attrs['sweep_coord']`` (e.g. ``amp_prefactor`` or
 ``frequency``).
 
+Which variables are present depends on the analysis METHOD (``attrs['method']``):
+``separation`` and ``mean`` come from every method, everything else is the GMM
+method's. Each plotter therefore gates on what it needs, and the estimator only
+asks for the figures whose variables exist.
+
 plot_data layout
 ----------------
 coords : <sweep_coord>, ``center``, ``iq``, ``prepared_state``, ``gauss``, ``count``
-vars   : ``std`` (sweep), ``fidelity`` (sweep), ``snr`` (sweep), ``mean`` (sweep, center, iq),
+vars   : ``separation`` (sweep), ``mean`` (sweep, center, iq) — always;
+         ``std`` (sweep), ``fidelity`` (sweep), ``snr`` (sweep),
          ``p_outlier``/``norm_res`` (sweep, prepared_state),
          ``gaussian_norms`` (sweep, prepared_state, gauss),
-         ``direct_counts`` (sweep, prepared_state, count)
-attrs  : ``sweep_coord``, and (when a best point was found) ``best_sweep_value`` /
-         ``best_fidelity``; with a companion scale, also ``twin`` (sweep) as a
-         variable plus ``twin_label`` / ``best_twin_value``
+         ``direct_counts`` (sweep, prepared_state, count) — GMM only
+attrs  : ``sweep_coord``, ``method``, ``metric``, and (when a best point was
+         found) ``best_sweep_value`` / ``best_metric`` / ``best_fidelity``;
+         with a companion scale, also ``twin`` (sweep) as a variable plus
+         ``twin_label`` / ``best_twin_value``
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 from scqat.estimators._twin_axis import add_twin_axis
@@ -39,15 +45,27 @@ def _add_twin(ax, plot_data, sweep):
                   str(plot_data.attrs.get('twin_label', '')))
 
 
-def plot_std_vs_sweep(plot_data):
-    """Trained GMM standard deviation as a function of the sweep."""
+def plot_separation_vs_sweep(plot_data):
+    """Centre separation and blob width vs the sweep, on ONE axes.
+
+    Both are distances in the same raw IQ units, so the question the pair
+    answers — is the separation outgrowing the width? — is read directly instead
+    of eyeballed across two figures. The width is GMM-owned: the ``average``
+    method fits nothing, so only the separation curve is drawn. The y axis
+    starts at 0 because both are magnitudes and their RATIO is the point."""
     coord, sweep = _sweep(plot_data)
     fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-    ax.plot(sweep, plot_data['std'].values, 'o-')
+    ax.plot(sweep, plot_data['separation'].values, 'o-', label='|center₀ − center₁|')
+    if 'std' in plot_data:
+        ax.plot(sweep, plot_data['std'].values, 's--', label='GMM std σ')
     ax.set_xlabel(coord, fontsize=14)
-    ax.set_ylabel('GMM std', fontsize=14)
-    ax.set_title('State-discrimination std vs sweep')
+    ax.set_ylabel('IQ distance', fontsize=14)
+    method = str(plot_data.attrs.get('method', ''))
+    ax.set_title('Center separation vs sweep' if method == 'average'
+                 else 'Center separation and GMM std vs sweep')
+    ax.legend()
     ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
     _add_twin(ax, plot_data, sweep)
     fig.tight_layout()
     plt.close(fig)
@@ -63,6 +81,7 @@ def plot_snr_vs_sweep(plot_data):
     ax.set_ylabel('SNR (separation / σ)', fontsize=14)
     ax.set_title('Readout SNR vs sweep')
     ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
     _add_twin(ax, plot_data, sweep)
     fig.tight_layout()
     plt.close(fig)
@@ -81,23 +100,7 @@ def plot_outlier_vs_sweep(plot_data):
     ax.set_title('Outlier probability vs sweep')
     ax.legend()
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_mean_distance_vs_sweep(plot_data):
-    """Euclidean distance between the two trained GMM centers vs the sweep."""
-    coord, sweep = _sweep(plot_data)
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-    mean = plot_data['mean'].values  # (sweep, center, iq)
-    if mean.shape[1] >= 2:
-        dist = np.sqrt(np.sum((mean[:, 0, :] - mean[:, 1, :]) ** 2, axis=1))
-        ax.plot(sweep, dist, 'o-')
-    ax.set_xlabel(coord, fontsize=14)
-    ax.set_ylabel('|center₀ − center₁|', fontsize=14)
-    ax.set_title('GMM center separation vs sweep')
-    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -161,34 +164,6 @@ def plot_fidelity_vs_sweep(plot_data):
     fig.tight_layout()
     plt.close(fig)
     return fig
-
-
-def _plot_mean_component_vs_sweep(plot_data, comp, label):
-    """Shared helper: plot one I/Q component (``comp`` = 0 for I, 1 for Q) of every
-    trained GMM center as a function of the sweep, one line per center."""
-    coord, sweep = _sweep(plot_data)
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
-    mean = plot_data['mean'].values  # (sweep, center, iq)
-    for c in range(mean.shape[1]):
-        ax.plot(sweep, mean[:, c, comp], 'o-', label=f'center {c}')
-    ax.set_xlabel(coord, fontsize=14)
-    ax.set_ylabel(f'mean {label}', fontsize=14)
-    ax.set_title(f'GMM center {label} vs sweep')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_mean_i_vs_sweep(plot_data):
-    """Mean I of each trained GMM center as a function of the sweep."""
-    return _plot_mean_component_vs_sweep(plot_data, 0, 'I')
-
-
-def plot_mean_q_vs_sweep(plot_data):
-    """Mean Q of each trained GMM center as a function of the sweep."""
-    return _plot_mean_component_vs_sweep(plot_data, 1, 'Q')
 
 
 def plot_means_on_iq_plane(plot_data):
