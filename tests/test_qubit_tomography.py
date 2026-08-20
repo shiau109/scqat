@@ -103,3 +103,67 @@ def test_state_discrimination_wrapper_contract():
     assert set(est.generate_figures(sd_ds, res, plot_data=pd)) == {
         "raw", "2DHist", "outliers", "fit_residue",
     }
+
+
+def test_interleaved_noise_tomography():
+    """Interleaved noise dataset with noise_condition=['off', 'on']."""
+    n_train = 100
+    n_shot = 50
+    sep = 8.0
+    sigma = 0.5
+    rng = np.random.default_rng(42)
+
+    centers = np.array([[0.0, 0.0], [sep, 0.0]])
+    I_train = np.empty((2, n_train))
+    Q_train = np.empty((2, n_train))
+    for s in range(2):
+        I_train[s] = centers[s][0] + sigma * rng.standard_normal(n_train)
+        Q_train[s] = centers[s][1] + sigma * rng.standard_normal(n_train)
+
+    # I_tomo: shape (noise_condition=2, basis=3, sym=2, gate_count=3, shot_idx=50)
+    # off: population 0 (closer to center 0); on: population 1 (closer to center 1)
+    I_tomo = np.zeros((2, 3, 2, 3, n_shot))
+    Q_tomo = np.zeros((2, 3, 2, 3, n_shot))
+
+    # Noise OFF points near center 0
+    I_tomo[0] = centers[0][0] + sigma * rng.standard_normal((3, 2, 3, n_shot))
+    # Noise ON points near center 1
+    I_tomo[1] = centers[1][0] + sigma * rng.standard_normal((3, 2, 3, n_shot))
+
+    ds = xr.Dataset(
+        {
+            "I_tomo": (("noise_condition", "basis", "sym", "gate_count", "shot_idx"), I_tomo),
+            "Q_tomo": (("noise_condition", "basis", "sym", "gate_count", "shot_idx"), Q_tomo),
+            "I_train": (("prepared_state", "train_shot_idx"), I_train),
+            "Q_train": (("prepared_state", "train_shot_idx"), Q_train),
+        },
+        coords={
+            "noise_condition": ["off", "on"],
+            "basis": ["x", "y", "z"],
+            "sym": ["reg", "inv"],
+            "gate_count": [0, 1, 2],
+            "shot_idx": np.arange(n_shot),
+            "prepared_state": [0, 1],
+            "train_shot_idx": np.arange(n_train),
+        },
+    )
+
+    est = QubitTomographyEstimator()
+    res = est.extract_parameters(ds)
+
+    assert res["success"] is True
+    assert res["interleaved_noise"] is True
+    assert len(res["differential_drift"]) == 3
+    # Off was at 0, on was at 1, so delta population should be ~1.0
+    assert np.all(np.array(res["differential_drift"]) > 0.5)
+
+    plot_data = est.build_plot_data(ds, res)
+    assert plot_data is not None
+    assert "differential_drift" in plot_data
+    assert "baseline_population_x" in plot_data
+
+    figs = est.generate_figures(ds, res, plot_data=plot_data)
+    assert "qubit_tomography_2d" in figs
+    assert "qubit_tomography_3d" in figs
+    assert "qubit_tomography_dist" in figs
+    assert "qubit_tomography_diff" in figs
