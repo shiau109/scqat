@@ -6,6 +6,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 
 from scqat.core.base_estimator import BaseEstimator
+from scqat.tools.dip_fit import fit_dip, validate_dip_kwargs
 from scqat.estimators.state_discrimination import state_iq_arrays
 from scqat.estimators._twin_axis import TWIN_KNOBS, twin_values
 from scqat.estimators.readout_fidelity.methods import METHODS, ReadoutFidelityMethod
@@ -16,6 +17,7 @@ from scqat.estimators.readout_fidelity.visualization import (
     plot_norm_res_vs_sweep,
     plot_fidelity_vs_sweep,
     plot_means_on_iq_plane,
+    plot_response_vs_frequency,
 )
 
 
@@ -470,7 +472,164 @@ class ReadoutFreqFidelityEstimator(ReadoutFidelityEstimator):
     (fidelity under ``method="gmm"``, centre separation under ``"average"`` —
     both peak at the best detuning).
 
+    Optionally fits the dressed resonator frequencies for states |0> and |1>
+    (``detuning_dress0``, ``detuning_dress1``) and dispersive shift ``chi``
+    when ``dip_fit_method`` is set to ``"lorentzian"`` or ``"circle"``.
+    Defaults to ``"none"``, which skips dip fitting and produces no response figure.
+
+    A dip that did not fit is ``None``, never a cruder substitute, and
+    ``dip_fit_success`` says whether BOTH dips converged — these values become
+    resonator facts downstream, so an unconverged centre must not be readable as
+    a measurement.
+
     Ported from qcat ``readout_freq.ROFidelityFreq``.
     """
     estimator_name = "readout_freq_fidelity"
     sweep_coord = "frequency"
+
+    @staticmethod
+    def _fit_one_dip(sweep, iq, full_freq, method: str, knobs: Dict[str, Any]
+                     ) -> Optional[Dict[str, Any]]:
+        """One prepared state's dip, or ``None`` when the fit did not deliver one.
+
+        ``fit_dip`` publishes a ``success`` flag precisely so that a caller
+        cannot pass an unconverged centre off as a measurement, and these dips
+        leave here as resonator FACTS (``f_dress0_hz`` / ``f_dress1_hz`` /
+        ``chi_hz`` downstream, written into the device by the consuming node).
+        So a raise and a ``success=False`` are the same answer — no dip — and
+        NEITHER is replaced by a cruder estimate: a missing quantity is missing,
+        and a silent stand-in would be indistinguishable from a real fit.
+
+        The knobs are validated by the caller BEFORE any fitting, so an unknown
+        method or knob still raises out of here rather than reading as a dip
+        that failed.
+        """
+        try:
+            res = fit_dip(sweep, iq, full_freq=full_freq, method=method, **knobs)
+        except Exception:
+            return None
+        return res if bool(res.get("success")) else None
+
+    def _extract_dressed_dips(
+        self, results: Dict[str, Any], dataset: xr.Dataset, method: str = "lorentzian", **knobs
+    ) -> None:
+        # Absent until a fit earns them, so a caller reading these keys after a
+        # failed fit gets None rather than a stale or invented number.
+        results["detuning_dress0"] = None
+        results["detuning_dress1"] = None
+        results["chi"] = None
+        results["dip_fit_success"] = False
+
+        mean = results.get("mean")
+        sweep = results.get("sweep_values")
+        if mean is None or sweep is None or mean.shape[1] < 2:
+            return
+
+        full_freq = None
+        if "full_freq" in dataset.coords:
+            full_freq = np.asarray(dataset.coords["full_freq"].values, dtype=float)
+            if full_freq.ndim > 1:
+                full_freq = full_freq.ravel()
+        elif "twin_values" in results and results["twin_values"] is not None:
+            full_freq = np.asarray(results["twin_values"], dtype=float)
+
+        # Per-state rather than all-or-nothing, the same split _punchout uses: a
+        # trace whose |1> branch is too shallow to fit still measured |0>
+        # honestly, and withholding that would discard good physics.
+        for state, tag in ((0, "dress0"), (1, "dress1")):
+            iq = mean[:, state, 0] + 1j * mean[:, state, 1]
+            res = self._fit_one_dip(sweep, iq, full_freq, method, knobs)
+            if res is None:
+                continue
+            results[f"detuning_{tag}"] = float(res["detuning"])
+            results[f"fwhm_{tag}"] = float(res.get("fwhm", np.nan))
+            if "full_freq" in res:  # fit_dip's own common post-step
+                results[f"full_freq_{tag}"] = float(res["full_freq"])
+
+        dip0 = results["detuning_dress0"]
+        dip1 = results["detuning_dress1"]
+        # chi is a DIFFERENCE, so half a pair is not a dispersive shift.
+        results["dip_fit_success"] = dip0 is not None and dip1 is not None
+        if results["dip_fit_success"]:
+            results["chi"] = float((dip0 - dip1) / 2.0)
+
+    def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
+        dip_fit_method = kwargs.pop("dip_fit_method", "none")
+        if dip_fit_method is None:
+            dip_fit_method = "none"
+        if dip_fit_method not in ("none", "lorentzian", "circle"):
+            raise ValueError(
+                f"Unknown dip_fit_method {dip_fit_method!r}; valid: ['none', 'lorentzian', 'circle']"
+            )
+        dip_knobs = {}
+        for k in ("baseline_order", "delay"):
+            if k in kwargs:
+                dip_knobs[k] = kwargs.pop(k)
+        # BEFORE the slice loop, as dip_fit instructs: a knob that does not
+        # belong to this method is a caller error and must raise here, not
+        # surface later as a dip that mysteriously failed to fit.
+        if dip_fit_method != "none":
+            validate_dip_kwargs(dip_fit_method, dip_knobs)
+
+        results = super().extract_parameters(dataset, **kwargs)
+        results["dip_fit_method"] = dip_fit_method
+        if dip_fit_method != "none":
+            self._extract_dressed_dips(results, dataset, method=dip_fit_method, **dip_knobs)
+        return results
+
+    def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = super().extract_metadata(results)
+        dip_method = results.get("dip_fit_method", "none")
+        if dip_method in ("lorentzian", "circle"):
+            metadata["dip_fit_method"] = dip_method
+            # The flag rides WITH the numbers: a reader that sees a dip must be
+            # able to see whether the fit that produced it converged.
+            metadata["dip_fit_success"] = bool(results.get("dip_fit_success"))
+            for key in (
+                "detuning_dress0",
+                "detuning_dress1",
+                "chi",
+                "full_freq_dress0",
+                "full_freq_dress1",
+                "fwhm_dress0",
+                "fwhm_dress1",
+            ):
+                if key in results:
+                    val = results[key]
+                    metadata[key] = float(val) if val is not None and np.isfinite(val) else None
+        return metadata
+
+    def build_plot_data(
+        self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
+    ) -> xr.Dataset:
+        plot_data = super().build_plot_data(dataset, results, **kwargs)
+        dip_method = results.get("dip_fit_method", "none")
+        plot_data.attrs["dip_fit_method"] = str(dip_method)
+        if dip_method in ("lorentzian", "circle"):
+            for key in (
+                "detuning_dress0",
+                "detuning_dress1",
+                "chi",
+                "full_freq_dress0",
+                "full_freq_dress1",
+            ):
+                val = results.get(key)
+                if val is not None and np.isfinite(val):
+                    plot_data.attrs[key] = float(val)
+        return plot_data
+
+    def generate_figures(
+        self,
+        dataset: xr.Dataset,
+        results: Dict[str, Any],
+        plot_data: Optional[xr.Dataset] = None,
+        **kwargs,
+    ) -> Dict[str, plt.Figure]:
+        figs = super().generate_figures(dataset, results, plot_data=plot_data, **kwargs)
+        if plot_data is None:
+            plot_data = self.build_plot_data(dataset, results, **kwargs)
+        dip_method = plot_data.attrs.get("dip_fit_method") or results.get("dip_fit_method", "none")
+        if dip_method in ("lorentzian", "circle") and "mean" in plot_data:
+            figs["response"] = plot_response_vs_frequency(plot_data)
+        return figs
+
