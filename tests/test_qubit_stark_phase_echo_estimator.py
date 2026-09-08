@@ -40,6 +40,49 @@ def _make_signal(k=5.0, n=21, noise=2e-3, seed=0, amp_min=0.0, amp_max=1.0, phi0
     )
 
 
+#: dressed-state Stark phase params: quadratic while W << D, near-linear beyond.
+#: Tuned so the full turn lands mid-window (~a = 0.49) with the sweep running well
+#: into saturation — the regime where the global quadratic and the measured curve
+#: give genuinely different answers, as they do on 5Q4C.
+SAT_GAIN, SAT_RABI, SAT_DETUNING = 3.0, 6.0, 1.0
+
+
+def _saturating_phase(amp):
+    """``phi(a)`` in the SATURATING regime — the real one at 50 MHz detuning.
+
+    ``gain * (sqrt(D**2 + W**2) - D)`` with ``W = rabi * a``: the dressed-state
+    shift, whose small-drive limit is the ``k*a**2`` the estimator fits. A global
+    quadratic over a window that leaves that limit is materially wrong, which is
+    exactly what ``amp_2pi`` must not be taken from."""
+    w = SAT_RABI * np.asarray(amp, dtype=float)
+    return SAT_GAIN * (np.hypot(SAT_DETUNING, w) - SAT_DETUNING)
+
+
+def _make_saturating_signal(n=41, noise=2e-3, seed=0, amp_max=1.0, sign=1.0):
+    """Discriminated dataset whose phase follows :func:`_saturating_phase`."""
+    amp = np.linspace(0.0, amp_max, n)
+    phi = sign * _saturating_phase(amp)
+    rng = np.random.default_rng(seed)
+    P = np.stack([0.5 * (1.0 - np.sin(phi)), 0.5 * (1.0 - np.cos(phi))], axis=1)
+    P = P + noise * rng.standard_normal((n, 2))
+    return xr.Dataset(
+        {"signal": (("stark_amp", "meas_basis"), P)},
+        coords={"stark_amp": amp, "meas_basis": [0, 1]},
+    )
+
+
+def _amp_at_full_turn():
+    """The analytic amplitude where :func:`_saturating_phase` reaches 2*pi."""
+    ratio = 2.0 * np.pi / SAT_GAIN + SAT_DETUNING
+    return float(np.sqrt(ratio ** 2 - SAT_DETUNING ** 2) / SAT_RABI)
+
+
+def _with_absolute_amp(ds, baked=0.25):
+    """Attach the absolute-amplitude companion coordinate SCQO's probe supplies."""
+    return ds.assign_coords(
+        digital_amp=("stark_amp", baked * ds["stark_amp"].values))
+
+
 def _make_iq(k=5.0, n=21, theta=0.6, sep=3.0, noise=2e-3, seed=0, amp_min=0.0, amp_max=1.0, phi0=0.0):
     """Raw I/Q dataset: both bases share one ground center + g->e vector."""
     amp = np.linspace(amp_min, amp_max, n)
@@ -112,6 +155,76 @@ class TestQubitStarkPhaseEchoEstimator:
         res = QubitStarkPhaseEchoEstimator().extract_parameters(ds)
         assert res["reduction_method"] == "positions"
         assert res["stark_coeff"] == pytest.approx(5.0, rel=0.07)
+
+    def test_amp_2pi_comes_from_the_measured_curve_not_the_fit(self):
+        # THE point of amp_2pi: on a saturating curve the k*a^2 fit lands between
+        # the small-drive and dressed-state regimes, so sqrt(2pi/k) is materially
+        # wrong (~18% in amplitude on real 5Q4C data). The reported value must
+        # track the measured crossing, not the fit.
+        res = QubitStarkPhaseEchoEstimator().extract_parameters(_make_saturating_signal())
+        expected = _amp_at_full_turn()
+        assert res["amp_2pi"] == pytest.approx(expected, abs=0.01)
+        from_fit = np.sqrt(2 * np.pi / res["stark_coeff"])
+        assert abs(from_fit - expected) > 0.05  # the two really do disagree here
+
+    def test_amp_2pi_is_a_magnitude_for_a_negative_stark_shift(self):
+        # 5Q4C winds NEGATIVE (k = -6.73). The full turn is |phi| = 2pi, so the
+        # answer is the same amplitude with either sign of the coefficient.
+        res = QubitStarkPhaseEchoEstimator().extract_parameters(
+            _make_saturating_signal(sign=-1.0))
+        assert res["stark_coeff"] < 0
+        assert res["amp_2pi"] == pytest.approx(_amp_at_full_turn(), abs=0.01)
+
+    def test_amp_2pi_nan_when_the_sweep_never_reaches_a_full_turn(self):
+        # Extrapolating a SATURATING curve would invent the answer low; refuse.
+        res = QubitStarkPhaseEchoEstimator().extract_parameters(_make_signal(k=3.0))
+        assert max(abs(res["phase"])) < 2 * np.pi
+        assert np.isnan(res["amp_2pi"])
+
+    def test_absolute_amp_companion_reported_in_both_frames(self):
+        est = QubitStarkPhaseEchoEstimator()
+        ds = _with_absolute_amp(_make_saturating_signal(), baked=0.25)
+        res = est.extract_parameters(ds, twin_coord="digital_amp",
+                                     twin_label="absolute amplitude (normalized)")
+        assert res["twin_label"] == "absolute amplitude (normalized)"
+        assert res["twin_values"] == pytest.approx(0.25 * ds["stark_amp"].values)
+        # the same crossing, expressed in the absolute frame
+        assert res["amp_2pi_twin"] == pytest.approx(0.25 * res["amp_2pi"], rel=1e-6)
+        # and it rides plot_data, so a saved plotdata.nc redraws the second axis
+        pd = est.build_plot_data(ds, res)
+        assert pd["twin"].dims == ("stark_amp",)
+        assert pd.attrs["amp_2pi_twin"] == pytest.approx(res["amp_2pi_twin"])
+        assert pd.attrs["amp_2pi"] == pytest.approx(res["amp_2pi"])
+
+    def test_absent_or_undrawable_companion_is_simply_not_carried(self):
+        est = QubitStarkPhaseEchoEstimator()
+        ds = _make_saturating_signal()
+        res = est.extract_parameters(ds, twin_coord="digital_amp")  # not present
+        assert "twin_values" not in res and "amp_2pi_twin" not in res
+        assert "twin" not in est.build_plot_data(ds, res)
+
+    def test_figures_render_without_a_companion_or_a_full_turn(self):
+        # Decorations must never cost the raw figure: no twin axis, no crossing.
+        est = QubitStarkPhaseEchoEstimator()
+        ds = _make_signal(k=3.0)
+        res = est.extract_parameters(ds)
+        figs = est.generate_figures(ds, res, plot_data=est.build_plot_data(ds, res))
+        assert set(figs) == {"qubit_stark_phase_echo", "quadratures", "phasor"}
+        plt.close("all")
+
+    def test_figures_render_with_the_absolute_axis(self):
+        est = QubitStarkPhaseEchoEstimator()
+        ds = _with_absolute_amp(_make_saturating_signal())
+        res = est.extract_parameters(ds, twin_coord="digital_amp",
+                                     twin_label="absolute amplitude (normalized)")
+        figs = est.generate_figures(ds, res, plot_data=est.build_plot_data(ds, res))
+        for name in ("qubit_stark_phase_echo", "quadratures"):
+            ax = figs[name].axes[0]
+            assert ax.get_xlabel().startswith("stark amplitude")  # primary unchanged
+            # the secondary top axis (a CHILD of the primary) carries the absolute frame
+            labels = [child.get_xlabel() for child in ax.child_axes]
+            assert "absolute amplitude (normalized)" in labels
+        plt.close("all")
 
     def test_check_data_requires_coords_and_two_bases(self):
         est = QubitStarkPhaseEchoEstimator()

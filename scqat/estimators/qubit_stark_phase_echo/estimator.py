@@ -38,8 +38,33 @@ sweep) removes the constant offset; the readout contrast cancels in the angle an
 a PCA sign flip only flips the winding direction. A linear fit of ``phi`` vs
 ``stark_amp**2`` reports the Stark coefficient ``k`` (slope).
 
-Record-only: SCQO writes nothing to the device; ``stark_coeff`` / the per-amp
-``phase`` land in the run record.
+The full-turn amplitude
+-----------------------
+``amp_2pi`` — the amplitude at which the induced phase first reaches a FULL TURN
+— is read off the MEASURED ``phi(a)`` curve by interpolation, never as
+``sqrt(2*pi/k)`` from the fitted coefficient. The ``k*a**2`` model is the
+small-drive limit ``W**2/(4*D)``; once the Rabi rate ``W`` approaches the Stark
+detuning ``D`` the shift crosses over to the dressed-state form
+``(sqrt(D**2 + W**2) - D)/2`` and the local coefficient FALLS with amplitude. A
+global quadratic then lands between the two regimes: on 5Q4C at
+``stark_detuning_hz = 50e6`` it put the full turn at ``a = 0.966`` where the
+measured curve (and an independent Trotter compensation scan) put it at
+``a = 0.820`` — 18% off in amplitude. The fit is still reported and drawn; it is
+just not what the full-turn answer is taken from.
+
+The absolute amplitude
+----------------------
+``stark_amp`` is a dimensionless FACTOR of the stark operation's baked amplitude,
+so one array serves every target of a multiplexed run. A caller that also knows
+the ABSOLUTE amplitude behind each factor may pass it as a second coordinate over
+the same points (``twin_coord``, see :mod:`scqat.estimators._twin_axis`); it is
+then drawn as a secondary axis and the full-turn answer is reported in BOTH
+frames (``amp_2pi`` / ``amp_2pi_twin``). Purely additive — the fit, the primary
+axis and the success flag stay in the factor frame, and the estimator never
+learns which of the two scales is the ratio.
+
+Record-only: SCQO writes nothing to the device; ``stark_coeff`` / ``amp_2pi`` /
+the per-amp ``phase`` land in the run record.
 """
 
 from __future__ import annotations
@@ -52,11 +77,51 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, stored_positions, with_iqdata
 from scqat.core.figures import render_figures
+from scqat.estimators._twin_axis import twin_at, twin_values
 from scqat.estimators.qubit_stark_phase_echo.visualization import (
     plot_phase_vs_amp,
     plot_phasor,
     plot_quadratures,
 )
+
+
+#: the phase the reported crossing amplitude buys — a full turn. Fixed, not a
+#: knob: it is the one target with a device meaning (a 2*pi Stark phase is a
+#: no-op on the state, so it is the period of any phase-compensation amplitude).
+TARGET_PHASE_RAD = 2.0 * np.pi
+
+
+def _amp_at_phase(amp: np.ndarray, phase: np.ndarray,
+                  target: float = TARGET_PHASE_RAD) -> float:
+    """|amplitude| where ``|phase|`` first reaches ``target``, from the MEASURED curve.
+
+    Linear interpolation between the two bracketing measured points, walking
+    OUTWARD from the phi=0 anchor (so a symmetric -max..max sweep answers with a
+    magnitude, its two branches being one curve in ``|a|``). Never
+    ``sqrt(target/k)`` — see the module docstring's *full-turn amplitude* section
+    for the saturation that makes the fitted coefficient the wrong source.
+
+    NaN when the sweep never reaches ``target``: the answer is outside the
+    measured window, and extrapolating a SATURATING curve would invent it low.
+    """
+    magnitude = np.abs(np.asarray(amp, dtype=float))
+    reached = np.abs(np.asarray(phase, dtype=float))
+    order = np.argsort(magnitude, kind="stable")  # outward from the anchor
+    magnitude, reached = magnitude[order], reached[order]
+    keep = np.isfinite(magnitude) & np.isfinite(reached)
+    magnitude, reached = magnitude[keep], reached[keep]
+
+    crossings = np.flatnonzero(reached >= target)
+    if magnitude.size < 2 or crossings.size == 0:
+        return float("nan")
+    j = int(crossings[0])
+    if j == 0:  # already past a full turn at the anchor — nothing to bracket
+        return float("nan")
+    below, above = reached[j - 1], reached[j]
+    if above == below:
+        return float(magnitude[j])
+    frac = (target - below) / (above - below)
+    return float(magnitude[j - 1] + frac * (magnitude[j] - magnitude[j - 1]))
 
 
 def _fit_circle(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
@@ -83,6 +148,12 @@ class QubitStarkPhaseEchoEstimator(BaseEstimator):
     #: measurement-basis index -> closing pulse / quadrature it reads.
     SIN_BASIS = 0  # x90 close  -> <Z> = sin(phi)
     COS_BASIS = 1  # -y90 close -> <Z> = cos(phi)
+
+    #: optional companion scale for the swept axis — the name of a coordinate on
+    #: the input dataset carrying the ABSOLUTE amplitude behind each factor, and
+    #: the label to draw it under. Overridable per call via kwargs.
+    twin_coord: Optional[str] = None
+    twin_label: Optional[str] = None
 
     def _check_data(self, dataset: xr.Dataset) -> None:
         if "stark_amp" not in dataset.coords:
@@ -128,6 +199,22 @@ class QubitStarkPhaseEchoEstimator(BaseEstimator):
         return s, ("positions" if pos is not None else "pca")
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
+        """Recover the AC-Stark phase, the Stark coefficient and the full-turn amplitude.
+
+        Kwargs — flat and fully owned:
+            twin_coord, twin_label
+                optional companion scale for the swept axis (see
+                :mod:`scqat.estimators._twin_axis`) — the name of a coordinate over the
+                same points carrying the ABSOLUTE amplitude, plus its axis label. An
+                absent/non-finite/non-monotone companion is simply not drawn.
+
+        Returns ``stark_amp``, ``amp_squared``, ``phase``, ``s_sin``/``s_cos``, the
+        circle-fit parameters, ``stark_coeff``/``intercept``/``best_fit``,
+        ``reduction_method``, ``success`` and ``amp_2pi`` — plus ``twin_values`` /
+        ``twin_label`` / ``amp_2pi_twin`` when a drawable companion scale was supplied.
+        """
+        twin_coord = kwargs.pop("twin_coord", self.twin_coord)
+        twin_label = kwargs.pop("twin_label", self.twin_label)
         stark_amp = np.asarray(dataset.coords["stark_amp"].values, dtype=float)
         s, reduction_method = self._reduce(dataset)  # (n_amp, 2)
 
@@ -170,7 +257,12 @@ class QubitStarkPhaseEchoEstimator(BaseEstimator):
             amp_squared, np.nan
         )
 
-        return {
+        # The device-actionable answer, taken from the MEASURED curve (the fitted
+        # coefficient saturates — module docstring). Independent of `success`: the
+        # crossing is a reading off the phase curve, not a product of the linear fit.
+        amp_2pi = _amp_at_phase(stark_amp, phase)
+
+        results = {
             "stark_amp": stark_amp,
             "amp_squared": amp_squared,
             "phase": phase,
@@ -185,9 +277,25 @@ class QubitStarkPhaseEchoEstimator(BaseEstimator):
             "reduction_method": reduction_method,
             "success": success,
             "best_fit": np.asarray(best_fit, dtype=float),
+            "amp_2pi": float(amp_2pi),
         }
 
+        # The optional companion (absolute-amplitude) scale — keys are absent
+        # entirely when it is not drawable, so consumers test with `if key in ...`.
+        twin = twin_values(dataset, "stark_amp", twin_coord)
+        if twin is not None:
+            results["twin_values"] = twin
+            results["twin_label"] = str(twin_label or twin_coord)
+            results["amp_2pi_twin"] = twin_at(stark_amp, twin, amp_2pi)
+        return results
+
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep the per-amp arrays (this estimator's metadata IS the phase curve —
+        the only correct source for an amp<->phase conversion, see the module
+        docstring), drop the reduction intermediates and the fit overlay.
+
+        ``twin_values`` is kept for the same reason: with it the JSON alone converts
+        between phase and ABSOLUTE amplitude, with no access to the device."""
         drop = {"s_sin", "s_cos", "best_fit"}
         return {k: v for k, v in results.items() if k not in drop}
 
@@ -195,25 +303,33 @@ class QubitStarkPhaseEchoEstimator(BaseEstimator):
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> xr.Dataset:
         stark_amp = np.asarray(results["stark_amp"], dtype=float)
-        return xr.Dataset(
-            {
-                "s_sin": ("stark_amp", np.asarray(results["s_sin"], dtype=float)),
-                "s_cos": ("stark_amp", np.asarray(results["s_cos"], dtype=float)),
-                "phase": ("stark_amp", np.asarray(results["phase"], dtype=float)),
-                "best_fit": ("stark_amp", np.asarray(results["best_fit"], dtype=float)),
-                "amp_squared": ("stark_amp", np.asarray(results["amp_squared"], dtype=float)),
-            },
-            coords={"stark_amp": stark_amp},
-            attrs={
-                "stark_coeff": float(results["stark_coeff"]),
-                "intercept": float(results["intercept"]),
-                "circle_cx": float(results["circle_cx"]),
-                "circle_cy": float(results["circle_cy"]),
-                "circle_r": float(results["circle_r"]),
-                "reduction_method": str(results["reduction_method"]),
-                "success": int(bool(results["success"])),
-            },
-        )
+        data_vars = {
+            "s_sin": ("stark_amp", np.asarray(results["s_sin"], dtype=float)),
+            "s_cos": ("stark_amp", np.asarray(results["s_cos"], dtype=float)),
+            "phase": ("stark_amp", np.asarray(results["phase"], dtype=float)),
+            "best_fit": ("stark_amp", np.asarray(results["best_fit"], dtype=float)),
+            "amp_squared": ("stark_amp", np.asarray(results["amp_squared"], dtype=float)),
+        }
+        attrs = {
+            "stark_coeff": float(results["stark_coeff"]),
+            "intercept": float(results["intercept"]),
+            "circle_cx": float(results["circle_cx"]),
+            "circle_cy": float(results["circle_cy"]),
+            "circle_r": float(results["circle_r"]),
+            "reduction_method": str(results["reduction_method"]),
+            "success": int(bool(results["success"])),
+            "amp_2pi": float(results.get("amp_2pi", float("nan"))),
+            "target_phase_rad": float(TARGET_PHASE_RAD),
+        }
+        # the companion scale + its label, so generate_figures draws the secondary
+        # axis from plot_data ALONE (the self-enforcing rule) and a saved
+        # plotdata.nc replots the absolute axis with no access to the device
+        if results.get("twin_values") is not None:
+            data_vars["twin"] = ("stark_amp",
+                                 np.asarray(results["twin_values"], dtype=float))
+            attrs["twin_label"] = str(results.get("twin_label", ""))
+            attrs["amp_2pi_twin"] = float(results.get("amp_2pi_twin", float("nan")))
+        return xr.Dataset(data_vars, coords={"stark_amp": stark_amp}, attrs=attrs)
 
     def generate_figures(
         self,

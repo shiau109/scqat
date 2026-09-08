@@ -2,18 +2,75 @@
 
 Each plotter draws its raw measured arrays UNCONDITIONALLY and guards the
 fit overlay/annotations behind a finiteness check, so a failed fit still
-produces its figure (scqat's "raw data must always be plottable" rule).
+produces its figure (scqat's "raw data must always be plottable" rule). The
+full-turn marker and the absolute-amplitude axis are decorations under that
+same rule: an unreached full turn or an absent companion scale is simply not
+drawn.
+
+plot_data layout
+----------------
+coords : ``stark_amp``  (the factor of the stark op's baked amplitude)
+vars   : ``phase``, ``best_fit``, ``s_sin``, ``s_cos``, ``amp_squared``;
+         optional ``twin`` — the ABSOLUTE amplitude over the same points
+attrs  : ``stark_coeff``, ``intercept``, ``circle_*``, ``reduction_method``,
+         ``success``, ``amp_2pi``, ``target_phase_rad``; with a twin, also
+         ``twin_label`` and ``amp_2pi_twin``
 """
 
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from scqat.estimators._twin_axis import add_twin_axis
+
+#: what the primary (factor) x-axis is a factor OF.
+_AMP_LABEL = "stark amplitude (factor of baked stark amp)"
+
+
+def _amp_2pi_label(attrs: dict) -> str:
+    """Legend text for the full-turn marker, in BOTH frames when both are known."""
+    text = f"2$\\pi$ @ factor = {attrs.get('amp_2pi', float('nan')):.4g}"
+    absolute = attrs.get("amp_2pi_twin", float("nan"))
+    if np.isfinite(absolute):
+        text += f"\n      abs amp = {absolute:.4g}"
+    return text
+
+
+def _mark_full_turn(ax: plt.Axes, amp: np.ndarray, phase: np.ndarray,
+                    attrs: dict) -> None:
+    """Mark the amplitude that buys a full turn of AC-Stark phase.
+
+    Two guides: the target phase as a horizontal line (drawn with the sign the
+    data actually winds, so a negative Stark shift is marked at -360 deg) and the
+    crossing amplitude as a vertical line — mirrored to -|a| when the sweep is
+    symmetric, since ``amp_2pi`` is a MAGNITUDE.
+
+    Both are skipped when the sweep never reached a full turn (``amp_2pi`` NaN):
+    the estimator refuses to extrapolate a saturating curve, and so does the figure.
+    """
+    amp_2pi = float(attrs.get("amp_2pi", float("nan")))
+    if not np.isfinite(amp_2pi):
+        return
+    target_deg = np.degrees(float(attrs.get("target_phase_rad", 2.0 * np.pi)))
+    finite = phase[np.isfinite(phase)]
+    winding = np.sign(finite[np.argmax(np.abs(finite))]) if finite.size else 1.0
+    ax.axhline(target_deg * (winding or 1.0), color="0.6", ls=":", lw=1.0, zorder=0)
+    ax.axvline(amp_2pi, color="red", ls="--", lw=1.2, label=_amp_2pi_label(attrs))
+    if np.nanmin(amp) < 0.0:  # symmetric sweep: the same magnitude on both branches
+        ax.axvline(-amp_2pi, color="red", ls="--", lw=1.2)
+
 
 def plot_phase_vs_amp(plot_data: xr.Dataset) -> plt.Figure:
-    """Recovered AC-Stark phase vs stark amplitude, with the phi ~ k*amp^2 fit."""
+    """Recovered AC-Stark phase vs stark amplitude, with the phi ~ k*amp^2 fit.
+
+    Marks the amplitude that produces a FULL TURN of phase — read off the measured
+    curve, not off the fit, which saturates (see the estimator's module docstring) —
+    and, when the caller supplied one, carries the absolute-amplitude scale as a
+    secondary top axis so the same reading is available in both frames.
+    """
     amp = plot_data["stark_amp"].values
-    phase_deg = np.degrees(plot_data["phase"].values)
+    phase = plot_data["phase"].values
+    phase_deg = np.degrees(phase)
 
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(amp, phase_deg, ".", label="phi (data)", alpha=0.8)
@@ -23,13 +80,20 @@ def plot_phase_vs_amp(plot_data: xr.Dataset) -> plt.Figure:
     if np.any(np.isfinite(best)):
         ax.plot(amp, np.degrees(best), "-", label="k*amp^2 fit")
 
-    ax.set_xlabel("stark amplitude (factor of baked stark amp)")
+    _mark_full_turn(ax, amp, phase_deg, plot_data.attrs)
+
+    ax.set_xlabel(_AMP_LABEL)
     ax.set_ylabel("AC-Stark phase (deg)")
     title = "AC-Stark phase echo"
     if np.isfinite(coeff):
         title += f": k = {coeff:.3g} rad / amp^2"
     ax.set_title(title)
-    ax.legend()
+    ax.legend(fontsize=8)
+    # the same sweep in absolute amplitude, on top: the primary axis, the fit and
+    # the marker keep their meaning in the factor frame (never a relabel)
+    if "twin" in plot_data:
+        add_twin_axis(ax, amp, plot_data["twin"].values,
+                      str(plot_data.attrs.get("twin_label", "")))
     fig.tight_layout()
     return fig
 
@@ -94,9 +158,12 @@ def plot_quadratures(plot_data: xr.Dataset) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(amp, plot_data["s_sin"].values, ".-", label="x90  (~ sin phi)", alpha=0.8)
     ax.plot(amp, plot_data["s_cos"].values, ".-", label="-y90 (~ cos phi)", alpha=0.8)
-    ax.set_xlabel("stark amplitude (factor of baked stark amp)")
+    ax.set_xlabel(_AMP_LABEL)
     ax.set_ylabel("reduced signal")
     ax.set_title("Measurement-basis quadratures")
     ax.legend()
+    if "twin" in plot_data:
+        add_twin_axis(ax, amp, plot_data["twin"].values,
+                      str(plot_data.attrs.get("twin_label", "")))
     fig.tight_layout()
     return fig
