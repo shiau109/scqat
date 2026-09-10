@@ -6,6 +6,11 @@ members out jointly, and draw the four joint state populations as maps. Only the
 two axis NAMES differ, so the summary, the plot-data projection and the figure
 live here once and each estimator supplies its own coordinate names.
 
+``pair_swap_angle`` and ``qc_n_stark_amp`` start from the same three functions and
+then fit something of their own along the count axis; the marginal both of them
+fit is :func:`pair_swap_transfer_marginal`, so which population counts as the
+transfer is decided here once for the whole family and not per estimator.
+
 Like ``_iq_plane.py`` this is a plain shared FUNCTION module (function-level
 sharing is what the estimator-layering rule permits); it lives outside ``tools/``
 because it is presentation, not math, and it imports no estimator.
@@ -38,7 +43,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-__all__ = ["summarize_pair_swap", "pair_swap_plot_data", "plot_pair_swap_map"]
+__all__ = ["summarize_pair_swap", "pair_swap_plot_data",
+           "pair_swap_transfer_marginal", "plot_pair_swap_map"]
 
 #: the four computational-basis joint states this analysis draws, in figure
 #: (row-major) order. Digit order (high, low).
@@ -186,6 +192,20 @@ def pair_swap_plot_data(
         }
     )
     return out
+
+
+def pair_swap_transfer_marginal(plot_data: xr.Dataset, drive_side: str) -> np.ndarray:
+    """P(partner excited) over ``(axis0, axis1)``, traced out of the projection.
+
+    The partner is the member that was NOT driven, so its marginal IS the
+    excitation transfer -- the one curve every swap-counting reading fits. Taken
+    from the four joint basis maps :func:`pair_swap_plot_data` already projected
+    (the module's public output), so a caller reaches into no private helper and
+    the trace-out is defined once for the whole family.
+    """
+    p11 = np.asarray(plot_data["p11"].values, dtype=float)
+    partner = "p10" if drive_side == "low" else "p01"
+    return np.asarray(plot_data[partner].values, dtype=float) + p11
 
 
 def plot_pair_swap_map(plot_data: xr.Dataset) -> plt.Figure:

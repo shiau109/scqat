@@ -61,6 +61,7 @@ from scqat.core.base_estimator import BaseEstimator
 from scqat.core.figures import render_figures
 from scqat.estimators._pair_swap_maps import (
     pair_swap_plot_data,
+    pair_swap_transfer_marginal,
     plot_pair_swap_map,
     summarize_pair_swap,
 )
@@ -74,19 +75,6 @@ AXIS1 = "swap_count"
 #: it, so these land as ``pair_swap_angle.png`` and ``pair_swap_angle_angle.png``.
 FIG_MAP = "pair_swap_angle"
 FIG_ANGLE = "angle"
-
-
-def _transfer_marginal(plot_data: xr.Dataset, drive_side: str) -> np.ndarray:
-    """P(partner excited) over ``(coupler_flux_v, swap_count)``.
-
-    The partner is the member that was NOT driven, so its marginal is the
-    transfer curve. Traced out of the four joint basis maps that
-    ``pair_swap_plot_data`` already projected -- the public output of the shared
-    module, so no private helper is reached into.
-    """
-    p11 = np.asarray(plot_data["p11"].values, dtype=float)
-    partner = "p10" if drive_side == "low" else "p01"
-    return np.asarray(plot_data[partner].values, dtype=float) + p11
 
 
 def _as_row(values, size: int, dtype):
@@ -164,7 +152,7 @@ class PairSwapAngleEstimator(BaseEstimator):
         projected = pair_swap_plot_data(
             dataset, AXIS0, AXIS1, drive_side, flux_side, high_name, low_name
         )
-        transfer = _transfer_marginal(projected, drive_side)      # (knob, N)
+        transfer = pair_swap_transfer_marginal(projected, drive_side)  # (knob, N)
         knob = np.asarray(dataset[AXIS0].values, dtype=float)
         counts = np.asarray(dataset[AXIS1].values, dtype=float)
 
@@ -218,7 +206,7 @@ class PairSwapAngleEstimator(BaseEstimator):
         dims = (AXIS0, AXIS1)
         transfer = results.get("_transfer")
         if transfer is None:
-            transfer = _transfer_marginal(out, drive_side)
+            transfer = pair_swap_transfer_marginal(out, drive_side)
         out["transfer"] = (dims, np.asarray(transfer, dtype=float))
         best_fit = results.get("_best_fit")
         if best_fit is None:
