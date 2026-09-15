@@ -374,6 +374,7 @@ every family listed beside it; run those families' test files too.
 | `ramsey_fit` | charge_gate_ramsey, ramsey |
 | `robust` | resonator_spectroscopy_flux |
 | `step_response_fit` | ramsey_cryoscope, spectroscopy_cryoscope |
+| `swap_lineshape` | pair_swap_flux_map |
 | `telegraph_psd` | parity_switch_continuous, parity_switch_discrete |
 | `timeseries_psd` | qubit_t1_bayesian |
 

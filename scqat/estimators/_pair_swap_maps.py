@@ -10,6 +10,9 @@ live here once and each estimator supplies its own coordinate names.
 then fit something of their own along the count axis; the marginal both of them
 fit is :func:`pair_swap_transfer_marginal`, so which population counts as the
 transfer is decided here once for the whole family and not per estimator.
+``pair_swap_flux_map`` fits an absolute peak HEIGHT rather than a period, so it
+takes the sibling trace-out :func:`pair_swap_normalized_transfer` instead — same
+decision, made once, about which populations form the ratio.
 
 Like ``_iq_plane.py`` this is a plain shared FUNCTION module (function-level
 sharing is what the estimator-layering rule permits); it lives outside ``tools/``
@@ -44,7 +47,8 @@ import numpy as np
 import xarray as xr
 
 __all__ = ["summarize_pair_swap", "pair_swap_plot_data",
-           "pair_swap_transfer_marginal", "plot_pair_swap_map"]
+           "pair_swap_transfer_marginal", "pair_swap_normalized_transfer",
+           "plot_pair_swap_map"]
 
 #: the four computational-basis joint states this analysis draws, in figure
 #: (row-major) order. Digit order (high, low).
@@ -206,6 +210,40 @@ def pair_swap_transfer_marginal(plot_data: xr.Dataset, drive_side: str) -> np.nd
     p11 = np.asarray(plot_data["p11"].values, dtype=float)
     partner = "p10" if drive_side == "low" else "p01"
     return np.asarray(plot_data[partner].values, dtype=float) + p11
+
+
+def pair_swap_normalized_transfer(
+    plot_data: xr.Dataset, drive_side: str, *, den_floor: float = 0.1,
+) -> np.ndarray:
+    """The transfer NORMALIZED inside the single-excitation subspace.
+
+    ``p_transfer / (p01 + p10)`` over ``(axis0, axis1)``. Deliberately NOT
+    :func:`pair_swap_transfer_marginal`: that one ADDS ``p11``, which is the
+    double-excitation witness, while this one divides by the single-excitation
+    population only.
+
+    WHY IT IS WORTH THE DIVISION. The raw partner marginal peaks at
+    ``prep * sin^2(theta) * exp(-t/T1)``, so the pi-pulse fidelity and the decay
+    are degenerate with the angle. The denominator ``p01 + p10`` carries exactly
+    those two factors and — under a T1 common to both members — does NOT depend
+    on the detuning, so dividing pins the amplitude at 1 and leaves the peak
+    height equal to ``sin^2(theta)``. That is what makes a fixed-time swap peak
+    readable as an ANGLE — by the ``fit_swap_peak`` reduction — instead of as an
+    arbitrary contrast. (Spelled without its dotted module path on purpose: this
+    module does not IMPORT that tool, and the generated tool-consumer table in
+    ``CLAUDE.md`` reads import-shaped text.)
+
+    Where the single-excitation population has collapsed the ratio is 0/0, so
+    points with ``p01 + p10 < den_floor`` are returned NaN rather than
+    amplified noise; a fitter skips them.
+    """
+    p01 = np.asarray(plot_data["p01"].values, dtype=float)
+    p10 = np.asarray(plot_data["p10"].values, dtype=float)
+    partner = p10 if drive_side == "low" else p01
+    denominator = p01 + p10
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(denominator >= den_floor, partner / denominator, np.nan)
+    return np.asarray(out, dtype=float)
 
 
 def plot_pair_swap_map(plot_data: xr.Dataset) -> plt.Figure:
