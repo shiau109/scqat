@@ -12,12 +12,15 @@ vars   : ``p00`` / ``p01`` / ``p10`` / ``p11`` (the joint basis maps, drawn by
          ``transfer_fit`` over ``(qubit_flux_v, coupler_flux_v)``, and
          ``theta_rad`` / ``j_hz`` / ``peak_transfer`` /
          ``resonance_qubit_flux_v`` / ``hwhm_qubit_flux_v`` / ``fit_r_squared``
-         / ``fit_success`` / ``branch_warn`` / ``j_poly_curve`` over
-         ``coupler_flux_v``
+         / ``fit_success`` / ``branch_warn`` / ``j_poly_curve`` /
+         ``resonance_poly_curve`` over ``coupler_flux_v``
 attrs  : ``swap_time_ns``, ``coupler_off_v``, ``j_at_off_hz``, ``j_max_hz``,
          ``j_max_coupler_flux_v``, ``theta_max_rad``, ``poly_degree``,
-         ``off_is_interpolated``, ``n_j_ok``, ``n_branch_warn`` (plus the shared
-         map attrs)
+         ``off_is_interpolated``, ``n_j_ok``, ``n_branch_warn``,
+         ``n_poly_rows``, plus the conversion formulas
+         ``j2_poly_coeffs`` / ``resonance_poly_coeffs`` / ``poly_window_v`` /
+         ``poly_prefer_v`` / ``resonance_poly_degree`` /
+         ``resonance_poly_r_squared`` (plus the shared map attrs)
 
 Every raw array is drawn UNCONDITIONALLY and every fit-derived overlay is
 guarded, so a run in which every column failed still produces all three figures.
@@ -55,6 +58,22 @@ def _column(plot_data: xr.Dataset, name: str) -> np.ndarray:
     if name not in plot_data:
         return np.full(size, np.nan)
     return np.asarray(plot_data[name].values, dtype=float)
+
+
+def _fit_window(plot_data: xr.Dataset, knob: np.ndarray) -> np.ndarray:
+    """Mask of the coupler range the conversion polynomials were FITTED over.
+
+    Both curves are interpolating fits, and the sweep axis is normally wider than
+    the columns that actually fitted — so drawing a polynomial across the whole
+    axis shows an extrapolation with no data under it, which on a two-branch
+    ``J^2`` parabola climbs to a coupling nothing measured. Draw only where it
+    is supported.
+    """
+    window = plot_data.attrs.get("poly_window_v", None)
+    values = np.asarray(window, dtype=float).ravel() if window is not None else None
+    if values is None or values.size != 2 or not np.isfinite(values).all():
+        return np.ones(knob.shape, dtype=bool)
+    return (knob >= values.min()) & (knob <= values.max())
 
 
 def _annotate_empty(ax, message: str) -> None:
@@ -111,7 +130,9 @@ def plot_coupling_curve(plot_data: xr.Dataset) -> plt.Figure:
                   label="fitted |J|" if has_hz else r"fitted $\theta$")
         ax_j.set_ylabel("|J| (MHz)" if has_hz else r"$\theta$ (rad)")
         if has_hz and np.isfinite(poly).any():
-            ax_j.plot(knob, poly / 1e6, "-", color="C3", lw=1.2, alpha=0.8,
+            inside = _fit_window(plot_data, knob)
+            ax_j.plot(knob[inside], poly[inside] / 1e6, "-", color="C3", lw=1.2,
+                      alpha=0.8,
                       label=f"$J^2$ poly (deg "
                             f"{int(plot_data.attrs.get('poly_degree', 0))})")
         if scale is not None:
@@ -144,9 +165,19 @@ def plot_coupling_curve(plot_data: xr.Dataset) -> plt.Figure:
         title += "   (duration unknown — angle only)"
     ax_j.set_title(title)
 
-    # --- middle: the resonance line ------------------------------------
+    # --- middle: the resonance line + its own conversion polynomial -----
+    resonance_poly = _column(plot_data, "resonance_poly_curve")
     if np.isfinite(resonance).any():
-        ax_res.plot(knob[ok], resonance[ok], "o-", color="C4")
+        ax_res.plot(knob[ok], resonance[ok], "o", color="C4", ms=5,
+                    label="fitted per column")
+        if np.isfinite(resonance_poly).any():
+            degree = int(plot_data.attrs.get("resonance_poly_degree", 0))
+            r2 = float(plot_data.attrs.get("resonance_poly_r_squared", float("nan")))
+            inside = _fit_window(plot_data, knob)
+            ax_res.plot(knob[inside], resonance_poly[inside], "-", color="C3",
+                        lw=1.2, alpha=0.8,
+                        label=f"poly (deg {degree}, $R^2$={r2:.3f})")
+        ax_res.legend(loc="best", fontsize=8)
     else:
         _annotate_empty(ax_res, "no fitted resonance point")
     ax_res.set_ylabel("resonance qubit flux (V)")

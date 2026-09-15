@@ -60,7 +60,8 @@ import numpy as np
 
 from .fit_lorentzian import FitLorentzian
 
-__all__ = ["fit_swap_peak", "theta_from_peak", "j_hz_from_theta"]
+__all__ = ["fit_swap_peak", "theta_from_peak", "j_hz_from_theta",
+           "theta_from_j_poly", "coupler_flux_for_theta"]
 
 #: points in the smooth curve returned for plotting.
 _DENSE_POINTS = 501
@@ -97,6 +98,127 @@ def j_hz_from_theta(theta_rad, swap_time_ns):
     else:
         out = theta / (2.0 * np.pi * float(swap_time_ns) * 1e-9)
     return out if out.ndim else float(out)
+
+
+def theta_from_j_poly(coupler_flux_v, j2_coeffs, swap_time_ns):
+    """Evaluate the empirical curve FORWARD: coupler flux -> angle.
+
+    ``j2_coeffs`` are the polynomial in ``J^2`` (numpy order, highest power
+    first) that ``pair_swap_flux_map`` fits and publishes. Fitting in ``J^2``
+    rather than ``|J|`` is what keeps it smooth through the decouple point, so
+    the coupling is ``sqrt(max(poly, 0))`` and the angle ``2*pi*J*t``.
+
+    The polynomial is EMPIRICAL and interpolating: outside the coupler window it
+    was fitted over it is an extrapolation with no data behind it, and near the
+    decouple point one arm of a parabola is often held up by two or three points.
+    Check the window before believing a value.
+    """
+    j_hz = np.sqrt(np.clip(np.polyval(np.asarray(j2_coeffs, dtype=float),
+                                      np.asarray(coupler_flux_v, dtype=float)),
+                           0.0, None))
+    usable = (swap_time_ns is not None
+              and np.isfinite(float(swap_time_ns)) and float(swap_time_ns) > 0)
+    if not usable:
+        return np.full(np.shape(j_hz), np.nan)
+    return 2.0 * np.pi * j_hz * float(swap_time_ns) * 1e-9
+
+
+def coupler_flux_for_theta(
+    theta_rad: float, j2_coeffs, swap_time_ns: float, *,
+    window=None, prefer: float | None = None,
+) -> Dict[str, Any]:
+    """Invert the empirical curve: which coupler flux delivers ``theta_rad``?
+
+    Solves ``poly(V) = J_target^2`` with ``J_target = theta / (2 pi t)``. This is
+    the conversion a gate calibration actually needs — the coupler flux is the
+    angle knob and ``theta(Phi_c)`` is nowhere near linear, so a target angle has
+    to be solved for, not scaled to.
+
+    TWO ROOTS, ALWAYS, and that is physics not numerics: ``|J|`` has a MINIMUM at
+    the decouple point and rises on both sides, so every reachable angle is
+    delivered by one coupler flux below the decouple point and one above. Pass
+    ``prefer`` — a coupler flux near where the sweep actually took data, e.g. the
+    median of the successful columns — and the root nearest it is returned as
+    ``coupler_flux_v``; every in-window root is returned in ``roots`` regardless,
+    because picking for the caller without showing the alternative is how the
+    wrong branch gets used silently.
+
+    Parameters
+    ----------
+    theta_rad : float
+        The wanted exchange angle (a full swap is ``pi/2``).
+    j2_coeffs : array_like
+        The published ``J^2`` polynomial, numpy order (highest power first).
+    swap_time_ns : float
+        The pulse length the angle is wanted AT. The polynomial is in J and is
+        pulse-independent; the ANGLE is not.
+    window : (float, float), optional
+        The coupler range the polynomial was fitted over. Roots outside it are
+        reported in ``roots_all`` but never chosen, and ``in_window`` is False.
+    prefer : float, optional
+        Reference coupler flux; the nearest root wins. Without it the smallest
+        in-window root is returned, which is a coin toss on a two-branch curve.
+
+    Returns
+    -------
+    dict
+        ``coupler_flux_v`` (NaN when unreachable), ``j_hz`` (the target
+        coupling), ``roots`` (real roots inside the window, ascending),
+        ``roots_all`` (every real root), ``in_window`` and ``reason``.
+    """
+    out: Dict[str, Any] = {
+        "coupler_flux_v": float("nan"), "j_hz": float("nan"),
+        "roots": [], "roots_all": [], "in_window": False, "reason": "",
+    }
+    coeffs = np.asarray(j2_coeffs, dtype=float)
+    if coeffs.size < 2 or not np.isfinite(coeffs).all():
+        out["reason"] = "no usable J^2 polynomial"
+        return out
+    if not swap_time_ns or not np.isfinite(float(swap_time_ns)) or float(swap_time_ns) <= 0:
+        out["reason"] = "the angle needs the duration actually played"
+        return out
+    if not np.isfinite(theta_rad) or theta_rad < 0:
+        out["reason"] = "theta must be finite and non-negative"
+        return out
+
+    j_target = float(theta_rad) / (2.0 * np.pi * float(swap_time_ns) * 1e-9)
+    out["j_hz"] = j_target
+
+    shifted = coeffs.copy()
+    shifted[-1] -= j_target ** 2
+    try:
+        roots = np.roots(shifted)
+    except Exception:  # noqa: BLE001 - a degenerate polynomial is not an error
+        out["reason"] = "the polynomial could not be solved"
+        return out
+    # A complex-conjugate pair means the curve never reaches this angle at all.
+    real = sorted(float(r.real) for r in np.atleast_1d(roots)
+                  if abs(np.imag(r)) <= 1e-9 * max(1.0, abs(float(np.real(r)))))
+    out["roots_all"] = real
+    if not real:
+        out["reason"] = ("the fitted curve never reaches this angle "
+                         "(below the decouple minimum, or past its maximum)")
+        return out
+
+    inside = real
+    if window is not None:
+        lo, hi = float(min(window)), float(max(window))
+        inside = [r for r in real if lo <= r <= hi]
+    out["roots"] = inside
+    if not inside:
+        out["reason"] = ("every solution lies outside the measured coupler "
+                         "window — widen the sweep instead of extrapolating")
+        return out
+
+    chosen = (min(inside, key=lambda r: abs(r - float(prefer)))
+              if prefer is not None and np.isfinite(prefer) else inside[0])
+    out["coupler_flux_v"] = float(chosen)
+    out["in_window"] = True
+    if len(inside) > 1:
+        out["reason"] = (f"{len(inside)} coupler fluxes deliver this angle "
+                         f"(both sides of the decouple point); returned the one "
+                         f"nearest {prefer}")
+    return out
 
 
 def _degenerate(x: np.ndarray, reason: str) -> Dict[str, Any]:

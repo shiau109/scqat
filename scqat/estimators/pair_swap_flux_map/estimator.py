@@ -58,8 +58,30 @@ Dataset contract (the unified readout schema's joint form):
            ``swap_time_ns`` (float | None) is the duration the instrument
            ACTUALLY played — without it the angles are still reported and every
            ``j_hz`` is NaN; ``den_floor`` guards the normalization denominator;
-           ``poly_degree`` sets the ``J^2(Phi_c)`` polynomial; ``window_factor`` /
-           ``min_contrast`` / ``min_r_squared`` are forwarded to the peak fit.
+           ``poly_degree`` / ``resonance_degree`` set the two conversion
+           polynomials; ``window_factor`` / ``min_contrast`` / ``min_r_squared``
+           are forwarded to the peak fit.
+
+THE TWO CONVERSION FORMULAS (what a gate calibration actually consumes). Setting
+a two-qubit gate means answering "for the angle I want, what do I set?" — and
+neither answer is linear in the coupler flux. So both curves are published as
+polynomial COEFFICIENTS, evaluable later without re-running anything:
+
+* ``j2_poly_coeffs`` — the fit in ``J^2`` (not ``|J|``: a swap is even in J, so
+  a linear zero crossing makes ``|J|`` a cusped V while ``J^2`` stays smooth).
+  ``J = sqrt(max(poly, 0))`` and ``theta = 2*pi*J*t``. Invert it with
+  :func:`scqat.tools.swap_lineshape.coupler_flux_for_theta`, which returns BOTH
+  solutions — ``|J|`` has a minimum at the decouple point, so every reachable
+  angle is delivered by one coupler flux on each side of it.
+* ``resonance_poly_coeffs`` — the member flux that puts the pair on resonance,
+  as a function of the coupler flux. The resonance point MOVES with the coupler
+  bias (the coupler pulse pulls both members), so the angle solve above only
+  becomes a setting once this is evaluated at the flux it returned.
+
+``poly_window_v`` is the coupler range they were fitted over and is part of the
+formula, not a footnote: outside it both are unsupported extrapolations, and on
+the ``J^2`` parabola the unsupported arm climbs to a coupling nothing measured.
+``j_formula`` / ``resonance_formula`` spell the same thing out as readable text.
 """
 
 from typing import Any, Dict, Optional
@@ -111,7 +133,9 @@ _SCALAR_ATTRS = {
     "swap_time_ns": float("nan"), "coupler_off_v": float("nan"),
     "j_at_off_hz": float("nan"), "j_max_hz": float("nan"),
     "j_max_coupler_flux_v": float("nan"), "theta_max_rad": float("nan"),
-    "poly_degree": 0, "off_is_interpolated": 0, "n_j_ok": 0, "n_branch_warn": 0,
+    "poly_prefer_v": float("nan"), "resonance_poly_r_squared": float("nan"),
+    "poly_degree": 0, "resonance_poly_degree": 0,
+    "off_is_interpolated": 0, "n_j_ok": 0, "n_branch_warn": 0,
     "n_poly_rows": 0,
 }
 
@@ -189,7 +213,9 @@ def _fit_j_vs_coupler(knob: np.ndarray, j_hz: np.ndarray, ok: np.ndarray,
     empty = {
         "coupler_off_v": float("nan"), "j_at_off_hz": float("nan"),
         "poly_degree": int(degree), "off_is_interpolated": 0,
-        "poly_r_squared": float("nan"), "_j_poly_curve": None,
+        "poly_r_squared": float("nan"), "j2_poly_coeffs": [],
+        "poly_window_v": [float("nan"), float("nan")],
+        "poly_prefer_v": float("nan"), "_j_poly_curve": None,
     }
     good = np.flatnonzero(ok & np.isfinite(j_hz))
     if good.size == 0:
@@ -202,6 +228,13 @@ def _fit_j_vs_coupler(knob: np.ndarray, j_hz: np.ndarray, ok: np.ndarray,
     out = dict(empty)
     out["coupler_off_v"] = float(k[i_min])
     out["j_at_off_hz"] = float(np.sqrt(max(j2[i_min], 0.0)))
+    # The window the polynomial is INTERPOLATING over, and a reference point
+    # inside the measured support. Both are published because the polynomial is
+    # the conversion formula a caller will invert later, and a two-branch curve
+    # inverts to two fluxes: the window says where it may be trusted and the
+    # reference says which branch the data actually came from.
+    out["poly_window_v"] = [float(np.min(k)), float(np.max(k))]
+    out["poly_prefer_v"] = float(np.median(k))
 
     if good.size < degree + 2:
         return out
@@ -210,6 +243,7 @@ def _fit_j_vs_coupler(knob: np.ndarray, j_hz: np.ndarray, ok: np.ndarray,
     except Exception:  # noqa: BLE001 - a degenerate column set must not raise
         return out
     poly = np.poly1d(coeffs)
+    out["j2_poly_coeffs"] = [float(c) for c in coeffs]
 
     ss_tot = float(np.sum((j2 - j2.mean()) ** 2))
     residual = float(np.sum((j2 - poly(k)) ** 2))
@@ -230,6 +264,93 @@ def _fit_j_vs_coupler(knob: np.ndarray, j_hz: np.ndarray, ok: np.ndarray,
     out["coupler_off_v"] = float(best)
     out["j_at_off_hz"] = float(np.sqrt(max(float(poly(best)), 0.0)))
     out["off_is_interpolated"] = 1
+    return out
+
+
+def _poly_text(coeffs, variable: str = "V") -> str:
+    """Render polynomial coefficients as readable algebra, highest power first."""
+    coeffs = [float(c) for c in (coeffs or [])]
+    if not coeffs:
+        return ""
+    order = len(coeffs) - 1
+    terms = []
+    for i, c in enumerate(coeffs):
+        power = order - i
+        unit = "" if power == 0 else (f"*{variable}" if power == 1
+                                      else f"*{variable}^{power}")
+        terms.append(f"{c:+.6g}{unit}")
+    return " ".join(terms).lstrip("+").strip()
+
+
+def _conversion_formulas(results: Dict[str, Any], swap_time_ns) -> Dict[str, str]:
+    """The two empirical conversions, as text a human can retype.
+
+    The whole point of publishing coefficients is that the caller converts a
+    WANTED angle into settings later, without re-running anything, so the
+    formulas are spelled out in the metadata beside the numbers. Both are
+    INTERPOLATING fits: the validity window is part of the formula, not a
+    footnote.
+    """
+    out = {"j_formula": "", "resonance_formula": ""}
+    window = results.get("poly_window_v") or []
+    valid = (f"  [valid for coupler_flux_v in {window[0]:.6g}..{window[1]:.6g} V]"
+             if len(window) == 2 and np.isfinite(window).all() else "")
+    j2 = _poly_text(results.get("j2_poly_coeffs"))
+    if j2:
+        out["j_formula"] = f"J_hz(V) = sqrt(max(0, {j2})){valid}"
+        if swap_time_ns:
+            out["j_formula"] += (
+                f";  theta_rad(V) = 2*pi*J_hz(V)*{float(swap_time_ns):g}e-9"
+                f"  [a full swap is theta = pi/2]")
+    resonance = _poly_text(results.get("resonance_poly_coeffs"))
+    if resonance:
+        out["resonance_formula"] = f"resonance_qubit_flux_v(V) = {resonance}{valid}"
+    return out
+
+
+def _fit_resonance_vs_coupler(knob: np.ndarray, resonance: np.ndarray,
+                              peak: np.ndarray, hwhm: np.ndarray,
+                              ok: np.ndarray, degree: int) -> Dict[str, Any]:
+    """The second empirical curve: where to park the MEMBER flux, per coupler bias.
+
+    Choosing a coupler flux is only half a gate setting — the pair also has to be
+    brought onto resonance, and the resonance point MOVES with the coupler bias
+    because the coupler pulse pulls both members. So the fitted ``x0`` per column
+    is smoothed into a polynomial the caller can evaluate at whatever coupler
+    flux the angle solve returned.
+
+    WEIGHTED, because the raw curve is visibly noisiest near the decouple point:
+    a peak locates its own centre to about ``hwhm / SNR``, and the height stands
+    in for SNR, so the weight is ``peak / hwhm`` (numpy's ``polyfit`` wants
+    ``1/sigma``). Without it the two or three near-zero-coupling columns, whose
+    centres are barely determined at all, drag the whole curve.
+
+    Never raises: too few columns, a degenerate fit or missing widths all degrade
+    to an empty coefficient list.
+    """
+    out: Dict[str, Any] = {
+        "resonance_poly_coeffs": [], "resonance_poly_degree": int(degree),
+        "resonance_poly_r_squared": float("nan"), "_resonance_poly_curve": None,
+    }
+    usable = ok & np.isfinite(resonance) & np.isfinite(peak) & np.isfinite(hwhm)
+    good = np.flatnonzero(usable & (hwhm > 0))
+    if good.size < degree + 2:
+        return out
+    k, y = knob[good], resonance[good]
+    weights = np.clip(peak[good], 0.0, None) / hwhm[good]
+    if not np.isfinite(weights).all() or weights.sum() <= 0:
+        weights = None
+    try:
+        coeffs = np.polyfit(k, y, int(degree), w=weights)
+    except Exception:  # noqa: BLE001 - a degenerate column set must not raise
+        return out
+    poly = np.poly1d(coeffs)
+    out["resonance_poly_coeffs"] = [float(c) for c in coeffs]
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    residual = float(np.sum((y - poly(k)) ** 2))
+    out["resonance_poly_r_squared"] = (1.0 - residual / ss_tot if ss_tot > 0
+                                       else float("nan"))
+    out["_resonance_poly_curve"] = poly(knob)
     return out
 
 
@@ -255,7 +376,7 @@ class PairSwapFluxMapEstimator(BaseEstimator):
         flux_side: Optional[str] = None,
         high_name: Optional[str] = None, low_name: Optional[str] = None,
         swap_time_ns: Optional[float] = None, den_floor: float = 0.1,
-        poly_degree: int = 2, **fit_knobs
+        poly_degree: int = 2, resonance_degree: int = 2, **fit_knobs
     ) -> Dict[str, Any]:
         """Summarize the map, then fit one central peak per coupler column.
 
@@ -314,6 +435,11 @@ class PairSwapFluxMapEstimator(BaseEstimator):
         # `n_branch_warn` show the split, so nothing is dropped silently.
         quotable = ok & (warn == 0)
         poly = _fit_j_vs_coupler(knob, j_hz, quotable, poly_degree)
+        # The resonance line is fitted over every SUCCESSFUL column, not just the
+        # quotable ones: a folded column still locates its own resonance
+        # perfectly well — folding is an ambiguity in the HEIGHT, not the centre.
+        resonance_poly = _fit_resonance_vs_coupler(
+            knob, resonance, peak, hwhm, ok, resonance_degree)
 
         quoted = np.where(quotable, j_hz, np.nan)
         i_max = int(np.nanargmax(quoted)) if np.isfinite(quoted).any() else None
@@ -330,7 +456,9 @@ class PairSwapFluxMapEstimator(BaseEstimator):
             "j_max_coupler_flux_v": (float(knob[i_max]) if i_max is not None
                                      else float("nan")),
             **{k: v for k, v in poly.items() if not k.startswith("_")},
+            **{k: v for k, v in resonance_poly.items() if not k.startswith("_")},
         })
+        results.update(_conversion_formulas(results, swap_time_ns))
         # The curves themselves, as plain lists so the metadata JSON stays portable.
         for key, values in (("theta_rad", theta), ("j_hz", j_hz),
                             ("peak_transfer", peak),
@@ -344,6 +472,7 @@ class PairSwapFluxMapEstimator(BaseEstimator):
         results["_transfer_norm"] = transfer
         results["_transfer_fit"] = best_fit
         results["_j_poly_curve"] = poly["_j_poly_curve"]
+        results["_resonance_poly_curve"] = resonance_poly["_resonance_poly_curve"]
         return results
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
@@ -379,10 +508,18 @@ class PairSwapFluxMapEstimator(BaseEstimator):
             out[key] = ((AXIS1,), _as_column(results.get(key), n_knob, int))
         out["j_poly_curve"] = ((AXIS1,),
                                _as_column(results.get("_j_poly_curve"), n_knob, float))
+        out["resonance_poly_curve"] = (
+            (AXIS1,), _as_column(results.get("_resonance_poly_curve"), n_knob, float))
         out.attrs.update({
             key: type(default)(results.get(key, default))
             for key, default in _SCALAR_ATTRS.items()
         })
+        # The two conversion formulas travel WITH the plot data, so a saved
+        # plotdata.nc answers "what flux for this angle?" on its own. netCDF has
+        # no empty-list attribute, so an unfitted polynomial is stored as [nan].
+        for key in ("j2_poly_coeffs", "resonance_poly_coeffs", "poly_window_v"):
+            values = [float(v) for v in (results.get(key) or [])]
+            out.attrs[key] = values or [float("nan")]
         return out
 
     def generate_figures(

@@ -202,6 +202,49 @@ def test_plot_data_carries_every_curve_and_replots_from_netcdf(tmp_path):
     assert set(figs) == {"pair_swap_flux_map", "coupling", "transfer_fit"}
 
 
+def test_publishes_both_conversion_formulas():
+    """The point of the coefficients: convert a WANTED angle into settings later,
+    without re-running anything."""
+    from scqat.tools.swap_lineshape import coupler_flux_for_theta, theta_from_j_poly
+
+    off_v, slope = -0.06, 9e6
+    ds, vc, _j = _swap_map_ds(j_slope_hz_per_v=slope, coupler_off_v=off_v)
+    res = PairSwapFluxMapEstimator().extract_parameters(
+        ds, drive_side="low", swap_time_ns=T_NS)
+
+    assert len(res["j2_poly_coeffs"]) == res["poly_degree"] + 1
+    assert len(res["resonance_poly_coeffs"]) == res["resonance_poly_degree"] + 1
+    assert res["poly_window_v"] == pytest.approx([vc.min(), vc.max()], abs=0.05)
+    assert "J_hz(V) = sqrt(" in res["j_formula"]
+    assert "theta_rad(V)" in res["j_formula"]
+    assert "resonance_qubit_flux_v(V) =" in res["resonance_formula"]
+
+    # the resonance polynomial reproduces the fixture's 0.10 + 0.15*vc**2 line
+    for v in (-0.10, 0.0, 0.10):
+        assert np.polyval(res["resonance_poly_coeffs"], v) == pytest.approx(
+            0.10 + 0.15 * v ** 2, abs=2e-3)
+
+    # ask for an angle, get a flux that really delivers it
+    target = 2 * np.pi * (slope * 0.12) * T_NS * 1e-9   # J at 0.12 V from the off point
+    solved = coupler_flux_for_theta(
+        target, res["j2_poly_coeffs"], T_NS,
+        window=res["poly_window_v"], prefer=res["poly_prefer_v"])
+    assert solved["in_window"] is True
+    assert solved["coupler_flux_v"] == pytest.approx(off_v + 0.12, abs=0.02)
+    assert float(theta_from_j_poly(
+        solved["coupler_flux_v"], res["j2_poly_coeffs"], T_NS)) == pytest.approx(
+            target, rel=1e-6)
+
+
+def test_conversion_formulas_degrade_when_nothing_fits():
+    ds = _flux_map_ds()
+    ds["joint_population"].values[:] = np.nan
+    res = PairSwapFluxMapEstimator().extract_parameters(
+        ds, drive_side="low", swap_time_ns=T_NS)
+    assert res["j2_poly_coeffs"] == [] and res["resonance_poly_coeffs"] == []
+    assert res["j_formula"] == "" and res["resonance_formula"] == ""
+
+
 def test_metadata_drops_the_bulky_maps_but_keeps_the_curves():
     ds, vc, _j = _swap_map_ds()
     est = PairSwapFluxMapEstimator()

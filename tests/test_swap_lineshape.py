@@ -9,7 +9,13 @@ the branch that ``arcsin`` cannot see, and every degrade-don't-raise path.
 import numpy as np
 import pytest
 
-from scqat.tools.swap_lineshape import fit_swap_peak, j_hz_from_theta, theta_from_peak
+from scqat.tools.swap_lineshape import (
+    coupler_flux_for_theta,
+    fit_swap_peak,
+    j_hz_from_theta,
+    theta_from_j_poly,
+    theta_from_peak,
+)
 
 T_NS = 100.0
 #: a full swap at this duration; theta = pi/2 exactly here.
@@ -111,3 +117,81 @@ def test_best_fit_covers_the_full_axis_not_just_the_window():
     assert fit["success"] is True
     assert fit["best_fit"].shape == vq.shape
     assert np.isfinite(fit["best_fit"]).all()
+
+
+# ------------------------------------------------- the conversion formula
+
+#: J(V) = 3 MHz per volt away from a decouple point at -0.05 V, as a J^2 poly:
+#: (3e6)^2 * (V + 0.05)^2 = 9e12 V^2 + 9e11 V + 2.25e10
+J2_COEFFS = [9e12, 9e11, 2.25e10]
+WINDOW = (-0.15, 0.15)
+
+
+def _theta_at(v):
+    return 2 * np.pi * 3e6 * abs(v + 0.05) * T_NS * 1e-9
+
+
+def test_forward_curve_matches_the_underlying_coupling():
+    for v in (-0.15, -0.05, 0.0, 0.12):
+        assert float(theta_from_j_poly(v, J2_COEFFS, T_NS)) == pytest.approx(
+            _theta_at(v), abs=1e-9)
+    # vectorized, and pulse-length-dependent by construction
+    assert theta_from_j_poly([0.0, 0.1], J2_COEFFS, T_NS).shape == (2,)
+    assert np.isnan(theta_from_j_poly([0.0, 0.1], J2_COEFFS, None)).all()
+
+
+def test_inverts_to_the_flux_that_delivers_the_angle():
+    target = _theta_at(0.10)          # a flux on the upper branch
+    sol = coupler_flux_for_theta(target, J2_COEFFS, T_NS, window=WINDOW, prefer=0.10)
+    assert sol["in_window"] is True
+    assert sol["coupler_flux_v"] == pytest.approx(0.10, abs=1e-6)
+    # round trip
+    assert float(theta_from_j_poly(sol["coupler_flux_v"], J2_COEFFS, T_NS)) == (
+        pytest.approx(target, rel=1e-9))
+
+
+def test_both_branches_are_returned_and_prefer_picks_one():
+    """|J| has a MINIMUM at the decouple point, so every angle has two answers."""
+    target = _theta_at(0.0)           # 0.05 V above the decouple point at -0.05
+    sol = coupler_flux_for_theta(target, J2_COEFFS, T_NS, window=WINDOW, prefer=0.0)
+    assert len(sol["roots"]) == 2
+    assert sorted(sol["roots"]) == pytest.approx([-0.10, 0.0], abs=1e-6)
+    assert sol["coupler_flux_v"] == pytest.approx(0.0, abs=1e-6)
+    assert "both sides of the decouple point" in sol["reason"]
+    # the other branch is genuinely reachable, and prefer is what selects it
+    other = coupler_flux_for_theta(target, J2_COEFFS, T_NS, window=WINDOW, prefer=-0.12)
+    assert other["coupler_flux_v"] == pytest.approx(-0.10, abs=1e-6)
+
+
+def test_refuses_an_angle_the_sweep_never_reached():
+    """Out of window is a refusal, never a silent extrapolation."""
+    sol = coupler_flux_for_theta(_theta_at(0.40), J2_COEFFS, T_NS,
+                                 window=WINDOW, prefer=0.10)
+    assert np.isnan(sol["coupler_flux_v"])
+    assert sol["in_window"] is False
+    assert "outside the measured coupler window" in sol["reason"]
+    # without a window it solves, which is exactly why the window is published
+    assert np.isfinite(
+        coupler_flux_for_theta(_theta_at(0.40), J2_COEFFS, T_NS,
+                               prefer=0.10)["coupler_flux_v"])
+
+
+def test_refuses_an_angle_below_the_decouple_minimum():
+    """A parabola with a positive minimum has no real root below it."""
+    coeffs = [9e12, 0.0, 4e11]        # J >= ~0.63 MHz everywhere
+    sol = coupler_flux_for_theta(1e-4, coeffs, T_NS, window=WINDOW)
+    assert np.isnan(sol["coupler_flux_v"])
+    assert sol["roots_all"] == []
+    assert "never reaches this angle" in sol["reason"]
+
+
+def test_conversion_degrades_without_raising():
+    for kwargs in (
+        {"theta_rad": 0.5, "j2_coeffs": [], "swap_time_ns": T_NS},
+        {"theta_rad": 0.5, "j2_coeffs": J2_COEFFS, "swap_time_ns": None},
+        {"theta_rad": float("nan"), "j2_coeffs": J2_COEFFS, "swap_time_ns": T_NS},
+        {"theta_rad": -1.0, "j2_coeffs": J2_COEFFS, "swap_time_ns": T_NS},
+    ):
+        sol = coupler_flux_for_theta(**kwargs)
+        assert np.isnan(sol["coupler_flux_v"])
+        assert sol["reason"]
