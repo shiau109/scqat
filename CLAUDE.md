@@ -389,7 +389,7 @@ when it is promoted in — SCQO's promotion checklist already requires "`simulat
 → offline end-to-end test in `tests/`". Do not open a campaign to backfill them.
 
 <!-- BEGIN generated: coverage-gap -->
-**GENERATED** - refresh with `python scripts/update_docs.py`. **10 of 46**
+**GENERATED** - refresh with `python scripts/update_docs.py`. **10 of 47**
 estimators are imported by NO test, by module path or exported class:
 
 - `ac_stark_shift`

@@ -39,6 +39,7 @@ from scqat.estimators.pair_swap_flux_map import PairSwapFluxMapEstimator
 from scqat.estimators.pair_swap_angle import PairSwapAngleEstimator
 from scqat.estimators.qc_n_swap_amp import QcNSwapAmpEstimator
 from scqat.estimators.qc_n_stark_amp import QcNStarkAmpEstimator
+from scqat.estimators.qc_swap_flux_stark import QcSwapFluxStarkEstimator
 from scqat.estimators.qc_unidirectional_trotter import QcUnidirectionalTrotterEstimator
 from scqat.estimators.qc_trotter_compensation import QcTrotterCompensationEstimator
 from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator
@@ -95,6 +96,7 @@ __all__ = [
     "PairSwapAngleEstimator",
     "QcNSwapAmpEstimator",
     "QcNStarkAmpEstimator",
+    "QcSwapFluxStarkEstimator",
     "QcUnidirectionalTrotterEstimator",
     "QcTrotterCompensationEstimator",
     "RamseyCryoscopeEstimator",
