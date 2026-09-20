@@ -42,7 +42,8 @@ class QubitSpectroscopyFluxEstimator(BaseEstimator):
 
     The result dict reports, per detected peak, the ``peak_flux`` it was found at,
     its ``peak_detuning`` (and absolute ``peak_full_freq`` when available),
-    ``peak_fwhm``, ``peak_amplitude``, the strict ``in_window`` mask, the
+    ``peak_fwhm``, ``peak_amplitude`` (polarity-normalized) with its
+    ``peak_inverted`` polarity flag, the strict ``in_window`` mask, the
     ``outlier`` mask (robust width/amplitude rejection) and the surviving ``good``
     mask, alongside the 2-D signal ``amplitude_map`` kept for plotting.
     """

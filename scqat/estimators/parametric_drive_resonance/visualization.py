@@ -10,8 +10,11 @@ plot_data layout
 coords : ``drive_amp``, ``driving_frequency``, ``peak``
 vars   : ``amplitude`` (drive_amp, driving_frequency); per-peak
          ``peak_drive_amp`` / ``peak_frequency`` / ``peak_fwhm`` /
-         ``peak_amplitude`` / ``good`` / ``outlier``
-attrs  : ``n_amp``, ``n_peaks``, ``n_good``, ``n_outlier``
+         ``peak_amplitude`` / ``peak_inverted`` / ``good`` / ``outlier``
+attrs  : ``n_amp``, ``n_peaks``, ``n_good``, ``n_outlier``, ``n_inverted``
+
+The overlay markers encode ACCEPTANCE (kept vs rejected), not polarity;
+``peak_inverted`` rides along in plot_data for consumers that need dip-vs-peak.
 """
 
 import matplotlib.pyplot as plt
