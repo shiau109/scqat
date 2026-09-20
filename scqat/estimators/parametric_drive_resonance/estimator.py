@@ -19,6 +19,13 @@ Cleaning: a peak is kept (``good``) when its centre lies strictly inside the
 swept frequency window and its ``fwhm`` / ``|amplitude|`` are not robust
 (median/MAD) outliers across the pooled set of detected peaks.
 
+Polarity: ``peak_amplitude`` is polarity-NORMALIZED (a well-fit dip and a
+well-fit peak both report a POSITIVE amplitude — a negative one means a
+badly-conditioned fit). The per-peak ``peak_inverted`` flag carries the slice's
+polarity choice, so a consumer that wants signed physics — here a population
+DIP is the prepared-excited signature — recovers it as
+``np.where(peak_inverted, -peak_amplitude, peak_amplitude)``.
+
 Expected ``xarray.Dataset`` contract
 -------------------------------------
 The dataset should have the ``qubit`` dimension already removed (e.g. via
@@ -90,9 +97,11 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
         dict
             ``{drive_amp, driving_frequency, peak_drive_amp,
             peak_amp_index, peak_frequency, peak_fwhm, peak_amplitude,
-            in_window, outlier, good, fwhm_median, fwhm_mad,
+            peak_inverted, in_window, outlier, good, fwhm_median, fwhm_mad,
             peak_amplitude_median, peak_amplitude_mad, amplitude_map,
-            n_amp, n_peaks, n_in_window, n_good, n_outlier}``
+            n_amp, n_peaks, n_in_window, n_good, n_outlier, n_inverted}``
+            — ``peak_amplitude`` is polarity-normalized; pair it with
+            ``peak_inverted`` for dip-vs-peak (see the module docstring).
         """
         n_sigma = float(kwargs.pop("n_sigma", 3.0))
         signal_var = kwargs.pop("signal_var", None)
@@ -139,6 +148,7 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
             "peak_frequency": cloud["peak_y"],
             "peak_fwhm": cloud["peak_fwhm"],
             "peak_amplitude": cloud["peak_amplitude"],
+            "peak_inverted": cloud["peak_inverted"],
             "in_window": cloud["in_window"],
             "outlier": cloud["outlier"],
             "good": cloud["good"],
@@ -152,6 +162,7 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
             "n_in_window": cloud["n_in_window"],
             "n_good": cloud["n_good"],
             "n_outlier": cloud["n_outlier"],
+            "n_inverted": cloud["n_inverted"],
         }
 
     # ------------------------------------------------------------------
@@ -178,6 +189,9 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
             "peak_frequency": ("peak", np.asarray(results["peak_frequency"], float)),
             "peak_fwhm": ("peak", np.asarray(results["peak_fwhm"], float)),
             "peak_amplitude": ("peak", np.asarray(results["peak_amplitude"], float)),
+            # polarity of the slice each peak came from (True = fitted as a dip),
+            # the only carrier of dip-vs-peak once amplitudes are normalized
+            "peak_inverted": ("peak", np.asarray(results["peak_inverted"], bool)),
             "good": ("peak", np.asarray(results["good"], bool)),
             "outlier": ("peak", np.asarray(results["outlier"], bool)),
         }
@@ -189,6 +203,7 @@ class ParametricDriveResonanceEstimator(BaseEstimator):
             "n_peaks": n_peaks,
             "n_good": int(results["n_good"]),
             "n_outlier": int(results["n_outlier"]),
+            "n_inverted": int(results["n_inverted"]),
         }
         return xr.Dataset(data_vars, coords=coords, attrs=attrs)
 

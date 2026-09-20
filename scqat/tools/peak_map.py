@@ -13,16 +13,30 @@ Acceptance: a peak is kept (``good``) when its centre lies strictly inside the
 swept ``y`` window and its ``fwhm`` / ``|amplitude|`` are not robust
 (median/MAD) outliers across the pooled set of detected peaks.
 
+Polarity
+--------
+:func:`~scqat.tools.peak_fit.fit_peaks` picks the stronger polarity per row and,
+when the dip wins, fits POSITIVE Lorentzians on the negated trace. So
+``peak_amplitude`` is polarity-NORMALIZED: a well-fit population dip and a
+well-fit emission peak BOTH report a positive amplitude, and a negative one
+means a badly-conditioned fit, not a dip. ``peak_inverted`` carries that row's
+polarity choice onto each of its peaks (``True`` = the row was fitted as a dip),
+which is the only place the dip-vs-peak distinction survives the pooling. A
+consumer that wants signed physics recovers it as::
+
+    signed = np.where(peak_inverted, -peak_amplitude, peak_amplitude)
+
 Result contract
 ---------------
 ``{x, y, reduced_map, ref_i, ref_q, full_freq?, peak_x, peak_x_index, peak_y,
-peak_full_freq?, peak_fwhm, peak_amplitude, in_window, outlier, good,
-fwhm_median, fwhm_mad, peak_amplitude_median, peak_amplitude_mad, n_x, n_peaks,
-n_in_window, n_good, n_outlier}`` — the ``peak_*`` arrays are one flat
-point-cloud over all rows; ``reduced_map (n_x, n_y)`` is the per-row REDUCED
-signal actually fitted (``|IQ - ref|`` for complex rows; NaN rows where the
-per-row fit raised); ``ref_i``/``ref_q (n_x,)`` are the per-row radial
-references (NaN for real-signal or failed rows).
+peak_full_freq?, peak_fwhm, peak_amplitude, peak_inverted, in_window, outlier,
+good, fwhm_median, fwhm_mad, peak_amplitude_median, peak_amplitude_mad, n_x,
+n_peaks, n_in_window, n_good, n_outlier, n_inverted}`` — the ``peak_*`` arrays
+are one flat point-cloud over all rows; ``reduced_map (n_x, n_y)`` is the
+per-row REDUCED signal actually fitted (``|IQ - ref|`` for complex rows; NaN
+rows where the per-row fit raised) and is NEVER negated, whatever polarity the
+row's fit chose; ``ref_i``/``ref_q (n_x,)`` are the per-row radial references
+(NaN for real-signal or failed rows).
 """
 
 from typing import Any, Dict, Optional
@@ -86,7 +100,7 @@ def track_peaks(
     ref_i = np.full(len(x), np.nan, dtype=float)
     ref_q = np.full(len(x), np.nan, dtype=float)
     pk_x_idx, pk_x = [], []
-    pk_y, pk_full_freq, pk_fwhm, pk_amplitude = [], [], [], []
+    pk_y, pk_full_freq, pk_fwhm, pk_amplitude, pk_inverted = [], [], [], [], []
     for k in range(len(x)):
         try:
             r = fit_peaks(y, signal_map[k], full_freq=full_freq, **peak_knobs)
@@ -96,12 +110,16 @@ def track_peaks(
         if r["ref_iq"] is not None:
             ref_i[k] = float(np.real(r["ref_iq"]))
             ref_q[k] = float(np.imag(r["ref_iq"]))
+        # The polarity choice is per ROW (fit_peaks fits one trace); every peak
+        # found in that row inherits it, so the pooled cloud keeps dip-vs-peak.
+        row_inverted = bool(r["inverted"])
         for pk in r["peaks"]:
             pk_x_idx.append(k)
             pk_x.append(float(x[k]))
             pk_y.append(float(pk["detuning"]))
             pk_fwhm.append(float(pk["fwhm"]))
             pk_amplitude.append(float(pk["amplitude"]))
+            pk_inverted.append(row_inverted)
             pk_full_freq.append(
                 float(pk["full_freq"]) if (has_full_freq and "full_freq" in pk) else np.nan
             )
@@ -111,6 +129,7 @@ def track_peaks(
     peak_y = np.asarray(pk_y, dtype=float)
     peak_fwhm = np.asarray(pk_fwhm, dtype=float)
     peak_amplitude = np.asarray(pk_amplitude, dtype=float)
+    peak_inverted = np.asarray(pk_inverted, dtype=bool)
     peak_full_freq = np.asarray(pk_full_freq, dtype=float)
     n_peaks = peak_y.size
 
@@ -139,6 +158,7 @@ def track_peaks(
         "peak_y": peak_y,
         "peak_fwhm": peak_fwhm,
         "peak_amplitude": peak_amplitude,
+        "peak_inverted": peak_inverted,
         "in_window": in_window,
         "outlier": outlier,
         "good": good,
@@ -151,6 +171,7 @@ def track_peaks(
         "n_in_window": int(in_window.sum()),
         "n_good": int(good.sum()),
         "n_outlier": int(outlier.sum()),
+        "n_inverted": int(peak_inverted.sum()),
     }
     if has_full_freq:
         results["full_freq"] = np.asarray(full_freq, dtype=float).ravel()

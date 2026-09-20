@@ -12,8 +12,13 @@ vars   : ``reduced`` + ``amplitude`` (flux_bias, detuning) — the background is
          ``reduced`` (the per-slice fitted signal; ``amplitude`` = raw |IQ| kept
          for reference and as the fallback for pre-``reduced`` plotdata);
          per-peak ``peak_flux`` / ``peak_detuning`` / ``peak_fwhm`` /
-         ``peak_amplitude`` / ``good`` / ``outlier`` (+ optional ``peak_full_freq``)
-attrs  : ``n_flux``, ``n_peaks``, ``n_good``, ``n_outlier``, ``has_full_freq``
+         ``peak_amplitude`` / ``peak_inverted`` / ``good`` / ``outlier``
+         (+ optional ``peak_full_freq``)
+attrs  : ``n_flux``, ``n_peaks``, ``n_good``, ``n_outlier``, ``n_inverted``,
+         ``has_full_freq``
+
+The overlay markers encode ACCEPTANCE (kept vs rejected), not polarity;
+``peak_inverted`` rides along in plot_data for consumers that need dip-vs-peak.
 """
 
 import matplotlib.pyplot as plt

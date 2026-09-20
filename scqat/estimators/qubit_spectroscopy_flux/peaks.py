@@ -9,6 +9,12 @@ kept (two or more transitions can coexist — e.g. the 0-1 line and the
 two-photon 0-2/2 line); assigning points to individual transition branches
 belongs to the downstream flux-dependence fit.
 
+``peak_amplitude`` is polarity-NORMALIZED by the per-trace fit (a well-fit
+absorption dip and a well-fit emission peak both report a POSITIVE amplitude —
+a negative one means a badly-conditioned fit); the per-peak ``peak_inverted``
+flag carries the slice's polarity choice, so signed physics is recovered as
+``np.where(peak_inverted, -peak_amplitude, peak_amplitude)``.
+
 These are plain functions: inside scqat they are stage 1 of both
 :class:`.estimator.QubitSpectroscopyFluxEstimator` (point-cloud only) and
 :class:`~scqat.estimators.qubit_flux_arch.QubitFluxArchEstimator` (cloud +
@@ -96,9 +102,11 @@ def track_flux_peaks(
     dict
         ``{flux_bias, detuning, full_freq?, peak_flux, peak_flux_index,
         peak_detuning, peak_full_freq?, peak_fwhm, peak_amplitude,
-        in_window, outlier, good, fwhm_median, fwhm_mad,
+        peak_inverted, in_window, outlier, good, fwhm_median, fwhm_mad,
         peak_amplitude_median, peak_amplitude_mad, amplitude_map, reduced_map,
-        n_flux, n_peaks, n_in_window, n_good, n_outlier}``
+        n_flux, n_peaks, n_in_window, n_good, n_outlier, n_inverted}`` —
+        ``peak_amplitude`` is polarity-normalized; pair it with
+        ``peak_inverted`` for dip-vs-peak (see the module docstring).
     """
     check_flux_dataset(dataset)
     # Fail loudly BEFORE any per-slice fit — a typo'd knob must never be
@@ -165,6 +173,8 @@ def track_flux_peaks(
         "peak_detuning": cloud["peak_y"],
         "peak_fwhm": cloud["peak_fwhm"],
         "peak_amplitude": cloud["peak_amplitude"],
+        # polarity of the slice each peak came from (True = fitted as a dip)
+        "peak_inverted": cloud["peak_inverted"],
         "in_window": cloud["in_window"],
         "outlier": cloud["outlier"],
         "good": cloud["good"],
@@ -186,6 +196,7 @@ def track_flux_peaks(
         "n_in_window": cloud["n_in_window"],
         "n_good": cloud["n_good"],
         "n_outlier": cloud["n_outlier"],
+        "n_inverted": cloud["n_inverted"],
     }
     if full_freq is not None:
         results["full_freq"] = cloud["full_freq"]
@@ -216,6 +227,7 @@ def flux_cloud_plotdata(results: Dict[str, Any]) -> xr.Dataset:
         "peak_detuning": ("peak", np.asarray(results["peak_detuning"], float)),
         "peak_fwhm": ("peak", np.asarray(results["peak_fwhm"], float)),
         "peak_amplitude": ("peak", np.asarray(results["peak_amplitude"], float)),
+        "peak_inverted": ("peak", np.asarray(results["peak_inverted"], bool)),
         "good": ("peak", np.asarray(results["good"], bool)),
         "outlier": ("peak", np.asarray(results["outlier"], bool)),
     }
@@ -227,6 +239,7 @@ def flux_cloud_plotdata(results: Dict[str, Any]) -> xr.Dataset:
         "n_peaks": n_peaks,
         "n_good": int(results["n_good"]),
         "n_outlier": int(results["n_outlier"]),
+        "n_inverted": int(results["n_inverted"]),
         # reference-scope provenance for the shared IQ-plane panel (absent in
         # results only for pre-ref_scope payloads -> per-slice rendering)
         "ref_scope": str(results.get("ref_scope", "per_slice")),
