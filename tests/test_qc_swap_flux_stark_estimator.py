@@ -49,15 +49,33 @@ def _flux_stark_ds() -> xr.Dataset:
     )
 
 
+#: the two phase-vs-amplitude laws the fixture can inject. ``linear`` is the
+#: convenient one; ``quadratic`` is what a real Stark tone does near zero
+#: amplitude, and it is the one that punishes a global straight-line fit.
+PHASE_LAWS = {
+    "linear": (lambda a, k: k * a, lambda p, k: p / k),
+    "quadratic": (lambda a, k: k * a ** 2,
+                  lambda p, k: np.sqrt(np.clip(p, 0.0, None) / k)),
+}
+
+
 def _ridge_ds(n_swaps: int, theta0: float, *, nv: int = 41, na: int = 21,
-              noise: float = 0.004, seed: int = 7):
-    """A repeated detuned exchange whose ``phi = 0`` locus is a known line.
+              noise: float = 0.004, seed: int = 7, phase_law: str = "linear",
+              k_phi: float = 4.0, half_span: float = 0.005,
+              edge_detuning: float = EDGE_DETUNING, gap_factor: float = 1.0):
+    """A repeated detuned exchange whose ``phi = 0`` locus is known exactly.
 
     Returns ``(dataset, truth)`` where ``truth["ridge"]`` is the compensating
     stark amplitude of every flux row and ``truth["theta"]`` the resonant
     exchange angle. The detuning does two things: it caps the per-round exchange
     through the envelope (that is what localizes the feature in flux) and it
-    winds its own between-round phase, which the stark tone subtracts linearly.
+    winds its own between-round phase, which the stark tone subtracts.
+
+    ``phase_law`` picks how the tone's phase depends on its amplitude.
+    ``"quadratic"`` is the real one -- 5Q4C's echo measured a curve that is
+    quadratic near zero and only straightens past ~0.6 -- and under it the
+    ``phi = 0`` locus is a CURVE in amplitude while staying a straight line in
+    phase. That is what makes a local read the right one.
 
     The composite is the EXACT closed form the estimator inverts,
     ``T = sin^2(theta) * [sin(N*theta_eff)/sin(theta_eff)]^2`` — not SCQO's
@@ -65,19 +83,22 @@ def _ridge_ds(n_swaps: int, theta0: float, *, nv: int = 41, na: int = 21,
     move the row optimum off ``phi = 0`` by a bias the estimator is not claiming
     to model.
     """
-    v = np.linspace(RIDGE_V0 - 0.005, RIDGE_V0 + 0.005, nv)
+    forward, inverse = PHASE_LAWS[phase_law]
+    v = np.linspace(RIDGE_V0 - half_span, RIDGE_V0 + half_span, nv)
     a = np.linspace(0.0, 1.0, na)
     j_hz = 5e6
     t_sw_s = theta0 / (2.0 * np.pi * j_hz)
-    half_span = 0.005
-    delta = (2 * j_hz) * EDGE_DETUNING * (v - RIDGE_V0) / half_span
+    delta = (2 * j_hz) * edge_detuning * (v - RIDGE_V0) / half_span
     env = ((2 * j_hz) ** 2 / (delta ** 2 + (2 * j_hz) ** 2))[:, None]
     theta = np.sqrt(env) * theta0
-    phi_flux = (2 * np.pi * delta * t_sw_s)[:, None]
-    # the stark tone subtracts a phase linear in the swept factor; k_phi is set
-    # so the null stays inside the swept window at every flux
-    k_phi = 4.0
-    phi = phi_flux - (k_phi * (a - RIDGE_A0))[None, :]
+    # The phase the flux pulse itself winds, offset so phi = 0 lands on
+    # RIDGE_A0 at the resonance. ``gap_factor`` is how much longer the phase
+    # accrues than the exchange does -- on 5Q4C a 40 ns pulse sits inside a
+    # ~120 ns round -- and it is what lets the ridge wrap before the detuning
+    # envelope has killed the rows.
+    phi_flux = (2 * np.pi * delta * t_sw_s * gap_factor)[:, None] \
+        + forward(RIDGE_A0, k_phi)
+    phi = phi_flux - forward(a, k_phi)[None, :]
     theta_eff = np.arccos(np.clip(np.cos(phi / 2) * np.cos(theta), -1.0, 1.0))
     ratio = np.sin(n_swaps * theta_eff) / np.sin(theta_eff)
     swap = np.clip(np.sin(theta) ** 2 * ratio ** 2, 0.0, 1.0)
@@ -92,8 +113,9 @@ def _ridge_ds(n_swaps: int, theta0: float, *, nv: int = 41, na: int = 21,
                               np.stack([p00, p01, p10, p11]))},
         coords={"joint_state": LABELS, "flux_amp_v": v, "stark_amp": a},
     )
-    truth = {"ridge": RIDGE_A0 + phi_flux[:, 0] / k_phi, "theta": theta0,
-             "flux": v, "stark": a}
+    truth = {"ridge": inverse(phi_flux[:, 0], k_phi), "theta": theta0,
+             "flux": v, "stark": a,
+             "amp_2pi": float(inverse(2 * np.pi, k_phi))}
     return ds, truth
 
 
@@ -140,23 +162,51 @@ def test_rejects_missing_coordinate():
 
 # --- the compensation ridge -------------------------------------------------
 
-def test_ridge_recovers_the_injected_compensation_and_angle():
-    """Both gates open: the fit returns the injected line AND the angle."""
+@pytest.mark.parametrize("phase_law", ["linear", "quadratic"])
+def test_ridge_recovers_the_injected_compensation_and_angle(phase_law):
+    """Both gates open: the read returns the injected compensation AND the angle.
+
+    Parametrized over the phase law on purpose. A QUADRATIC phase makes the
+    ``phi = 0`` locus a curve in amplitude, and a local read has to survive that
+    -- it is the reason there is no global fit here any more.
+    """
     theta0 = np.pi / 5                      # N*theta = 1.257 < pi/2
-    ds, truth = _ridge_ds(2, theta0)
+    ds, truth = _ridge_ds(2, theta0, phase_law=phase_law)
     est, res = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
     assert res["ridge_ok"] == 1 and res["branch_ok"] == 1
     assert res["n_ridge_rows"] >= 10
+    assert res["resonance_in_gap"] == 0
     step = float(truth["stark"][1] - truth["stark"][0])
     assert res["compensating_stark_amp"] == pytest.approx(RIDGE_A0, abs=step)
     assert res["resonance_flux_amp_v"] == pytest.approx(RIDGE_V0, abs=5e-4)
     assert res["swap_angle_rad_refined"] == pytest.approx(theta0, rel=0.1)
     assert res["swap_angle_consistent"] == 1
     assert res["n_fold_rows"] == 0          # below pi/2 there is nothing to unfold
-    # the fitted line must track the injected one, not just its midpoint
-    fitted = (res["ridge_slope_per_v"] * truth["flux"] + res["ridge_intercept"])
+    # the per-row optima must track the injected locus, not merely bracket it
     used = np.asarray(res["row_ok"], dtype=bool)
-    assert np.abs(fitted - truth["ridge"])[used].max() < step
+    got = np.asarray(res["ridge_stark_amp"], dtype=float)
+    deviation = np.abs(got - truth["ridge"])[used]
+    assert float(np.median(deviation)) < step
+
+
+def test_a_curved_ridge_defeats_a_global_straight_line():
+    """The local read beats a whole-axis line when the phase law is quadratic.
+
+    Not a style preference: on 5Q4C's N=5 map a line across the axis missed the
+    per-row optima by 0.042 stark units against 0.016 for a phase-aware read,
+    and the compensation it implied moved by more than a grid step.
+    """
+    theta0 = np.pi / 5
+    ds, truth = _ridge_ds(2, theta0, phase_law="quadratic")
+    est, res = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
+    flux = np.asarray(truth["flux"])
+    used = np.asarray(res["row_ok"], dtype=bool)
+    got = np.asarray(res["ridge_stark_amp"], dtype=float)
+    line = np.polyval(np.polyfit(flux[used], got[used], 1), flux)
+    local_err = abs(res["compensating_stark_amp"] - RIDGE_A0)
+    line_err = abs(float(np.interp(RIDGE_V0, flux, line)) - RIDGE_A0)
+    assert local_err < line_err
+    assert np.abs(line - got)[used].max() > np.abs(got - truth["ridge"])[used].max()
 
 
 def test_a_sloppy_prior_still_yields_a_precise_angle():
@@ -199,8 +249,9 @@ def test_past_the_ridge_gate_nothing_is_reported():
     assert np.isnan(res["compensating_stark_amp"])
     assert np.isnan(res["resonance_flux_amp_v"])
     assert np.isnan(res["swap_angle_rad_refined"])
-    # the raw ridge coefficients are still reported, for the operator to judge
-    assert np.isfinite(res["ridge_slope_per_v"])
+    assert np.isnan(res["ridge_slope_per_v"])
+    # the measured per-row optima are still there, for the operator to judge
+    assert np.isfinite(np.asarray(res["row_stark_amp"], dtype=float)).any()
 
 
 def test_without_a_prior_both_gates_stay_shut():
@@ -210,7 +261,10 @@ def test_without_a_prior_both_gates_stay_shut():
     assert res["ridge_ok"] == 0 and res["branch_ok"] == 0
     assert np.isnan(res["compensating_stark_amp"])
     assert np.isnan(res["swap_angle_rad_prior"])
-    assert np.isfinite(res["ridge_slope_per_v"])   # the ridge needs no prior
+    # the rows are measured whether or not a prior was supplied; only the
+    # reading that needs a branch selector is withheld
+    assert res["n_ridge_rows"] > 4
+    assert np.isfinite(np.asarray(res["row_contrast"], dtype=float)).all()
 
 
 def test_a_stark_inert_map_yields_no_ridge_rows():
@@ -314,3 +368,63 @@ def test_analyze_writes_artifacts(tmp_path):
     assert "qc_swap_flux_stark_ridge.png" in written
     assert "qc_swap_flux_stark_plotdata.nc" in written
     assert "qc_swap_flux_stark_metadata.json" in written
+
+
+def test_the_periodic_ridge_is_unwrapped_before_it_is_read():
+    """``phi = 0`` is ``phi = 0 mod 2pi``, so a wide flux window wraps the optimum.
+
+    The regression for run ``20260920-212001-377``, whose ridge ran down to
+    stark 0.08 at -150.5 mV and re-entered at 0.95 one row later. Left wrapped,
+    any interpolation through that jump is meaningless.
+    """
+    theta0 = np.pi / 5
+    # a flux window wide enough to drive phi past a full turn
+    ds, truth = _ridge_ds(2, theta0, k_phi=7.0, gap_factor=5.0, nv=45)
+    est, res = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
+    star = np.asarray(res["row_stark_amp"], dtype=float)
+    ridge = np.asarray(res["ridge_stark_amp"], dtype=float)
+    used = np.asarray(res["row_ok"], dtype=bool)
+    span = float(truth["stark"].max() - truth["stark"].min())
+    assert np.nanmax(np.abs(np.diff(star[used]))) > 0.4 * span, "fixture must wrap"
+    assert np.nanmax(np.abs(np.diff(ridge[used]))) < 0.4 * span, "unwrap failed"
+    assert res["ridge_wrap_amp"] == pytest.approx(truth["amp_2pi"], rel=0.15)
+
+
+def test_a_calibrated_period_is_used_and_cross_checked():
+    """``stark_amp_2pi`` from the echo makes the wrap exact and checks itself."""
+    theta0 = np.pi / 5
+    ds, truth = _ridge_ds(2, theta0, k_phi=7.0, gap_factor=5.0, nv=45)
+    est, res = _analyze(ds, swap_count=2, swap_angle_rad=theta0,
+                        stark_amp_2pi=truth["amp_2pi"])
+    assert res["stark_amp_2pi_prior"] == pytest.approx(truth["amp_2pi"])
+    assert res["wrap_consistent"] == 1
+    step = float(truth["stark"][1] - truth["stark"][0])
+    assert res["compensating_stark_amp"] == pytest.approx(RIDGE_A0, abs=step)
+    # a period that disagrees with the map is reported, never silently trusted
+    _est, wrong = _analyze(ds, swap_count=2, swap_angle_rad=theta0,
+                           stark_amp_2pi=0.5 * truth["amp_2pi"])
+    assert wrong["wrap_consistent"] == 0
+
+
+def test_a_resonance_inside_a_dead_band_is_refused():
+    """Near a full swap the resonance row carries no stark signal at all.
+
+    There is then nothing local to interpolate, and reaching it would take a
+    model of phase-vs-amplitude this estimator deliberately does not carry. The
+    numbers are withheld and the flag says why -- the case of 5Q4C's N=2 map.
+    """
+    ds, _truth = _ridge_ds(2, 1.45)          # sin^2(2*theta) ~ 0.04 on resonance
+    est, res = _analyze(ds, swap_count=2, swap_angle_rad=1.45)
+    assert res["ridge_ok"] == 1
+    assert res["resonance_in_gap"] == 1
+    assert np.isnan(res["compensating_stark_amp"])
+    assert np.isnan(res["resonance_flux_amp_v"])
+    # the rows that DID have signal are still reported
+    assert res["n_ridge_rows"] > 4
+
+
+def test_stark_amp_2pi_must_be_positive():
+    ds, _truth = _ridge_ds(2, np.pi / 5)
+    with pytest.raises(ValueError, match="stark_amp_2pi"):
+        QcSwapFluxStarkEstimator().extract_parameters(
+            ds, drive_side="high", swap_count=2, stark_amp_2pi=0.0)
