@@ -61,13 +61,41 @@ import numpy as np
 from .fit_lorentzian import FitLorentzian
 
 __all__ = ["fit_swap_peak", "theta_from_peak", "j_hz_from_theta",
-           "theta_from_j_poly", "coupler_flux_for_theta"]
+           "theta_from_j_poly", "coupler_flux_for_theta", "parabolic_vertex"]
 
 #: points in the smooth curve returned for plotting.
 _DENSE_POINTS = 501
 
 #: a fitted peak above this is not a population — the fit ran away.
 _MAX_PEAK = 1.05
+
+
+def parabolic_vertex(x: np.ndarray, y: np.ndarray, i: int) -> tuple:
+    """The peak's SUB-GRID position, as ``(value, refined)``.
+
+    The sweep lands the true optimum between two swept points as often as on
+    one, and a peak's three top points fix a parabola whose vertex recovers
+    where it actually sat. Degrades to the grid point itself (``refined = 0``)
+    when the maximum is at an end of the swept range or the three points do not
+    curve downwards -- there is nothing to interpolate through then.
+
+    Lives here rather than in an estimator because both swap-family estimators
+    that refine a swept optimum need it (``qc_n_stark_amp`` along the stark
+    axis, ``qc_swap_flux_stark`` along both), and the repo rule is that anything
+    two estimators use is a ``tools/`` routine.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if i <= 0 or i >= y.size - 1:
+        return float(x[i]), 0
+    y0, y1, y2 = float(y[i - 1]), float(y[i]), float(y[i + 1])
+    curvature = y0 - 2.0 * y1 + y2
+    if not np.isfinite(curvature) or curvature >= 0:
+        return float(x[i]), 0
+    # in units of the grid step, and bounded to the bin the peak belongs to
+    delta = float(np.clip(0.5 * (y0 - y2) / curvature, -0.5, 0.5))
+    step = float(x[i + 1] - x[i]) if delta > 0 else float(x[i] - x[i - 1])
+    return float(x[i] + delta * step), 1
 
 
 def theta_from_peak(peak: float) -> float:

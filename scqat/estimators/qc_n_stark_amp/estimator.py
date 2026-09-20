@@ -87,6 +87,7 @@ from scqat.estimators.qc_n_stark_amp.visualization import (
     plot_stark_compensation,
 )
 from scqat.tools.fit_cosine import fit_swap_oscillation
+from scqat.tools.swap_lineshape import parabolic_vertex
 
 AXIS0 = "stark_amp"
 AXIS1 = "swap_count"
@@ -181,27 +182,6 @@ def _empty_pick() -> Dict[str, Any]:
     }
 
 
-def _parabolic_vertex(x: np.ndarray, y: np.ndarray, i: int) -> tuple:
-    """The peak's SUB-GRID position, as ``(value, refined)``.
-
-    The sweep lands the true optimum between two swept amplitudes as often as on
-    one, and a peak's three top points fix a parabola whose vertex recovers where
-    it actually sat. Degrades to the grid point itself (``refined = 0``) when the
-    maximum is at an end of the swept range or the three points do not curve
-    downwards -- there is nothing to interpolate through then.
-    """
-    if i <= 0 or i >= y.size - 1:
-        return float(x[i]), 0
-    y0, y1, y2 = float(y[i - 1]), float(y[i]), float(y[i + 1])
-    curvature = y0 - 2.0 * y1 + y2
-    if not np.isfinite(curvature) or curvature >= 0:
-        return float(x[i]), 0
-    # in units of the grid step, and bounded to the bin the peak belongs to
-    delta = float(np.clip(0.5 * (y0 - y2) / curvature, -0.5, 0.5))
-    step = float(x[i + 1] - x[i]) if delta > 0 else float(x[i] - x[i - 1])
-    return float(x[i] + delta * step), 1
-
-
 def _compensation_pick(
     amps: np.ndarray, contrast: np.ndarray, period: np.ndarray, ok: np.ndarray,
 ) -> Dict[str, Any]:
@@ -247,7 +227,7 @@ def _compensation_pick(
 
     score = np.sqrt((c / float(np.max(c))) * (t / float(np.max(t))))
     i_best = int(np.argmax(score))
-    refined, is_refined = _parabolic_vertex(x, score, i_best)
+    refined, is_refined = parabolic_vertex(x, score, i_best)
     out.update({
         "compensating_stark_amp": float(x[i_best]),
         "compensating_stark_amp_refined": refined,

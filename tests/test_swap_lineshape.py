@@ -13,6 +13,7 @@ from scqat.tools.swap_lineshape import (
     coupler_flux_for_theta,
     fit_swap_peak,
     j_hz_from_theta,
+    parabolic_vertex,
     theta_from_j_poly,
     theta_from_peak,
 )
@@ -195,3 +196,34 @@ def test_conversion_degrades_without_raising():
         sol = coupler_flux_for_theta(**kwargs)
         assert np.isnan(sol["coupler_flux_v"])
         assert sol["reason"]
+
+
+# --- the shared sub-grid peak refinement ------------------------------------
+
+def test_parabolic_vertex_interpolates_between_grid_points():
+    """A peak between two swept points is recovered from its three top points."""
+    x = np.linspace(0.0, 1.0, 11)
+    true = 0.47                                   # deliberately off the grid
+    y = 1.0 - 20.0 * (x - true) ** 2
+    value, refined = parabolic_vertex(x, y, int(np.argmax(y)))
+    assert refined == 1
+    assert value == pytest.approx(true, abs=1e-9)
+
+
+@pytest.mark.parametrize("index", [0, 10])
+def test_parabolic_vertex_degrades_at_the_ends(index):
+    """An optimum at the edge of the sweep has no bracketing pair to fit."""
+    x = np.linspace(0.0, 1.0, 11)
+    y = np.linspace(0.0, 1.0, 11) if index == 10 else np.linspace(1.0, 0.0, 11)
+    value, refined = parabolic_vertex(x, y, index)
+    assert refined == 0
+    assert value == pytest.approx(float(x[index]))
+
+
+def test_parabolic_vertex_refuses_an_upward_curve():
+    """Three points that do not curve DOWN describe no maximum to interpolate."""
+    x = np.linspace(0.0, 1.0, 11)
+    y = (x - 0.5) ** 2                             # a minimum, not a maximum
+    value, refined = parabolic_vertex(x, y, 5)
+    assert refined == 0
+    assert value == pytest.approx(float(x[5]))
