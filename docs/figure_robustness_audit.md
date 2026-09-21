@@ -6,12 +6,13 @@ always be plottable"). **Done:** the shared mechanism `scqat/core/figures.py::re
 on a failed fit" regression test; `parity_switch_continuous` migrated with its
 rename (and its new sibling `parity_switch_discrete` was born on `render_figures`),
 both with the failed-fit test; `parametric_drive_decoherence` migrated when SCQO's
-`qubit_parametric_drive_time` became its first orchestrated consumer. **This doc:**
+`qubit_parametric_drive_time` became its first orchestrated consumer, and
+`ac_stark_shift` when SCQO's `qubit_resonator_stark` became its. **This doc:**
 which of the other estimators still need migrating, and in what order.
 
 Of the estimators with `generate_figures`, only the 2 cryoscopes, the 2
-parity-switch siblings and `parametric_drive_decoherence` use `render_figures`. Of
-the rest, **9 are AT RISK**;
+parity-switch siblings, `parametric_drive_decoherence` and `ac_stark_shift` use
+`render_figures`. Of the rest, **8 are AT RISK**;
 the others are effectively safe (single raw-only figure, or the raw is drawn
 unconditionally and the fit overlay is guarded/NaN-safe).
 
@@ -25,7 +26,6 @@ sibling raise drops the raw figure too).
 |---|---|---|---|
 | **state_discrimination** | 4 | **crash-on-empty-fit + no-isolation** | `visualization.py:170` `absmax = max(abs(nanmin(residues)), abs(nanmax(residues)))` → NaN when `fit_residue` all-NaN → `pcolormesh(vmin=-absmax,vmax=absmax)`+`colorbar` (`:174-179`) raises; the raw I/Q `raw` fig is built first and lost. **The direct analog of the cryoscope bug — fix first.** |
 | **charge_gate_ramsey** | 4 | no-isolation | `estimator.py:259-264` sequential; raw `raw_colormap` (`visualization.py:25`); latent unconditional `attrs['f_c']` (`:165`) |
-| **ac_stark_shift** | 2 | no-isolation | `estimator.py:183-186`; raw `raw_2d` pcolormesh (`visualization.py:33`) |
 | **readout_pulse_photon** | 2 | no-isolation | `estimator.py:163-166`; raw `raw_2d` (`visualization.py:31`) |
 | **zz_interaction** | 2 | no-isolation | `estimator.py:140-143`; raw `raw_data` 2D colormap (`visualization.py:19`) |
 | **readout_fidelity** | ≤9 | no-isolation (mass-drop) | `estimator.py:335-350`; plotters individually simple |
@@ -58,9 +58,9 @@ realistic crash path, but folding it into `render_figures` removes the coupling.
 ## Priority
 
 1. **state_discrimination** — the only genuine crash-on-empty-fit.
-2. **charge_gate_ramsey, ac_stark_shift, readout_pulse_photon, zz_interaction** — a
+2. **charge_gate_ramsey, readout_pulse_photon, zz_interaction** — a
    high-value raw 2D map/trace coupled to a fit sibling. (`parametric_drive_decoherence`
-   was in this tier and is DONE.)
+   and `ac_stark_shift` were in this tier and are DONE.)
 3. **readout_fidelity** + **qubit_tomography** (mass-drop).
 4. **ramsey, qubit_decoherence** — structural only; migrate for consistency.
 

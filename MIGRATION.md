@@ -69,7 +69,7 @@ implementing the contract.** (Note: the former `protocols/hankel_analysis.py` wa
 | `readout_power.ROFidelityPower` | ✅ `ReadoutPowerFidelityAnalyzer` | ported, plot_data-compliant (unified `ReadoutFidelityAnalyzer`, `sweep_coord='amp_prefactor'`; reuses `StateDiscriminationAnalyzer`) |
 | `readout_freq.ROFidelityFreq` | ✅ `ReadoutFreqFidelityAnalyzer` | ported (same unified analyzer, `sweep_coord='frequency'`) |
 | `zz_interaction.ZZinteractionEcho` | ✅ `ZZInteractionEchoAnalyzer` | ported, plot_data-compliant (damped-oscillation per flux; reuses `damped_oscillation`) |
-| `ac_stark_shift` (functional) | ✅ `AcStarkShiftAnalyzer` | ported; Analyzer form of `notebooks/ac_stark_spectroscopy.ipynb` (per-amp f01 via `QubitSpectroscopyAnalyzer`, detuning→photon via `chi_eff`, linear fit vs amp²) |
+| `ac_stark_shift` (functional) | ✅ `AcStarkShiftAnalyzer` | ported; Analyzer form of `notebooks/ac_stark_spectroscopy.ipynb` (per-amp f01 via `QubitSpectroscopyAnalyzer`, detuning→photon via `chi_hz`, linear fit vs amp²; now SCQO `qubit_resonator_stark`'s estimator) |
 | `readout_pulse_photon` (functional) | ✅ `ReadoutPulsePhotonAnalyzer` | ported; Analyzer form of `notebooks/ac_stark_readout.ipynb` (per-delay f01 via `QubitSpectroscopyAnalyzer`, photon-number trace + steady-state average) |
 | `conditional_phase` | empty stub | won't port |
 | `plot_ds_raw_scatter` | utility | optional helper, low priority |
