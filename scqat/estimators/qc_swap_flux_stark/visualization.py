@@ -10,6 +10,11 @@ There is no global fitted curve to draw, on purpose -- the ridge is straight in
 PHASE and curved in amplitude, so the compensation is interpolated from the rows
 around the resonance and only that local segment is drawn.
 
+All three panels put the FLUX on x, and the two that show a stark amplitude put
+it on y, so a feature reads straight across the figure. That is also the
+orientation of the sibling 2x2 population map (``plot_pair_swap_map`` draws
+``axis0`` on x), so the two PNGs of one run overlay without a mental transpose.
+
 Both draw from ``plot_data`` only, and both draw their raw data unconditionally
 -- the overlays are guarded, so a run whose read failed still renders.
 
@@ -85,23 +90,29 @@ def _suptitle(plot_data: xr.Dataset) -> str:
 
 
 def _draw_map(ax, flux, stark, transfer, row_star, row_ok, comp, resonance) -> None:
-    """The normalized transfer, with the measured per-row optima over it."""
-    mesh = ax.pcolormesh(stark, flux, transfer, cmap="viridis",
+    """The normalized transfer, with the measured per-row optima over it.
+
+    Flux on x and stark on y, matching BOTH the sibling 2x2 population map
+    (``plot_pair_swap_map`` draws ``axis0`` on x) and the two panels beside this
+    one. The three panels of this figure then share an x axis, and a feature
+    reads straight across them.
+    """
+    mesh = ax.pcolormesh(flux, stark, transfer.T, cmap="viridis",
                          vmin=0.0, vmax=1.0, shading="nearest")
     ax.figure.colorbar(mesh, ax=ax, label="normalized transfer")
     used = np.asarray(row_ok, dtype=bool)
     if np.isfinite(row_star).any():
-        ax.plot(row_star[used], flux[used], "o", ms=4, mfc="none",
+        ax.plot(flux[used], row_star[used], "o", ms=4, mfc="none",
                 mec="w", mew=1.2, label="row optimum")
     if np.isfinite(resonance):
-        ax.axhline(resonance, color="w", ls="--", lw=1.2, label="resonance")
+        ax.axvline(resonance, color="w", ls="--", lw=1.2, label="resonance")
     if np.isfinite(comp) and np.isfinite(resonance):
-        ax.plot(comp, resonance, "*", ms=18, color=_RIDGE_COLOR, mec="k", mew=0.6,
+        ax.plot(resonance, comp, "*", ms=18, color=_RIDGE_COLOR, mec="k", mew=0.6,
                 label=f"comp = {comp:.3g}")
-    ax.set_xlim(float(np.min(stark)), float(np.max(stark)))
-    ax.set_ylim(float(np.min(flux)), float(np.max(flux)))
-    ax.set_xlabel("AC-Stark amplitude")
-    ax.set_ylabel("flux amplitude (V)")
+    ax.set_xlim(float(np.min(flux)), float(np.max(flux)))
+    ax.set_ylim(float(np.min(stark)), float(np.max(stark)))
+    ax.set_xlabel("flux amplitude (V)")
+    ax.set_ylabel("AC-Stark amplitude")
     ax.set_title("normalized transfer + the per-row optimum")
     if ax.get_legend_handles_labels()[0]:
         ax.legend(loc="best", fontsize=8)
