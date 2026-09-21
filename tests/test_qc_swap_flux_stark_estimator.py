@@ -428,3 +428,28 @@ def test_stark_amp_2pi_must_be_positive():
     with pytest.raises(ValueError, match="stark_amp_2pi"):
         QcSwapFluxStarkEstimator().extract_parameters(
             ds, drive_side="high", swap_count=2, stark_amp_2pi=0.0)
+
+
+def test_the_best_row_is_reported_without_any_prior():
+    """WHERE the compensated transfer peaks is a measurement, not a claim.
+
+    An operator who ran without priors still needs a flux to act on, so
+    `ridge_peak_flux_amp_v` is computed from the rows alone. It equals the
+    gated `resonance_flux_amp_v` whenever the angle has not folded.
+    """
+    theta0 = np.pi / 5
+    ds, _truth = _ridge_ds(2, theta0)
+    _est, bare = _analyze(ds, swap_count=2)
+    assert bare["ridge_ok"] == 0
+    assert np.isnan(bare["resonance_flux_amp_v"])
+    assert bare["ridge_peak_flux_amp_v"] == pytest.approx(RIDGE_V0, abs=5e-4)
+    assert 0.0 < bare["ridge_peak_transfer"] <= 1.05
+
+    _est, gated = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
+    # No fold, so the two must agree — to well inside a grid step. They are not
+    # bit-identical: one vertex is refined on the transfer and the other on its
+    # arcsin, and that curvature differs.
+    assert gated["branch_ok"] == 1
+    step = float(np.diff(ds["flux_amp_v"].values)[0])
+    assert gated["ridge_peak_flux_amp_v"] == pytest.approx(
+        gated["resonance_flux_amp_v"], abs=0.05 * abs(step))

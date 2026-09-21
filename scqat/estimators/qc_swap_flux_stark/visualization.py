@@ -89,7 +89,23 @@ def _suptitle(plot_data: xr.Dataset) -> str:
     return "AC-Stark compensation  —  " + "   ".join(bits)
 
 
-def _draw_map(ax, flux, stark, transfer, row_star, row_ok, comp, resonance) -> None:
+def _mark_flux(ax, resonance, peak_flux, color="k") -> None:
+    """One vertical marker per meaning: the gated resonance, and the raw peak.
+
+    They coincide when the angle has not folded, and the dotted line is then
+    hidden under the dashed one — which is the honest picture: the prior added
+    a CLAIM, not a different number.
+    """
+    if np.isfinite(peak_flux):
+        ax.axvline(peak_flux, color=color, ls=":", lw=1.2,
+                   label=f"max transfer: {peak_flux:.5g} V")
+    if np.isfinite(resonance):
+        ax.axvline(resonance, color=color, ls="--", lw=1.2,
+                   label=f"resonance: {resonance:.5g} V")
+
+
+def _draw_map(ax, flux, stark, transfer, row_star, row_ok, comp, resonance,
+              peak_flux) -> None:
     """The normalized transfer, with the measured per-row optima over it.
 
     Flux on x and stark on y, matching BOTH the sibling 2x2 population map
@@ -104,8 +120,7 @@ def _draw_map(ax, flux, stark, transfer, row_star, row_ok, comp, resonance) -> N
     if np.isfinite(row_star).any():
         ax.plot(flux[used], row_star[used], "o", ms=4, mfc="none",
                 mec="w", mew=1.2, label="row optimum")
-    if np.isfinite(resonance):
-        ax.axvline(resonance, color="w", ls="--", lw=1.2, label="resonance")
+    _mark_flux(ax, resonance, peak_flux, color="w")
     if np.isfinite(comp) and np.isfinite(resonance):
         ax.plot(resonance, comp, "*", ms=18, color=_RIDGE_COLOR, mec="k", mew=0.6,
                 label=f"comp = {comp:.3g}")
@@ -118,7 +133,7 @@ def _draw_map(ax, flux, stark, transfer, row_star, row_ok, comp, resonance) -> N
         ax.legend(loc="best", fontsize=8)
 
 
-def _draw_optima(ax, flux, row_star, ridge_star, row_ok, resonance,
+def _draw_optima(ax, flux, row_star, ridge_star, row_ok, resonance, peak_flux,
                  min_contrast) -> None:
     """The optima as measured and as unwrapped — the wrap made visible."""
     used = np.asarray(row_ok, dtype=bool)
@@ -134,8 +149,7 @@ def _draw_optima(ax, flux, row_star, ridge_star, row_ok, resonance,
         ax.plot(flux[used], ridge_star[used], "s", ms=4, mfc="none",
                 color=_RIDGE_COLOR, label="unwrapped")
         drawn = True
-    if np.isfinite(resonance):
-        ax.axvline(resonance, color="k", ls="--", lw=1)
+    _mark_flux(ax, resonance, peak_flux)
     ax.set_xlabel("flux amplitude (V)")
     ax.set_ylabel("stark amplitude at the row peak")
     title = "per-row optimum  (= phi = 0, mod 2pi)"
@@ -150,8 +164,15 @@ def _draw_optima(ax, flux, row_star, ridge_star, row_ok, resonance,
     ax.grid(alpha=0.3)
 
 
-def _draw_along_ridge(ax, flux, ridge_transfer, ridge_theta, resonance) -> None:
-    """Transfer and angle read on the ridge — a pure-fit panel."""
+def _draw_along_ridge(ax, flux, ridge_transfer, ridge_theta, resonance,
+                      peak_flux) -> None:
+    """Transfer and angle read on the ridge — a pure-fit panel.
+
+    The peak is marked whether or not a prior opened the gates, because WHERE
+    the compensated transfer is largest is a measurement. It is only the claim
+    that the peak IS the resonance that needs the prior — past ``N*theta =
+    pi/2`` the same peak is one of two flanks.
+    """
     drawn = False
     if np.isfinite(ridge_transfer).any():
         ax.plot(flux, ridge_transfer, "o-", ms=4, color=_ROW_COLOR,
@@ -166,8 +187,7 @@ def _draw_along_ridge(ax, flux, ridge_transfer, ridge_theta, resonance) -> None:
         twin.set_ylabel("theta per swap (rad)", color=_RIDGE_COLOR)
         twin.tick_params(axis="y", labelcolor=_RIDGE_COLOR)
         drawn = True
-    if np.isfinite(resonance):
-        ax.axvline(resonance, color="k", ls="--", lw=1)
+    _mark_flux(ax, resonance, peak_flux)
     ax.set_title("along the ridge: phase-compensated transfer,\n"
                  "and the angle it implies (red)")
     if drawn:
@@ -199,12 +219,15 @@ def plot_swap_flux_stark_ridge(plot_data: Optional[xr.Dataset]) -> plt.Figure:
     ridge_theta = _column(plot_data, "ridge_theta_rad", flux.size)
     row_ok = _column(plot_data, "row_ok", flux.size) > 0
     resonance = _attr(plot_data, "resonance_flux_amp_v")
+    peak_flux = _attr(plot_data, "ridge_peak_flux_amp_v")
     comp = _attr(plot_data, "compensating_stark_amp")
     min_contrast = _attr(plot_data, "min_row_contrast")
 
-    _draw_map(axes[0], flux, stark, transfer, row_star, row_ok, comp, resonance)
+    _draw_map(axes[0], flux, stark, transfer, row_star, row_ok, comp, resonance,
+              peak_flux)
     _draw_optima(axes[1], flux, row_star, ridge_star, row_ok, resonance,
-                 min_contrast)
-    _draw_along_ridge(axes[2], flux, ridge_transfer, ridge_theta, resonance)
+                 peak_flux, min_contrast)
+    _draw_along_ridge(axes[2], flux, ridge_transfer, ridge_theta, resonance,
+                      peak_flux)
     fig.suptitle(_suptitle(plot_data))
     return fig

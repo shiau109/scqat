@@ -182,6 +182,8 @@ def _empty_ridge() -> Dict[str, Any]:
         "compensating_is_refined": 0,
         "resonance_flux_amp_v": float("nan"),
         "resonance_in_gap": 0,
+        "ridge_peak_flux_amp_v": float("nan"),
+        "ridge_peak_transfer": float("nan"),
         "swap_angle_rad_refined": float("nan"),
         "swap_angle_rad_prior": float("nan"),
         "swap_angle_consistent": 0,
@@ -411,6 +413,17 @@ def _ridge_pick(flux: np.ndarray, stark: np.ndarray, transfer: np.ndarray,
         out["max_row_contrast"] = float(np.nanmax(contrast))
     out["n_ridge_rows"] = int(np.sum(np.asarray(ok) > 0))
     out["ridge_wrap_amp"] = measured_wrap
+
+    # Where the phase-compensated transfer is largest. This needs NO prior --
+    # it is a measurement, not a claim -- so it is the flux an operator can act
+    # on from any run. It equals `resonance_flux_amp_v` whenever the angle has
+    # not folded; past `pi/2` it is one of the two flanks instead, which is
+    # exactly what the prior is there to tell you.
+    on_ridge = columns["ridge_transfer"]
+    if np.isfinite(on_ridge).any():
+        kp = int(np.nanargmax(on_ridge))
+        out["ridge_peak_flux_amp_v"] = parabolic_vertex(flux, on_ridge, kp)[0]
+        out["ridge_peak_transfer"] = float(on_ridge[kp])
     if swap_angle_rad is not None:
         out["swap_angle_rad_prior"] = float(swap_angle_rad)
     if stark_amp_2pi is not None:
