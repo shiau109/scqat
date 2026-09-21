@@ -3,14 +3,18 @@
 The model is the two-level exchange kernel with the time frozen:
 ``(2J)^2/omega^2 * sin^2(pi*omega*t)``, whose on-resonance height is
 ``sin^2(theta)`` with ``theta = 2*pi*J*t``. These tests pin the angle recovery,
-the branch that ``arcsin`` cannot see, and every degrade-don't-raise path.
+the branch that ``arcsin`` cannot see, and every degrade-don't-raise path --
+and the same kernel repeated N times with the phase compensated, the arch
+``qc_swap_flux_stark`` reads its resonance from.
 """
 
 import numpy as np
 import pytest
 
 from scqat.tools.swap_lineshape import (
+    compensated_swap_arch,
     coupler_flux_for_theta,
+    fit_compensated_swap_arch,
     fit_swap_peak,
     j_hz_from_theta,
     parabolic_vertex,
@@ -227,3 +231,144 @@ def test_parabolic_vertex_refuses_an_upward_curve():
     value, refined = parabolic_vertex(x, y, 5)
     assert refined == 0
     assert value == pytest.approx(float(x[5]))
+
+
+# --- the N-round compensated arch -------------------------------------------
+
+#: like 5Q4C q1_q2's N=5 runs of 2026-09-21: 29 rows over 7 mV swept DOWNWARD,
+#: a Fourier-limited arch (beta ~ 1800/V at theta ~ 0.21) and ~200-average
+#: shot noise; and its N=2 map, whose arch had folded (theta ~ 1.39).
+ARCH_V0 = -0.1495
+NO_FOLD_5 = (0.0, np.pi / 10)
+FOLD_2 = (np.pi / 4, np.pi / 2)
+
+
+def _arch(n, theta0, beta, *, v0=ARCH_V0, span=(-0.153, -0.146), nv=29,
+          noise=0.0, seed=0):
+    v = np.linspace(span[1], span[0], nv)
+    y = compensated_swap_arch(v, theta0, beta, v0, n)
+    if noise:
+        y = y + np.random.default_rng(seed).normal(0.0, noise, v.size)
+    return v, y
+
+
+def test_arch_at_one_round_is_the_single_pulse_lineshape():
+    """N = 1 must reduce to the module's documented kernel, exactly."""
+    t_ns, j_hz, kappa = 40.0, 3e6, 2e9            # kappa: detuning per volt (Hz/V)
+    v = np.linspace(-0.155, -0.145, 101)
+    omega = np.sqrt((kappa * (v - ARCH_V0)) ** 2 + (2 * j_hz) ** 2)
+    kernel = (2 * j_hz) ** 2 / omega ** 2 * np.sin(np.pi * omega * t_ns * 1e-9) ** 2
+    theta0 = 2 * np.pi * j_hz * t_ns * 1e-9
+    arch = compensated_swap_arch(v, theta0, kappa / (2 * j_hz), ARCH_V0, 1)
+    assert arch == pytest.approx(kernel, abs=1e-12)
+
+
+def test_arch_on_resonance_is_the_amplified_angle():
+    """``T_N(x0) = sin^2(N*theta0)``, and past pi/2 the centre is a dip."""
+    assert compensated_swap_arch(ARCH_V0, 0.21, 1800.0, ARCH_V0, 5) == pytest.approx(
+        np.sin(5 * 0.21) ** 2)
+    v, folded = _arch(2, 1.39, 300.0, span=(-0.1545, -0.1445), nv=41)
+    centre = int(np.argmin(np.abs(v - ARCH_V0)))
+    assert folded[centre] == pytest.approx(np.sin(2 * 1.39) ** 2, abs=1e-9)
+    assert folded[centre] < 0.2
+    # the two flanks are where N*theta_eff crosses pi/2: a full transfer
+    assert folded[:centre].max() > 0.95 and folded[centre:].max() > 0.95
+
+
+@pytest.mark.parametrize("n, theta0, beta, band, span, nv", [
+    (5, 0.21, 1800.0, NO_FOLD_5, (-0.153, -0.146), 29),     # one arch
+    (2, 1.39, 300.0, FOLD_2, (-0.1545, -0.1445), 41),       # a dip between two
+])
+def test_arch_fit_recovers_the_centre_and_angle(n, theta0, beta, band, span, nv):
+    v, y = _arch(n, theta0, beta, span=span, nv=nv, noise=0.02, seed=1)
+    fit = fit_compensated_swap_arch(v, y, n, theta_bounds=band, theta_guess=theta0)
+    assert fit["success"] is True, fit["reason"]
+    assert fit["reason"] == ""
+    assert 0.0 < fit["x0_err"] < 1e-4
+    assert fit["x0"] == pytest.approx(ARCH_V0, abs=3 * fit["x0_err"])
+    assert fit["theta_rad"] == pytest.approx(theta0, abs=4 * fit["theta_err"])
+    assert fit["r_squared"] > 0.9
+    # the curves span what they claim to
+    assert fit["best_fit"].shape == v.shape
+    assert fit["x_dense"].min() == pytest.approx(v.min())
+    assert fit["x_dense"].max() == pytest.approx(v.max())
+    assert np.isfinite(fit["best_fit_dense"]).all()
+
+
+def test_arch_fit_does_not_need_a_guess_inside_the_band():
+    """The prior only SEEDS the angle; the band is what constrains it."""
+    v, y = _arch(5, 0.21, 1800.0, noise=0.02, seed=1)
+    guided = fit_compensated_swap_arch(v, y, 5, theta_bounds=NO_FOLD_5,
+                                       theta_guess=0.21)
+    for guess in (None, 0.05, 5.0):
+        blind = fit_compensated_swap_arch(v, y, 5, theta_bounds=NO_FOLD_5,
+                                          theta_guess=guess)
+        assert blind["x0"] == pytest.approx(guided["x0"], abs=1e-7)
+
+
+def test_arch_fit_error_scales_with_the_noise():
+    """The error is taken from the residual, so the caller needs no shot count."""
+    v, clean = _arch(5, 0.21, 1800.0)
+    rng = np.random.default_rng(5)
+    loud = fit_compensated_swap_arch(v, clean + rng.normal(0, 0.03, v.size), 5,
+                                     theta_bounds=NO_FOLD_5)
+    quiet = fit_compensated_swap_arch(v, clean + rng.normal(0, 0.003, v.size), 5,
+                                      theta_bounds=NO_FOLD_5)
+    assert loud["success"] and quiet["success"]
+    assert quiet["x0_err"] < loud["x0_err"] / 5.0          # ideally / 10
+
+
+def test_the_wrong_band_is_refused_by_the_data():
+    """A folded arch cannot be passed off as an unfolded one.
+
+    The two bands give the same height on resonance, which is why the caller's
+    prior picks the band; but the SHAPES differ, so a wrong pick shows up as a
+    fit that explains nothing -- 5Q4C's N=2 map scored chi2/dof 18.6 that way.
+    """
+    v, y = _arch(2, 1.39, 300.0, span=(-0.1545, -0.1445), nv=41, noise=0.02)
+    right = fit_compensated_swap_arch(v, y, 2, theta_bounds=FOLD_2, theta_guess=1.39)
+    wrong = fit_compensated_swap_arch(v, y, 2, theta_bounds=(0.0, np.pi / 4),
+                                      theta_guess=0.7)
+    assert right["success"] is True
+    assert wrong["success"] is False
+    assert wrong["r_squared"] < 0.5
+
+
+def test_a_centre_off_the_window_converges_off_the_window():
+    """Not pinned on the last sample, where an extrapolation would look measured.
+
+    The caller decides what an off-window centre means (``qc_swap_flux_stark``
+    refuses it); the fit's job is to report where the arch actually points.
+    """
+    v, y = _arch(5, 0.21, 1800.0, v0=-0.1545, noise=0.01, seed=1)
+    fit = fit_compensated_swap_arch(v, y, 5, theta_bounds=NO_FOLD_5, theta_guess=0.23)
+    step = float(abs(np.diff(v)[0]))
+    assert fit["x0"] < v.min() - step
+    assert fit["x0"] == pytest.approx(-0.1545, abs=3 * fit["x0_err"])
+
+
+def test_arch_fit_rejects_noise_and_flat_traces():
+    v = np.linspace(-0.153, -0.146, 29)
+    noise = 0.5 + np.random.default_rng(1).normal(0.0, 0.03, v.size)
+    for y in (noise, np.full(v.size, 0.5)):
+        fit = fit_compensated_swap_arch(v, y, 5, theta_bounds=NO_FOLD_5)
+        assert fit["success"] is False
+        assert fit["reason"]
+
+
+def test_arch_fit_degrades_without_raising():
+    v = np.linspace(-0.153, -0.146, 29)
+    for x, y, n, band in (
+        (v, np.full(v.size, np.nan), 5, NO_FOLD_5),       # failed acquisition
+        (v[:4], np.full(4, 0.5), 5, NO_FOLD_5),           # too few points
+        (np.zeros(8), np.full(8, 0.5), 5, NO_FOLD_5),     # degenerate axis
+        (v, np.full(v.size, 0.5), 0, NO_FOLD_5),          # no rounds
+        (v, np.full(v.size, 0.5), 5, (0.3, 0.1)),         # an inverted band
+    ):
+        fit = fit_compensated_swap_arch(x, y, n, theta_bounds=band)
+        assert fit["success"] is False
+        assert np.isnan(fit["x0"]) and np.isnan(fit["x0_err"])
+        assert np.isnan(fit["theta_rad"])
+        assert np.shape(fit["best_fit"]) == np.shape(x)
+        assert np.isnan(fit["best_fit"]).all()
+        assert fit["reason"]

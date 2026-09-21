@@ -50,24 +50,69 @@ the physics, is not dragged by the wings. The residual shape mismatch biases
 ``theta`` HIGH by a few percent at intermediate angles (measured on synthetic
 traces: exact at ``theta`` = pi/10 and pi/2, about +7% near 1.1 rad). That is a
 bring-up-grade number, not a spectroscopy-grade one — quote it as such.
+
+THE SAME ARCH AFTER N PHASE-COMPENSATED ROUNDS
+----------------------------------------------
+Repeat the detuned pulse N times with a phase between rounds, and choose that
+phase so the per-round rotation axis lies on the equator (the compensated
+ridge of ``qc_swap_flux_stark``). The phase changes no magnitude, so the round's
+off-diagonal element is still ``sqrt(P)`` from the model above, and an
+equatorial rotation whose off-diagonal is ``sin(alpha)`` composes as
+``sin(N*alpha)``. Writing the detuning as linear in the knob,
+``delta / (2J) = u = beta * (x - x0)``::
+
+    sqrt(P) = sin(theta0 * sqrt(1 + u^2)) / sqrt(1 + u^2)
+    T_N(x)  = sin^2(N * arcsin(sqrt(P)))
+
+three parameters (``theta0``, ``beta``, ``x0``) with no amplitude or offset,
+because the normalized transfer pins both. ``N = 1`` is the single-pulse model
+exactly. On resonance ``T_N = sin^2(N * theta0)``, so past ``N * theta0 = pi/2``
+the arch FOLDS: the centre becomes a dip between two maxima of height one, and
+which band ``theta0`` lives in is not something a fit on a noisy trace should
+be left to guess — :func:`fit_compensated_swap_arch` takes the band from the
+caller's prior.
+
+This is the one place the WIDTH is used, and it is not used as a coupling: the
+arch is Fourier-limited like the single pulse (``u`` of order ``1/theta0`` at
+half height for a small angle), so ``beta`` is a shape parameter. What the fit
+buys over the maximum sample is the CENTRE — every point on both flanks votes
+for ``x0``, where the maximum is decided by the noise on the flat top.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import warnings
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+from scipy.optimize import least_squares
 
 from .fit_lorentzian import FitLorentzian
 
 __all__ = ["fit_swap_peak", "theta_from_peak", "j_hz_from_theta",
-           "theta_from_j_poly", "coupler_flux_for_theta", "parabolic_vertex"]
+           "theta_from_j_poly", "coupler_flux_for_theta", "parabolic_vertex",
+           "compensated_swap_arch", "fit_compensated_swap_arch"]
 
 #: points in the smooth curve returned for plotting.
 _DENSE_POINTS = 501
 
 #: a fitted peak above this is not a population — the fit ran away.
 _MAX_PEAK = 1.05
+
+#: how far outside the data the arch centre may converge, in half-spans of the
+#: data. A centre that belongs OUTSIDE the window must be free to go there and be
+#: flagged by the caller; a bound on the window edge would pin it to the last
+#: sample and make an extrapolation look like a measurement.
+_ARCH_CENTRE_REACH = 3.0
+
+#: the arch fit's seed grid: angles across the band, half-widths log-spaced from
+#: half a sample to twice the window, and centres across the reach at the sample
+#: pitch. The least-squares polish then starts from the best few DISTINCT
+#: centres, because a single seed on the wrong side of a dead band walks into
+#: the nearest flank and stays there.
+_SEED_ANGLES = 9
+_SEED_WIDTHS = 16
+_SEED_POLISH = 3
 
 
 def parabolic_vertex(x: np.ndarray, y: np.ndarray, i: int) -> tuple:
@@ -406,4 +451,239 @@ def fit_swap_peak(
         "x_dense": x_dense,
         "best_fit_dense": np.asarray(result.eval(x=x_dense), dtype=float),
         "fit_report": result.fit_report(),
+    }
+
+
+def compensated_swap_arch(x, theta0, beta, x0, n_swaps):
+    """The phase-compensated transfer after ``n_swaps`` rounds, across resonance.
+
+    ``T_N = sin^2(N * arcsin(sin(theta0*s) / s))`` with
+    ``s = sqrt(1 + (beta*(x - x0))^2)`` — see the module docstring. ``beta`` is
+    in inverse units of ``x``; ``theta0`` is the single-round angle on
+    resonance.
+    """
+    s = np.sqrt(1.0 + (beta * (np.asarray(x, dtype=float) - x0)) ** 2)
+    single = np.clip(np.sin(theta0 * s) / s, -1.0, 1.0)
+    return np.sin(n_swaps * np.arcsin(single)) ** 2
+
+
+def _arch_half_width(theta0: float, n_swaps: int) -> float:
+    """Where the arch falls to half its height, in the reduced detuning ``u``.
+
+    The OUTER half-height point, so a folded arch (a dip between two maxima) is
+    measured across both flanks. Used only to seed ``beta``: the arch is
+    Fourier-limited, so the same data width means a very different ``beta`` at a
+    small angle than at a large one.
+    """
+    u = np.linspace(0.0, 4.0 * np.pi / max(theta0, 1e-6) + 4.0, 4001)
+    shape = compensated_swap_arch(u, theta0, 1.0, 0.0, n_swaps)
+    above = np.flatnonzero(shape >= 0.5 * float(np.max(shape)))
+    return float(u[above[-1]]) if above.size and u[above[-1]] > 0 else 1.0
+
+
+def _degenerate_arch(x: np.ndarray, reason: str) -> Dict[str, Any]:
+    """The NaN result an unusable trace returns; never raises, never omits a key."""
+    finite = x[np.isfinite(x)]
+    dense = (np.linspace(float(np.min(finite)), float(np.max(finite)), _DENSE_POINTS)
+             if finite.size > 1 else np.full(_DENSE_POINTS, np.nan))
+    return {
+        "x0": float("nan"), "x0_err": float("nan"),
+        "theta_rad": float("nan"), "theta_err": float("nan"),
+        "beta": float("nan"), "r_squared": float("nan"), "success": False,
+        "best_fit": np.full(x.shape, np.nan),
+        "x_dense": dense,
+        "best_fit_dense": np.full(_DENSE_POINTS, np.nan),
+        "reason": reason,
+    }
+
+
+def _arch_seeds(xs: np.ndarray, y: np.ndarray, n_swaps: int,
+                band: Tuple[float, float], guess: Optional[float], pitch: float):
+    """The best few ``(theta0, beta, centre)`` starts, from a coarse grid.
+
+    Works on the reduced axis ``xs`` (the data span [-1, 1]). The grid is small
+    enough to evaluate outright, and evaluating it is what makes the polish
+    independent of where the largest sample happened to fall.
+    """
+    lo, hi = band
+    pad = 1e-3 * (hi - lo)
+    thetas = list(np.linspace(lo, hi, _SEED_ANGLES + 2)[1:-1])
+    if guess is not None and np.isfinite(guess):
+        thetas.append(float(np.clip(guess, lo + pad, hi - pad)))
+    widths = np.geomspace(0.5 * pitch, 2.0, _SEED_WIDTHS)
+    centres = np.linspace(-_ARCH_CENTRE_REACH, _ARCH_CENTRE_REACH,
+                          int(round(2.0 * _ARCH_CENTRE_REACH / pitch)) + 1)
+    candidates = []
+    for theta in thetas:
+        betas = _arch_half_width(theta, n_swaps) / widths
+        model = compensated_swap_arch(
+            xs[None, None, :], theta, betas[:, None, None],
+            centres[None, :, None], n_swaps)
+        cost = np.sum((model - y[None, None, :]) ** 2, axis=-1)
+        order = np.argsort(cost, axis=None)[:32]
+        for i, j in zip(*np.unravel_index(order, cost.shape)):
+            candidates.append((float(cost[i, j]), theta, float(betas[i]),
+                               float(centres[j])))
+    candidates.sort(key=lambda c: c[0])
+    # distinct centres only: the neighbours of the best grid point are the same
+    # basin, and the point of several starts is to try a different one
+    seeds = []
+    for _cost, theta, beta, centre in candidates:
+        if all(abs(centre - s[2]) > 0.2 for s in seeds):
+            seeds.append((theta, beta, centre))
+        if len(seeds) == _SEED_POLISH:
+            break
+    return seeds
+
+
+def _residual_scaled_errors(jac: np.ndarray, ssr: float, n_points: int) -> np.ndarray:
+    """One-sigma parameter errors, the noise taken from the residual.
+
+    ``curve_fit`` would do this with a pseudo-inverse that DROPS a degenerate
+    direction, which reports its variance as zero -- a parameter the data do
+    not constrain at all comes back with an error of 0. Here a rank-deficient
+    Jacobian gives NaN instead, which is the honest answer.
+    """
+    n_params = jac.shape[1]
+    nan = np.full(n_params, np.nan)
+    if n_points <= n_params or not np.all(np.isfinite(jac)):
+        return nan
+    _, sv, vt = np.linalg.svd(jac, full_matrices=False)
+    if sv[0] <= 0 or sv[-1] <= np.finfo(float).eps * max(jac.shape) * sv[0]:
+        return nan
+    pcov = (vt.T / sv ** 2) @ vt * (ssr / (n_points - n_params))
+    return np.sqrt(np.clip(np.diag(pcov), 0.0, None))
+
+
+def fit_compensated_swap_arch(
+    x, y, n_swaps: int, *, theta_bounds: Tuple[float, float],
+    theta_guess: Optional[float] = None, min_r_squared: float = 0.5,
+) -> Dict[str, Any]:
+    """Fit the N-round compensated arch and report its CENTRE with an error.
+
+    Parameters
+    ----------
+    x : array_like
+        The detuning knob (volts for ``qc_swap_flux_stark``), in any order.
+    y : array_like
+        The NORMALIZED transfer read along the compensated ridge, one value per
+        ``x``; NaN entries are ignored.
+    n_swaps : int
+        The number of rounds N.
+    theta_bounds : (float, float)
+        The band the single-round angle ``theta0`` lives in. The caller's PRIOR
+        decides it: ``(0, pi/(2N)]`` when the arch has not folded, ``[pi/(2N),
+        pi/N]`` when it has — the two bands give mirror-image heights on
+        resonance, and a noisy trace should not be left to pick between them.
+    theta_guess : float, optional
+        The prior angle, added to the seed grid.
+    min_r_squared : float, optional
+        The arch must beat a constant by this much. Default 0.5, the same
+        scale-free gate as :func:`fit_swap_peak`.
+
+    Returns
+    -------
+    dict
+        ``x0`` / ``x0_err`` (the centre and its one-sigma error), ``theta_rad``
+        / ``theta_err``, ``beta`` (in inverse units of ``x``), ``r_squared``,
+        ``success``, ``best_fit`` (at the FULL input ``x``), ``x_dense`` /
+        ``best_fit_dense`` (over the finite data range) and ``reason`` (empty
+        on a clean success).
+
+        The errors come from the covariance scaled by the RESIDUAL variance, so
+        the caller needs no shot count, and they are honest exactly when the
+        model is: on 5Q4C's four runs of 2026-09-20/21 the reduced chi-square
+        against pure shot noise was 0.8-1.2. A centre that converged OUTSIDE
+        the data (allowed up to :data:`_ARCH_CENTRE_REACH` half-spans away) is
+        returned as it is; whether it is usable is the caller's judgement.
+
+        **Never raises**, like :func:`fit_swap_peak`.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = int(n_swaps)
+    if n < 1:
+        return _degenerate_arch(x, "n_swaps must be >= 1")
+    lo, hi = (float(b) for b in theta_bounds)
+    if not (np.isfinite(lo) and np.isfinite(hi) and 0.0 <= lo < hi):
+        return _degenerate_arch(
+            x, f"theta_bounds must be an increasing pair, got {theta_bounds!r}")
+
+    # three parameters, and at least two degrees of freedom to estimate the
+    # noise from -- the errors are only as good as that estimate
+    finite = np.isfinite(x) & np.isfinite(y)
+    if finite.sum() < 5:
+        return _degenerate_arch(x, "too few finite points to fit an arch")
+    xf, yf = x[finite], y[finite]
+    mid = 0.5 * float(np.max(xf) + np.min(xf))
+    half = 0.5 * float(np.max(xf) - np.min(xf))
+    if not half > 0:
+        return _degenerate_arch(x, "degenerate x axis")
+    xs = (xf - mid) / half
+    pitch = float(np.min(np.diff(np.unique(xs))))
+
+    def residual(p):
+        return compensated_swap_arch(xs, p[0], p[1], p[2], n) - yf
+
+    # beta's ceiling is an arch a thousandth of a sample wide -- far past
+    # anything a sweep resolves, but finite, so the model stays finite
+    lower = np.array([lo, 0.0, -_ARCH_CENTRE_REACH])
+    upper = np.array([hi, 1e3 / pitch, _ARCH_CENTRE_REACH])
+    # a start must be strictly inside the box
+    inset = 1e-6 * (upper - lower)
+    best = None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for seed in _arch_seeds(xs, yf, n, (lo, hi), theta_guess, pitch):
+            start = np.clip(seed, lower + inset, upper - inset)
+            try:
+                sol = least_squares(residual, start, bounds=(lower, upper),
+                                    max_nfev=20000)
+            except ValueError:
+                continue
+            if sol.status < 1 or not np.all(np.isfinite(sol.fun)):
+                continue
+            ssr = float(np.sum(sol.fun ** 2))
+            if best is None or ssr < best[0]:
+                best = (ssr, sol)
+    if best is None:
+        return _degenerate_arch(x, "the arch fit did not converge from any seed")
+
+    ssr, sol = best
+    theta0, beta_r, centre = (float(p) for p in sol.x)
+    ss_tot = float(np.sum((yf - yf.mean()) ** 2))
+    r_squared = 1.0 - ssr / ss_tot if ss_tot > 0 else float("nan")
+    errors = _residual_scaled_errors(sol.jac, ssr, yf.size)
+    x0_err = float(errors[2] * half)
+    theta_err = float(errors[0])
+
+    reasons = []
+    if not (np.isfinite(x0_err) and np.isfinite(theta_err)):
+        reasons.append("the data do not constrain the arch (rank-deficient fit)")
+    if abs(centre) >= _ARCH_CENTRE_REACH * (1.0 - 1e-6):
+        reasons.append("the centre ran to the reach bound")
+    if not (np.isfinite(r_squared) and r_squared > min_r_squared):
+        reasons.append(f"r_squared {r_squared:.3g} does not clear {min_r_squared}")
+    if min(theta0 - lo, hi - theta0) <= 1e-6 * (hi - lo):
+        # not a failure by itself: an arch at its saturated top pins it there
+        reasons.append("theta0 rests on its band edge")
+    success = bool(np.isfinite(x0_err) and np.isfinite(theta_err)
+                   and abs(centre) < _ARCH_CENTRE_REACH * (1.0 - 1e-6)
+                   and np.isfinite(r_squared) and r_squared > min_r_squared)
+
+    x0 = mid + float(centre) * half
+    beta = float(beta_r) / half
+    x_dense = np.linspace(float(np.min(xf)), float(np.max(xf)), _DENSE_POINTS)
+    return {
+        "x0": float(x0),
+        "x0_err": x0_err,
+        "theta_rad": float(theta0),
+        "theta_err": theta_err,
+        "beta": beta,
+        "r_squared": float(r_squared),
+        "success": success,
+        "best_fit": compensated_swap_arch(x, theta0, beta, x0, n),
+        "x_dense": x_dense,
+        "best_fit_dense": compensated_swap_arch(x_dense, theta0, beta, x0, n),
+        "reason": "; ".join(reasons),
     }

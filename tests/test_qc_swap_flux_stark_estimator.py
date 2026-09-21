@@ -62,7 +62,9 @@ PHASE_LAWS = {
 def _ridge_ds(n_swaps: int, theta0: float, *, nv: int = 41, na: int = 21,
               noise: float = 0.004, seed: int = 7, phase_law: str = "linear",
               k_phi: float = 4.0, half_span: float = 0.005,
-              edge_detuning: float = EDGE_DETUNING, gap_factor: float = 1.0):
+              edge_detuning: float = EDGE_DETUNING, gap_factor: float = 1.0,
+              window_offset: float = 0.0, descending: bool = False,
+              exact_arch: bool = False):
     """A repeated detuned exchange whose ``phi = 0`` locus is known exactly.
 
     Returns ``(dataset, truth)`` where ``truth["ridge"]`` is the compensating
@@ -70,6 +72,19 @@ def _ridge_ds(n_swaps: int, theta0: float, *, nv: int = 41, na: int = 21,
     exchange angle. The detuning does two things: it caps the per-round exchange
     through the envelope (that is what localizes the feature in flux) and it
     winds its own between-round phase, which the stark tone subtracts.
+
+    ``window_offset`` moves the flux WINDOW (V) while the resonance stays at
+    ``RIDGE_V0``, and ``descending`` sweeps it downward, the way every 5Q4C run
+    so far was taken. ``edge_detuning`` is the detuning at ``half_span`` from
+    the resonance, in units of ``2J``.
+
+    ``exact_arch`` makes the per-round exchange the EXACT detuned one,
+    ``sin(theta0*s)/s`` with ``s = sqrt(1 + u^2)`` -- Fourier-limited and
+    flat-topped, the shape the estimator's arch fit models and the hardware
+    shows. The default ``theta0/s`` is a narrower stand-in: symmetric about the
+    same resonance with the same height, which is all the older ridge tests
+    need. The detuned round's own diagonal phase is not modelled separately;
+    it is part of the flux-linear phase either way.
 
     ``phase_law`` picks how the tone's phase depends on its amplitude.
     ``"quadratic"`` is the real one -- 5Q4C's echo measured a curve that is
@@ -84,13 +99,16 @@ def _ridge_ds(n_swaps: int, theta0: float, *, nv: int = 41, na: int = 21,
     to model.
     """
     forward, inverse = PHASE_LAWS[phase_law]
-    v = np.linspace(RIDGE_V0 - half_span, RIDGE_V0 + half_span, nv)
+    v = RIDGE_V0 + window_offset + np.linspace(-half_span, half_span, nv)
+    if descending:
+        v = v[::-1]
     a = np.linspace(0.0, 1.0, na)
     j_hz = 5e6
     t_sw_s = theta0 / (2.0 * np.pi * j_hz)
     delta = (2 * j_hz) * edge_detuning * (v - RIDGE_V0) / half_span
-    env = ((2 * j_hz) ** 2 / (delta ** 2 + (2 * j_hz) ** 2))[:, None]
-    theta = np.sqrt(env) * theta0
+    s = np.sqrt(1.0 + (delta / (2 * j_hz)) ** 2)[:, None]
+    theta = (np.arcsin(np.clip(np.sin(theta0 * s) / s, -1.0, 1.0)) if exact_arch
+             else theta0 / s)
     # The phase the flux pulse itself winds, offset so phi = 0 lands on
     # RIDGE_A0 at the resonance. ``gap_factor`` is how much longer the phase
     # accrues than the exchange does -- on 5Q4C a 40 ns pulse sits inside a
@@ -144,9 +162,9 @@ def test_plot_data_uses_flux_stark_axes_and_joint_basis():
     assert set(pd.data_vars) == {
         "p00", "p01", "p10", "p11", "transfer",
         "row_stark_amp", "row_contrast", "ridge_stark_amp", "ridge_transfer",
-        "ridge_theta_rad", "row_ok",
+        "ridge_theta_rad", "row_ok", "arch_fit",
     }
-    assert set(pd.coords) == {"flux_amp_v", "stark_amp"}
+    assert set(pd.coords) == {"flux_amp_v", "stark_amp", "flux_amp_v_dense"}
     assert pd.attrs["axis0"] == "flux_amp_v"
     assert pd.attrs["axis1"] == "stark_amp"
     assert pd.attrs["transfer_state"] == "p10"
@@ -162,24 +180,31 @@ def test_rejects_missing_coordinate():
 
 # --- the compensation ridge -------------------------------------------------
 
+@pytest.mark.parametrize("descending", [False, True])
 @pytest.mark.parametrize("phase_law", ["linear", "quadratic"])
-def test_ridge_recovers_the_injected_compensation_and_angle(phase_law):
+def test_ridge_recovers_the_injected_compensation_and_angle(phase_law, descending):
     """Both gates open: the read returns the injected compensation AND the angle.
 
     Parametrized over the phase law on purpose. A QUADRATIC phase makes the
     ``phi = 0`` locus a curve in amplitude, and a local read has to survive that
-    -- it is the reason there is no global fit here any more.
+    -- it is the reason there is no global fit here any more. And over the
+    sweep direction, because every 5Q4C run so far swept the flux DOWNWARD.
     """
     theta0 = np.pi / 5                      # N*theta = 1.257 < pi/2
-    ds, truth = _ridge_ds(2, theta0, phase_law=phase_law)
+    ds, truth = _ridge_ds(2, theta0, phase_law=phase_law, descending=descending)
     est, res = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
     assert res["ridge_ok"] == 1 and res["branch_ok"] == 1
     assert res["n_ridge_rows"] >= 10
-    assert res["resonance_in_gap"] == 0
-    step = float(truth["stark"][1] - truth["stark"][0])
+    assert res["resonance_at_edge"] == 0 and res["resonance_unresolved"] == 0
+    assert res["compensation_in_gap"] == 0
+    step = float(abs(truth["stark"][1] - truth["stark"][0]))
     assert res["compensating_stark_amp"] == pytest.approx(RIDGE_A0, abs=step)
     assert res["resonance_flux_amp_v"] == pytest.approx(RIDGE_V0, abs=5e-4)
+    # the error is reported with the value, and it is small but not zero
+    assert 0.0 < res["resonance_flux_err_v"] < 5e-4
+    assert 0.0 < res["compensating_stark_err"] < step
     assert res["swap_angle_rad_refined"] == pytest.approx(theta0, rel=0.1)
+    assert res["swap_angle_err_rad"] > 0.0
     assert res["swap_angle_consistent"] == 1
     assert res["n_fold_rows"] == 0          # below pi/2 there is nothing to unfold
     # the per-row optima must track the injected locus, not merely bracket it
@@ -210,14 +235,20 @@ def test_a_curved_ridge_defeats_a_global_straight_line():
 
 
 def test_a_sloppy_prior_still_yields_a_precise_angle():
-    """The prior is a BRANCH SELECTOR — 30% off must not move the answer."""
+    """The prior is a BRANCH SELECTOR — 30% off must not move the answer.
+
+    It picks the arch fit's angle band and adds one seed to its grid; the
+    minimum the fit converges to is the same, to the optimizer's tolerance.
+    """
     theta0 = np.pi / 5
     ds, _truth = _ridge_ds(2, theta0)
     est, exact = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
     _est, sloppy = _analyze(ds, swap_count=2, swap_angle_rad=0.7 * theta0)
     assert sloppy["branch_ok"] == 1
     assert sloppy["swap_angle_rad_refined"] == pytest.approx(
-        exact["swap_angle_rad_refined"], rel=1e-12)
+        exact["swap_angle_rad_refined"], rel=1e-6)
+    assert sloppy["resonance_flux_amp_v"] == pytest.approx(
+        exact["resonance_flux_amp_v"], abs=1e-9)
 
 
 def test_mid_band_reports_the_ridge_but_not_the_angle():
@@ -233,11 +264,14 @@ def test_mid_band_reports_the_ridge_but_not_the_angle():
     assert res["ridge_ok"] == 1 and res["branch_ok"] == 0
     step = float(ds["stark_amp"].values[1] - ds["stark_amp"].values[0])
     assert res["compensating_stark_amp"] == pytest.approx(RIDGE_A0, abs=step)
+    # the resonance is findable because the arch is fitted in the FOLDED band,
+    # where its centre is a dip between two maxima -- the largest row is one of
+    # those maxima, not the resonance
     assert res["resonance_flux_amp_v"] == pytest.approx(RIDGE_V0, abs=5e-4)
-    # the resonance is only findable because the fold was UNDONE: on the
-    # principal branch it would have read as a local minimum
+    # the per-row angle drawn beside it is unfolded to match
     assert res["n_fold_rows"] > 0
     assert np.isnan(res["swap_angle_rad_refined"])
+    assert np.isnan(res["swap_angle_err_rad"])
     assert res["swap_angle_consistent"] == 0
 
 
@@ -250,6 +284,10 @@ def test_past_the_ridge_gate_nothing_is_reported():
     assert np.isnan(res["resonance_flux_amp_v"])
     assert np.isnan(res["swap_angle_rad_refined"])
     assert np.isnan(res["ridge_slope_per_v"])
+    # a shut gate is the N's limitation, not the data's -- no refusal flag, and
+    # no fit was attempted
+    assert res["resonance_unresolved"] == 0 and res["resonance_at_edge"] == 0
+    assert np.isnan(res["resonance_flux_err_v"])
     # the measured per-row optima are still there, for the operator to judge
     assert np.isfinite(np.asarray(res["row_stark_amp"], dtype=float)).any()
 
@@ -261,6 +299,7 @@ def test_without_a_prior_both_gates_stay_shut():
     assert res["ridge_ok"] == 0 and res["branch_ok"] == 0
     assert np.isnan(res["compensating_stark_amp"])
     assert np.isnan(res["swap_angle_rad_prior"])
+    assert res["resonance_unresolved"] == 0
     # the rows are measured whether or not a prior was supplied; only the
     # reading that needs a branch selector is withheld
     assert res["n_ridge_rows"] > 4
@@ -283,6 +322,10 @@ def test_a_stark_inert_map_yields_no_ridge_rows():
     assert res["n_ridge_rows"] == 0
     assert np.isnan(res["compensating_stark_amp"])
     assert np.isnan(res["ridge_slope_per_v"])
+    # the gate was OPEN (one swap at pi/5 is well inside it), so the missing
+    # answer is the data's and is flagged as such
+    assert res["ridge_ok"] == 1
+    assert res["resonance_unresolved"] == 1
 
 
 def test_low_contrast_rows_are_excluded_from_the_fit():
@@ -320,8 +363,17 @@ def test_plot_data_carries_the_ridge_columns_and_attrs():
     for key in ("row_stark_amp", "row_contrast", "ridge_stark_amp",
                 "ridge_transfer", "ridge_theta_rad", "row_ok"):
         assert pd[key].dims == ("flux_amp_v",)
+    # the arch is drawn on a denser flux axis spanning the same window
+    assert pd["arch_fit"].dims == ("flux_amp_v_dense",)
+    dense = pd["flux_amp_v_dense"].values
+    assert dense.size > pd.sizes["flux_amp_v"]
+    assert dense.min() == pytest.approx(pd["flux_amp_v"].values.min())
+    assert dense.max() == pytest.approx(pd["flux_amp_v"].values.max())
+    assert np.isfinite(pd["arch_fit"].values).any()
     assert pd.attrs["compensating_stark_amp"] == pytest.approx(
         res["compensating_stark_amp"])
+    assert pd.attrs["resonance_flux_err_v"] == pytest.approx(
+        res["resonance_flux_err_v"])
     assert pd.attrs["branch_ok"] == 1
     assert pd.attrs["swap_count"] == 2
 
@@ -332,6 +384,7 @@ def test_replot_path_degrades_to_nan_columns():
     pd = QcSwapFluxStarkEstimator().build_plot_data(ds, {}, drive_side="high")
     assert np.isnan(pd["ridge_stark_amp"].values).all()
     assert (pd["row_ok"].values == 0).all()
+    assert np.isnan(pd["arch_fit"].values).all()
     assert np.isfinite(pd["transfer"].values).any()   # raw is always there
     assert np.isnan(pd.attrs["compensating_stark_amp"])
 
@@ -406,19 +459,27 @@ def test_a_calibrated_period_is_used_and_cross_checked():
     assert wrong["wrap_consistent"] == 0
 
 
-def test_a_resonance_inside_a_dead_band_is_refused():
-    """Near a full swap the resonance row carries no stark signal at all.
+def test_a_dead_band_on_resonance_withholds_only_the_compensation():
+    """Near a full swap the resonance rows carry no stark signal at all.
 
-    There is then nothing local to interpolate, and reaching it would take a
-    model of phase-vs-amplitude this estimator deliberately does not carry. The
-    numbers are withheld and the flag says why -- the case of 5Q4C's N=2 map.
+    The arch fit still reaches the resonance from the two flanks -- on 5Q4C's
+    N=2 map it read -149.164 +- 0.024 mV across a seven-row dead band, within
+    0.1 mV of three independent reads. What it cannot reach is the
+    COMPENSATION there: that would be interpolated across the band, and the
+    stark axis is not a linear picture of phase. So only that number is
+    withheld, and the flag says why.
     """
-    ds, _truth = _ridge_ds(2, 1.45)          # sin^2(2*theta) ~ 0.04 on resonance
+    ds, _truth = _ridge_ds(2, 1.45)          # sin^2(2*theta) ~ 0.06 on resonance
     est, res = _analyze(ds, swap_count=2, swap_angle_rad=1.45)
-    assert res["ridge_ok"] == 1
-    assert res["resonance_in_gap"] == 1
+    assert res["ridge_ok"] == 1 and res["branch_ok"] == 0
+    used = np.asarray(res["row_ok"], dtype=bool)
+    flux = ds["flux_amp_v"].values
+    centre = int(np.argmin(np.abs(flux - RIDGE_V0)))
+    assert not used[centre - 1: centre + 2].any(), "fixture must bury the resonance"
+    assert res["compensation_in_gap"] == 1
     assert np.isnan(res["compensating_stark_amp"])
-    assert np.isnan(res["resonance_flux_amp_v"])
+    assert res["resonance_at_edge"] == 0 and res["resonance_unresolved"] == 0
+    assert res["resonance_flux_amp_v"] == pytest.approx(RIDGE_V0, abs=5e-4)
     # the rows that DID have signal are still reported
     assert res["n_ridge_rows"] > 4
 
@@ -434,8 +495,9 @@ def test_the_best_row_is_reported_without_any_prior():
     """WHERE the compensated transfer peaks is a measurement, not a claim.
 
     An operator who ran without priors still needs a flux to act on, so
-    `ridge_peak_flux_amp_v` is computed from the rows alone. It equals the
-    gated `resonance_flux_amp_v` whenever the angle has not folded.
+    `ridge_peak_flux_amp_v` is computed from the rows alone. On a clean,
+    unfolded arch it lands where the fitted resonance does; the fit is what
+    to prefer once there is noise on the top (see the flat-top test below).
     """
     theta0 = np.pi / 5
     ds, _truth = _ridge_ds(2, theta0)
@@ -446,10 +508,90 @@ def test_the_best_row_is_reported_without_any_prior():
     assert 0.0 < bare["ridge_peak_transfer"] <= 1.05
 
     _est, gated = _analyze(ds, swap_count=2, swap_angle_rad=theta0)
-    # No fold, so the two must agree — to well inside a grid step. They are not
-    # bit-identical: one vertex is refined on the transfer and the other on its
-    # arcsin, and that curvature differs.
     assert gated["branch_ok"] == 1
-    step = float(np.diff(ds["flux_amp_v"].values)[0])
+    # the prior adds a claim and a fit; it does not move the raw measurement
+    assert gated["ridge_peak_flux_amp_v"] == bare["ridge_peak_flux_amp_v"]
+    step = float(abs(np.diff(ds["flux_amp_v"].values)[0]))
     assert gated["ridge_peak_flux_amp_v"] == pytest.approx(
-        gated["resonance_flux_amp_v"], abs=0.05 * abs(step))
+        gated["resonance_flux_amp_v"], abs=0.5 * step)
+
+
+# --- the arch fit, and when its centre is refused ----------------------------
+
+#: a 5Q4C-like N=5 map (2026-09-21): 29 rows across 7 mV swept downward, a
+#: Fourier-limited arch falling to about half height at the window edges, and
+#: shot noise of the order 200 averages leave. The stark window is one period.
+FLAT_TOP = dict(exact_arch=True, edge_detuning=6.2, half_span=0.0035, nv=29,
+                descending=True, k_phi=7.0)
+FLAT_TOP_PERIOD = 2 * np.pi / 7.0
+
+
+def _flat_top(**overrides):
+    kwargs = {**FLAT_TOP, "noise": 0.025, **overrides}
+    ds, truth = _ridge_ds(5, 0.21, **kwargs)
+    _est, res = _analyze(ds, swap_count=5, swap_angle_rad=0.23,
+                         stark_amp_2pi=FLAT_TOP_PERIOD)
+    return ds, res
+
+
+def test_the_arch_fit_beats_the_largest_row_on_a_flat_top():
+    """The reason the resonance is fitted: the top of the arch is flat.
+
+    The regression for run ``20260921-123240-776``, whose largest row sat
+    1.3 mV from the arch's centre -- which, at that ridge's slope, moved the
+    compensation by more than two stark steps. A shot-noise bootstrap put the
+    largest row at +-0.79 mV and the fit at +-0.10 mV; the same ordering has to
+    hold here across noise realizations.
+    """
+    fit_err, row_err = [], []
+    for seed in range(8):
+        _ds, res = _flat_top(seed=seed)
+        assert res["resonance_unresolved"] == 0 and res["resonance_at_edge"] == 0
+        fit_err.append(res["resonance_flux_amp_v"] - RIDGE_V0)
+        row_err.append(res["ridge_peak_flux_amp_v"] - RIDGE_V0)
+    fit_rms = float(np.sqrt(np.mean(np.square(fit_err))))
+    row_rms = float(np.sqrt(np.mean(np.square(row_err))))
+    assert fit_rms < 0.25 * row_rms
+    assert fit_rms < 1e-4                    # well inside half a 0.25 mV step
+
+
+def test_a_window_that_misses_the_resonance_is_refused_at_the_edge():
+    """A centre the rows never reached is an extrapolation, not a measurement.
+
+    The regression for run ``20260921-105115-861``: its 3 mV window started at
+    -151.00 mV, the arch's centre fitted to -151.01 +- 1.98, and the old read
+    reported -150.85 -- a row next to the window's end -- as the resonance
+    without a word. Now it is refused and the error is left in place to show
+    why, and the arch is still drawn.
+    """
+    ds, res = _flat_top(noise=0.01, window_offset=1.2 * FLAT_TOP["half_span"])
+    assert res["resonance_at_edge"] == 1
+    for key in ("resonance_flux_amp_v", "compensating_stark_amp",
+                "swap_angle_rad_refined"):
+        assert np.isnan(res[key]), key
+    assert np.isfinite(res["resonance_flux_err_v"])
+    # the raw peak is still a measurement, and it is at the window's near end
+    flux = ds["flux_amp_v"].values
+    step = float(abs(np.diff(flux)[0]))
+    assert res["ridge_peak_flux_amp_v"] == pytest.approx(flux.min(), abs=2 * step)
+    est = QcSwapFluxStarkEstimator()
+    pd = est.build_plot_data(ds, res, drive_side="high")
+    assert np.isfinite(pd["arch_fit"].values).any()
+
+
+def test_a_flat_topped_window_is_refused_as_unresolved():
+    """A window that only covers the flat top cannot place the centre.
+
+    Every row is live and the centre is inside the window, so nothing but the
+    fit's own error can tell this run from a good one.
+    """
+    _ds, res = _flat_top(edge_detuning=2.0, seed=2)
+    assert res["n_ridge_rows"] == 29
+    assert res["resonance_unresolved"] == 1
+    assert res["resonance_at_edge"] == 0
+    assert np.isnan(res["resonance_flux_amp_v"])
+    assert np.isnan(res["compensating_stark_amp"])
+    # the numbers that explain the refusal stay
+    assert np.isfinite(res["resonance_flux_err_v"])
+    assert res["arch_r_squared"] < 0.5
+    assert np.isfinite(res["ridge_peak_flux_amp_v"])

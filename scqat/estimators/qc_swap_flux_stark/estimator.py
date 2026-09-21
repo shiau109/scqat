@@ -34,17 +34,42 @@ TWO GATES, DELIBERATELY SEPARATE. They are not the same condition and collapsing
 them into one throws away a result the map really does carry:
 
   ``ridge_ok``   ``N*theta <= pi``    the per-row argmax is still ``phi = 0``
-                                      AND the angle along the ridge folds at
+                                      AND the arch along the ridge folds at
                                       most ONCE, so the resonance and
                                       ``compensating_stark_amp`` are valid
-  ``branch_ok``  ``N*theta <= pi/2``  the principal ``arcsin`` does not fold at
-                                      all, so ``swap_angle_rad_refined`` is a
-                                      number rather than an unfolding
+  ``branch_ok``  ``N*theta <= pi/2``  the arch does not fold at all, so the
+                                      fitted angle is on the principal branch
+                                      and ``swap_angle_rad_refined`` is reported
 
 Both come from the PRIOR angle (``swap_angle_rad``), because ``theta`` is what
 the map cannot measure on its own at a fixed N. The prior is a BRANCH SELECTOR,
-not a fitted parameter: it only has to be good to about ``pi/(2N)``, so a
+not a fitted parameter: it picks the band the arch fit's angle may live in, and
+it only has to be good to about ``pi/(2N)`` to pick the right one, so a
 30%-accurate prior still yields a percent-level refined angle.
+
+THE RESONANCE IS FITTED, NOT PICKED. Along the ridge the transfer is an ARCH,
+``T_N = sin^2(N * arcsin(sin(theta*s)/s))`` with ``s = sqrt(1 + (beta*(V -
+V0))^2)`` (derived in :mod:`scqat.tools.swap_lineshape`), and its top is flat:
+on 5Q4C's N=5 map of 2026-09-21 (``123240-776``, 200 averages) the largest row
+moved by +-0.79 mV under a shot-noise bootstrap, and a 2-D interpolation or
+smoothing of the map did no better (+-0.72 to +-0.76), because they still pick
+a point on the top. Fitting the whole arch lets every row on both flanks vote,
+and gave +-0.10 mV on the same data -- with a reduced chi-square of 0.8-1.2
+against pure shot noise on all four runs of that bring-up, so the error it
+reports is one to act on. The raw largest row is still reported
+(``ridge_peak_flux_amp_v``), because it needs no prior.
+
+A fitted centre can be WRONG WITHOUT BEING NOISY, so it is refused, not
+reported, in two cases, with its error left in place to show why:
+
+  ``resonance_at_edge``     the centre lies outside the live rows (less half a
+                            step) -- the arch was extrapolated, not measured
+  ``resonance_unresolved``  its error exceeds a tenth of the live span, or
+                            moves the compensation by more than a stark step,
+                            or the fit failed
+
+(a 3 mV window at the same flux, ``105115-861``, read ``-151.01 +- 1.98`` mV
+against a window starting at -151.00; the resolved runs read +-0.02 to +-0.10.)
 
 THE RIDGE IS READ LOCALLY, NOT FITTED GLOBALLY. The compensating amplitude at
 the resonance is interpolated from the rows AROUND the resonance and nowhere
@@ -75,8 +100,13 @@ near-full (for N=2 it is ``cos^2(phi/2) * sin^2(2*theta)``, and ``sin^2(2*theta)
 vanishes at ``theta = pi/2``). Such a row's argmax is noise, so rows count only
 when their observed swing clears ``min_row_contrast``. Measured, never fitted --
 the lesson ``qc_n_stark_amp``'s ``trace_contrast`` records. If the resonance
-falls INSIDE a run of such rows there is nothing local to interpolate, and the
-numbers are refused (``resonance_in_gap``) rather than reached by a model.
+falls INSIDE a run of such rows -- which is where a folded arch puts it -- the
+arch fit still reaches it from the two flanks (5Q4C's N=2 map: ``-149.164 +-
+0.024`` mV across a seven-row dead band, within 0.1 mV of three independent
+reads), but the COMPENSATION there would have to be interpolated across the
+band, and the stark axis is not a linear picture of phase. So only that number
+is withheld (``compensation_in_gap``: the live rows bracketing the resonance are
+more than two flux steps apart).
 
 The transfer used throughout is the NORMALIZED one
 (:func:`~scqat.estimators._pair_swap_maps.pair_swap_normalized_transfer`), which
@@ -120,10 +150,20 @@ from scqat.estimators.qc_swap_flux_stark.visualization import (
     plot_qc_swap_flux_stark,
     plot_swap_flux_stark_ridge,
 )
-from scqat.tools.swap_lineshape import parabolic_vertex, theta_from_peak
+from scqat.tools.swap_lineshape import (
+    fit_compensated_swap_arch,
+    parabolic_vertex,
+    theta_from_peak,
+)
 
 AXIS0 = "flux_amp_v"
 AXIS1 = "stark_amp"
+
+#: the dense axis the fitted arch is drawn on, as a dim of its own.
+DENSE_AXIS = "flux_amp_v_dense"
+
+#: points per measured row on the drawn arch.
+_FIT_CURVE_DENSITY = 10
 
 #: figure keys. ``save_figures`` prefixes the estimator name unless the key IS
 #: it, so these land as ``qc_swap_flux_stark.png`` and
@@ -148,8 +188,18 @@ _RIDGE_COLUMNS = {
 #: live rows needed on each side before the resonance can be interpolated.
 _LOCAL_HALF_WINDOW = 2
 
-#: live rows needed at all.
-_MIN_RIDGE_ROWS = 4
+#: live rows needed at all: the arch has three parameters, and its error is
+#: estimated from the residual, which needs a couple of degrees of freedom.
+_MIN_RIDGE_ROWS = 5
+
+#: a resonance whose error exceeds this fraction of the live-row span is
+#: refused. 5Q4C's resolved runs sit at <= 0.014 and its 3 mV window at 0.66, a
+#: factor of ~45 apart; 0.1 is close to their geometric middle.
+_MAX_RESONANCE_ERR_FRACTION = 0.1
+
+#: the compensation is withheld when the live rows bracketing the resonance are
+#: further apart than this many flux steps; one dead row in between is fine.
+_MAX_BRACKET_STEPS = 2
 
 #: the gates, in units of ``N * theta``.
 _RIDGE_LIMIT = math.pi
@@ -179,12 +229,17 @@ def _empty_ridge() -> Dict[str, Any]:
     """
     return {
         "compensating_stark_amp": float("nan"),
-        "compensating_is_refined": 0,
+        "compensating_stark_err": float("nan"),
+        "compensation_in_gap": 0,
         "resonance_flux_amp_v": float("nan"),
-        "resonance_in_gap": 0,
+        "resonance_flux_err_v": float("nan"),
+        "resonance_at_edge": 0,
+        "resonance_unresolved": 0,
+        "arch_r_squared": float("nan"),
         "ridge_peak_flux_amp_v": float("nan"),
         "ridge_peak_transfer": float("nan"),
         "swap_angle_rad_refined": float("nan"),
+        "swap_angle_err_rad": float("nan"),
         "swap_angle_rad_prior": float("nan"),
         "swap_angle_consistent": 0,
         "ridge_slope_per_v": float("nan"),
@@ -198,6 +253,23 @@ def _empty_ridge() -> Dict[str, Any]:
         "ridge_ok": 0,
         "branch_ok": 0,
     }
+
+
+def dense_flux(flux: np.ndarray) -> np.ndarray:
+    """The flux axis at :data:`_FIT_CURVE_DENSITY` times the sampling, ascending."""
+    flux = np.asarray(flux, dtype=float)
+    if flux.size < 2:
+        return flux
+    return np.linspace(float(np.min(flux)), float(np.max(flux)),
+                       _FIT_CURVE_DENSITY * (flux.size - 1) + 1)
+
+
+def _grid_step(axis: np.ndarray) -> float:
+    """The sweep's pitch, from either end of either direction."""
+    axis = np.asarray(axis, dtype=float)
+    if axis.size < 2:
+        return float("nan")
+    return float(np.median(np.abs(np.diff(axis))))
 
 
 def _column(values, size: int, dtype):
@@ -342,6 +414,31 @@ def _unfold_along_ridge(ridge_transfer: np.ndarray, expect_fold: bool):
     return np.where(folded, math.pi - principal, principal), folded
 
 
+def _bracketing_rows(flux: np.ndarray, live: np.ndarray, at: float):
+    """The nearest live row at or below ``at`` and at or above it, or None.
+
+    Direction-agnostic: the flux axis may be swept either way.
+    """
+    below = live[flux[live] <= at]
+    above = live[flux[live] >= at]
+    if below.size == 0 or above.size == 0:
+        return None
+    return (int(below[np.argmin(at - flux[below])]),
+            int(above[np.argmin(flux[above] - at)]))
+
+
+def _theta_band(n_swaps: int, branch_ok: int):
+    """The band the arch fit's single-round angle may live in.
+
+    Picked by the prior through the gates: an unfolded arch keeps
+    ``N*theta <= pi/2``, a folded one sits in ``[pi/2, pi]``. The two give
+    mirror-image heights on resonance, which is exactly the ambiguity the prior
+    is there to settle.
+    """
+    edge = math.pi / (2 * n_swaps)
+    return (0.0, edge) if branch_ok else (edge, 2.0 * edge)
+
+
 def _local_compensation(flux: np.ndarray, unwrapped: np.ndarray,
                         ok: np.ndarray, at: float, period: float):
     """The compensating amplitude at one flux, from the rows AROUND it.
@@ -368,12 +465,10 @@ def _local_compensation(flux: np.ndarray, unwrapped: np.ndarray,
     live = np.flatnonzero((np.asarray(ok) > 0) & np.isfinite(unwrapped))
     if live.size < 2:
         return float("nan"), float("nan"), float("nan")
-    below = live[flux[live] <= at]
-    above = live[flux[live] >= at]
-    if below.size == 0 or above.size == 0:
+    bracket = _bracketing_rows(flux, live, at)
+    if bracket is None:
         return float("nan"), float("nan"), float("nan")
-    lo = int(below[np.argmin(at - flux[below])])
-    hi = int(above[np.argmin(flux[above] - at)])
+    lo, hi = bracket
     if lo == hi:
         value = float(unwrapped[lo])
     else:
@@ -395,7 +490,11 @@ def _local_compensation(flux: np.ndarray, unwrapped: np.ndarray,
 def _ridge_pick(flux: np.ndarray, stark: np.ndarray, transfer: np.ndarray,
                 swap_count: Optional[int], swap_angle_rad: Optional[float],
                 stark_amp_2pi: Optional[float], min_row_contrast: float):
-    """The whole reading: per-row optima, the unwrap, and the local read."""
+    """The whole reading: per-row optima, the unwrap, the arch and the local read.
+
+    Returns ``(scalars, columns, arch)``, where ``arch`` is the arch fitter's
+    result -- kept whole so the caller can draw it -- or None when no fit ran.
+    """
     out = _empty_ridge()
     star, peak, contrast, ok = _row_optima(stark, transfer, min_row_contrast)
     span = float(np.max(stark) - np.min(stark)) or 1.0
@@ -445,41 +544,72 @@ def _ridge_pick(flux: np.ndarray, stark: np.ndarray, transfer: np.ndarray,
                                and n_theta <= _BRANCH_LIMIT + _GATE_TOL)
 
     if n_swaps is not None:
+        # a per-row angle for the FIGURE; the resonance no longer reads it --
+        # the arch fit handles the fold through its angle band instead
         unfolded, folded = _unfold_along_ridge(
             columns["ridge_transfer"],
             expect_fold=bool(out["ridge_ok"] and not out["branch_ok"]))
         columns["ridge_theta_rad"] = unfolded / n_swaps
         out["n_fold_rows"] = int(folded.sum())
 
-    if not out["ridge_ok"] or out["n_ridge_rows"] < _MIN_RIDGE_ROWS:
-        return out, columns
+    if not out["ridge_ok"]:
+        return out, columns, None
+    # From here on the gate is open: the run WAS answerable, so a missing
+    # answer is the data's, and it is flagged rather than left blank.
+    live = np.flatnonzero((np.asarray(ok) > 0)
+                          & np.isfinite(columns["ridge_transfer"]))
+    if live.size < _MIN_RIDGE_ROWS:
+        out["resonance_unresolved"] = 1
+        return out, columns, None
 
-    theta = columns["ridge_theta_rad"]
-    if not np.isfinite(theta).any():
-        return out, columns
-    k = int(np.nanargmax(theta))
-    # The resonance is the largest angle; if the rows next to it were rejected,
-    # the true maximum may sit inside that gap and nothing local can reach it.
-    neighbours = [j for j in (k - 1, k + 1) if 0 <= j < flux.size]
-    out["resonance_in_gap"] = int(any(ok[j] == 0 for j in neighbours))
-    if out["resonance_in_gap"]:
-        return out, columns
+    arch = fit_compensated_swap_arch(
+        flux[live], columns["ridge_transfer"][live], n_swaps,
+        theta_bounds=_theta_band(n_swaps, out["branch_ok"]),
+        theta_guess=float(swap_angle_rad))
+    centre, centre_err = arch["x0"], arch["x0_err"]
+    out["arch_r_squared"] = arch["r_squared"]
+    out["resonance_flux_err_v"] = centre_err
+    if out["branch_ok"]:
+        out["swap_angle_err_rad"] = arch["theta_err"]
+    if not np.isfinite(centre):
+        out["resonance_unresolved"] = 1
+        return out, columns, arch
 
-    resonance, refined = parabolic_vertex(flux, theta, k)
     period = (float(stark_amp_2pi) if stark_amp_2pi is not None
               else measured_wrap)
-    value, slope, rms = _local_compensation(flux, unwrapped, ok, resonance,
-                                            period)
-    out["resonance_flux_amp_v"] = resonance
-    out["compensating_is_refined"] = refined
-    out["compensating_stark_amp"] = value
+    value, slope, rms = _local_compensation(flux, unwrapped, ok, centre, period)
     out["ridge_slope_per_v"] = slope
     out["ridge_local_rms"] = rms
+    # what the flux uncertainty does to the number the operator sets
+    out["compensating_stark_err"] = abs(slope) * centre_err
+
+    step = _grid_step(flux)
+    lo_live, hi_live = float(np.min(flux[live])), float(np.max(flux[live]))
+    out["resonance_at_edge"] = int(
+        not lo_live + 0.5 * step <= centre <= hi_live - 0.5 * step)
+    moves_comp = (np.isfinite(out["compensating_stark_err"])
+                  and out["compensating_stark_err"] > _grid_step(stark))
+    out["resonance_unresolved"] = int(
+        not arch["success"] or not np.isfinite(centre_err)
+        or centre_err > _MAX_RESONANCE_ERR_FRACTION * (hi_live - lo_live)
+        or bool(moves_comp))
+    bracket = _bracketing_rows(flux, live, centre)
+    out["compensation_in_gap"] = int(
+        bracket is not None
+        and abs(flux[bracket[1]] - flux[bracket[0]])
+        > _MAX_BRACKET_STEPS * step * (1.0 + 1e-9))
+
+    if out["resonance_at_edge"] or out["resonance_unresolved"]:
+        return out, columns, arch
+    out["resonance_flux_amp_v"] = centre
+    if not out["compensation_in_gap"]:
+        out["compensating_stark_amp"] = value
     if out["branch_ok"]:
-        out["swap_angle_rad_refined"] = float(theta[k])
+        out["swap_angle_rad_refined"] = arch["theta_rad"]
         out["swap_angle_consistent"] = int(
-            abs(theta[k] - float(swap_angle_rad)) <= math.pi / (2 * n_swaps))
-    return out, columns
+            abs(arch["theta_rad"] - float(swap_angle_rad))
+            <= math.pi / (2 * n_swaps))
+    return out, columns, arch
 
 
 class QcSwapFluxStarkEstimator(BaseEstimator):
@@ -532,9 +662,9 @@ class QcSwapFluxStarkEstimator(BaseEstimator):
         flux = np.asarray(projected[AXIS0].values, dtype=float)
         stark = np.asarray(projected[AXIS1].values, dtype=float)
 
-        pick, columns = _ridge_pick(flux, stark, transfer, swap_count,
-                                    swap_angle_rad, stark_amp_2pi,
-                                    min_row_contrast)
+        pick, columns, arch = _ridge_pick(flux, stark, transfer, swap_count,
+                                          swap_angle_rad, stark_amp_2pi,
+                                          min_row_contrast)
         results.update(pick)
         for key, dtype in _RIDGE_COLUMNS.items():
             results[key] = [dtype(v) for v in columns[key]]
@@ -542,8 +672,19 @@ class QcSwapFluxStarkEstimator(BaseEstimator):
         results["swap_count"] = (float("nan") if swap_count is None
                                  else int(swap_count))
         results["min_row_contrast"] = float(min_row_contrast)
-        # bulky intermediate — the `_` prefix keeps it out of the metadata JSON
+        # bulky intermediates — the `_` prefix keeps them out of the metadata
+        # JSON. The arch is resampled from the fitter's own dense curve rather
+        # than re-evaluated here, so the drawn line cannot drift from the fit;
+        # it is left NaN outside the live rows it was fitted on. It is kept
+        # when the resonance is REFUSED too: the arch is how the operator sees
+        # why (its centre off the window, or its top flat across it).
+        dense = dense_flux(flux)
+        curve = np.full(dense.size, np.nan)
+        if arch is not None and np.isfinite(arch["best_fit_dense"]).any():
+            curve = np.interp(dense, arch["x_dense"], arch["best_fit_dense"],
+                              left=np.nan, right=np.nan)
         results["_transfer"] = transfer
+        results["_arch_fit"] = curve
         return results
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
@@ -569,6 +710,14 @@ class QcSwapFluxStarkEstimator(BaseEstimator):
         n_rows = out.sizes[AXIS0]
         for key, dtype in _RIDGE_COLUMNS.items():
             out[key] = ((AXIS0,), _column(results.get(key), n_rows, dtype))
+        # The fitted arch, on a dense flux axis of its own; NaN, never absent,
+        # so the replot path and a failed fit still draw the raw data.
+        dense = dense_flux(np.asarray(out[AXIS0].values, dtype=float))
+        arch = results.get("_arch_fit")
+        if arch is None or np.shape(arch) != dense.shape:
+            arch = np.full(dense.size, np.nan)
+        out.coords[DENSE_AXIS] = dense
+        out["arch_fit"] = ((DENSE_AXIS,), np.asarray(arch, dtype=float))
         defaults = {**_empty_ridge(), "swap_count": float("nan"),
                     "min_row_contrast": float(min_row_contrast)}
         for key, default in defaults.items():
