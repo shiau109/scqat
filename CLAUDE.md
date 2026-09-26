@@ -367,7 +367,8 @@ every family listed beside it; run those families' test files too.
 | `fit_stretched_exp` | ramsey_phasor |
 | `fit_transmon_freq_flux` | qubit_flux_arch |
 | `fit_triangle` | xyz_delay |
-| `iq_reduce` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo, qubit_relaxation, qubit_spectroscopy_flux, qubit_stark_phase_echo, ramsey, xyz_delay |
+| `fringe_frequency` | qubit_ramsey_flux_pulse |
+| `iq_reduce` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo, qubit_ramsey_flux_pulse, qubit_relaxation, qubit_spectroscopy_flux, qubit_stark_phase_echo, ramsey, xyz_delay |
 | `lockin` | ramsey_cryoscope, ramsey_phasor |
 | `peak_fit` | ac_stark_shift, broadband_qubit_spectroscopy, parametric_drive_resonance, qubit_spectroscopy, qubit_spectroscopy_flux, readout_pulse_photon, spectroscopy_cryoscope |
 | `peak_map` | parametric_drive_resonance, qubit_spectroscopy_flux |
@@ -390,7 +391,7 @@ when it is promoted in — SCQO's promotion checklist already requires "`simulat
 → offline end-to-end test in `tests/`". Do not open a campaign to backfill them.
 
 <!-- BEGIN generated: coverage-gap -->
-**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 48**
+**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 49**
 estimators are imported by NO test, by module path or exported class:
 
 - `broadband_qubit_spectroscopy`

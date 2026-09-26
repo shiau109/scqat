@@ -32,6 +32,7 @@ from .discriminate import (
 )
 from .ge_discriminator import compute_ge_discriminator
 from .ramsey_fit import RAMSEY_MODELS, fit_ramsey
+from .fringe_frequency import fringe_frequency
 from .lockin import lockin_phasor
 from .flux_predistortion import (
     MIN_A_DC,

@@ -45,6 +45,7 @@ from scqat.estimators.qc_unidirectional_trotter import QcUnidirectionalTrotterEs
 from scqat.estimators.qc_trotter_compensation import QcTrotterCompensationEstimator
 from scqat.estimators.ramsey_cryoscope import RamseyCryoscopeEstimator
 from scqat.estimators.ramsey_phasor import RamseyPhasorEstimator
+from scqat.estimators.qubit_ramsey_flux_pulse import QubitRamseyFluxPulseEstimator
 from scqat.estimators.spectroscopy_cryoscope import SpectroscopyCryoscopeEstimator
 from scqat.estimators.broadband_resonator_spectroscopy import (
     BroadbandResonatorSpectroscopyEstimator,
@@ -88,6 +89,7 @@ __all__ = [
     "QubitT1AdeEstimator",
     "QubitT1BayesianEstimator",
     "QubitEchoFluxEstimator",
+    "QubitRamseyFluxPulseEstimator",
     "QubitDragEquatorEstimator",
     "QubitDragAlternatingEstimator",
     "QubitDeterministicBenchmarkingEstimator",
