@@ -38,6 +38,7 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, stored_ground, with_iqdata
 from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks
+from scqat.tools.sweep_order import ascending
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators.qubit_spectroscopy.visualization import plot_spectrum
 
@@ -103,6 +104,8 @@ class QubitSpectroscopyEstimator(BaseEstimator):
                 f"{sorted(PEAK_KNOBS | {'signal_var'})}"
             )
 
+        # the sweep direction is provenance, never input (tools.sweep_order)
+        dataset = ascending(dataset, "detuning")
         detuning = dataset.coords["detuning"].values.astype(float)
         full_freq = (
             dataset.coords["full_freq"].values.ravel().astype(float)
@@ -156,6 +159,7 @@ class QubitSpectroscopyEstimator(BaseEstimator):
         optional ``full_freq`` axis and peak centres/FWHMs are included so both
         sub-plots redraw with no refitting.
         """
+        dataset = ascending(dataset, "detuning")  # the order extract_parameters saw
         detuning = dataset.coords["detuning"].values.astype(float)
 
         data_vars: Dict[str, Any] = {

@@ -164,12 +164,18 @@ def test_axis_order_is_irrelevant():
     assert a == pytest.approx(b)
 
 
-def test_a_descending_frequency_axis_fits_the_same():
-    """fit_peaks' width bound inverts on a descending axis; the estimator sorts."""
-    ds = _make_map()
-    a = _fit(ds)["stark_slope_hz"]
-    b = _fit(ds.isel(detuning=slice(None, None, -1)))["stark_slope_hz"]
-    assert a == pytest.approx(b, rel=1e-6)
+@pytest.mark.parametrize("dims", [("detuning",), ("amp_prefactor",),
+                                  ("amp_prefactor", "detuning")])
+def test_sweep_direction_cannot_change_the_answer(order_free, dims):
+    """Either axis (or both) walked high -> low gives the identical fit - the
+    per-row curve, the absolute line and the twin axis included - and the right
+    one."""
+    ds = _make_map().assign_coords(
+        digital_amp=("amp_prefactor", 0.08 * AMPS),
+        full_freq=("detuning", DETUNING + 5.1e9))
+    res = order_free(AcStarkShiftEstimator(), ds, dims, chi_hz=-1.0e6, amp_ref=0.08,
+                     twin_coord="digital_amp", twin_label="absolute")
+    assert res["stark_slope_hz"] == pytest.approx(SLOPE, rel=0.02)
 
 
 def test_the_twin_amplitude_rides_the_plot_data():

@@ -190,3 +190,17 @@ def test_a_bracketed_optimum_off_the_old_hardcoded_range_still_succeeds():
     results = PowerRabiEstimator().extract_parameters(ds)
     assert results["opt_amp_prefactor"] == pytest.approx(2.4, abs=0.05)
     assert results["success"] is True
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The pi pick measures from the LOWEST amplitude's fit value; walked high ->
+    low that used to be ``best_fit[0]`` at the TOP of the window. The same sweep
+    in either order must give the identical, right answer - IQ input and the
+    companion absolute axis included."""
+    ds = _make_ds_iq(factor_pi=0.8, amp_max=1.2)
+    ds = ds.assign_coords(digital_amp=("amp_prefactor", 0.2 * ds.amp_prefactor.values))
+    results = order_free(PowerRabiEstimator(), ds, "amp_prefactor",
+                         twin_coord="digital_amp", twin_label="absolute")
+    assert results["success"]
+    assert results["opt_amp_prefactor"] == pytest.approx(0.8, abs=0.02)
+    assert results["opt_twin_value"] == pytest.approx(0.16, abs=0.005)

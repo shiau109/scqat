@@ -50,3 +50,18 @@ def test_rejects_old_flux_amp_coordinate():
     stale = ds.rename({"flux_bias": "flux_amp"})
     with pytest.raises(ValueError, match="flux_bias"):
         QubitRelaxationFluxEstimator()._check_data(stale)
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The flux axis walked high -> low gives the identical spectrum, with every
+    T1 still paired with its own flux (an ASYMMETRIC T1(flux), so a mirrored
+    pairing could not pass)."""
+    flux = np.linspace(-0.08, 0.08, 7)
+    wait = np.linspace(16e-9, 120e-6, 61)
+    t1 = 25e-6 * (1.0 + 4.0 * flux)
+    signal = np.stack([np.exp(-wait / t) for t in t1])
+    ds = xr.Dataset({"signal": (("flux_bias", "wait_time"), signal)},
+                    coords={"flux_bias": flux, "wait_time": wait})
+    results = order_free(QubitRelaxationFluxEstimator(), ds, "flux_bias")
+    assert np.allclose(results["flux_bias"], flux)
+    assert np.allclose(results["t1"], t1, rtol=0.05)

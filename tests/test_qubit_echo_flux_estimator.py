@@ -53,3 +53,19 @@ def test_rejects_old_flux_amp_coordinate():
     stale = ds.rename({"flux_bias": "flux_amp"})
     with pytest.raises(ValueError, match="flux_bias"):
         QubitEchoFluxEstimator()._check_data(stale)
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The flux axis walked high -> low gives the identical spectrum, with every
+    T2 still paired with its own flux (an ASYMMETRIC T2(flux), so a mirrored
+    pairing could not pass)."""
+    flux = np.linspace(-0.08, 0.08, 7)
+    wait = np.linspace(16e-9, 160e-6, 61)
+    t2 = 40e-6 * (1.0 + 4.0 * flux)
+    rng = np.random.default_rng(7)
+    signal = np.stack([np.exp(-wait / t) + rng.normal(0, 1e-3, wait.size) for t in t2])
+    ds = xr.Dataset({"signal": (("flux_bias", "wait_time"), signal)},
+                    coords={"flux_bias": flux, "wait_time": wait})
+    results = order_free(QubitEchoFluxEstimator(), ds, "flux_bias")
+    assert np.allclose(results["flux_bias"], flux)
+    assert np.allclose(results["t2_echo"], t2, rtol=0.10)

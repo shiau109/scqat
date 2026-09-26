@@ -51,3 +51,16 @@ class TestFitCosine:
         x = np.linspace(0.0, 1.0, 3)
         fitter = FitCosine(np.array([1.0, 0.0, -1.0]), x=x)
         assert np.allclose(fitter.x, x)
+
+
+def test_descending_axis_recovers_the_same_frequency():
+    """The Nyquist bound was built from the signed step ``t[1] - t[0]``: on an axis
+    swept high -> low it read ``f <= 0`` and pinned the fit. The same points in
+    the other order must fit the same positive frequency."""
+    da = _make_cosine(a=0.8, f=1.5, phi=-0.4, c=0.2, n_points=400, noise_std=0.02)
+    up = FitCosine(da).fit()
+    down = FitCosine(da.isel(x=slice(None, None, -1))).fit()
+    assert down.params['f'].value == pytest.approx(1.5, rel=0.05)
+    for name in ('a', 'f', 'phi', 'c'):
+        assert down.params[name].value == pytest.approx(up.params[name].value,
+                                                        rel=1e-5, abs=1e-9)

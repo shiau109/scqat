@@ -194,3 +194,13 @@ class TestArtifacts:
         assert set(figs2) == {"resonator_spectroscopy"}
         for fig in figs2.values():
             plt.close(fig)
+
+
+@pytest.mark.parametrize("method", ["lorentzian", "circle"])
+def test_sweep_direction_cannot_change_the_answer(order_free, method):
+    """The readout window walked high -> low gives the identical fit in both
+    methods (the circle one used to RAISE on it) - and the right one."""
+    results = order_free(ResonatorSpectroscopyEstimator(), _notch_dataset(),
+                         "detuning", method=method)
+    assert results["success"]
+    assert results["full_freq"] == pytest.approx(FR, abs=0.1 * FR / QL)

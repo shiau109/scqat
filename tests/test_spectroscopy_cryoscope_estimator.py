@@ -184,3 +184,13 @@ class TestSpectroscopyCryoscopeEstimator:
 
     def test_aggregate_and_subpackage_export_same_class(self):
         assert SpectroscopyCryoscopeEstimator is SubpkgEstimator
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The drive-detuning window walked high -> low (an asymmetric one, as a
+    mis-centred real run has) gives the identical step response and taps."""
+    ds, S = _forward([(0.05, 5000.0), (0.03, 400.0)],
+                     det_min=-40e6, det_max=120e6, ndet=81)
+    r = order_free(SpectroscopyCryoscopeEstimator(), ds, "detuning")
+    assert r["n_peaks_found"] == len(r["wait_time_s"])
+    assert np.nanmax(np.abs(r["step_response"] - S)) < 0.03

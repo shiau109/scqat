@@ -410,3 +410,23 @@ class TestResonatorSpectroscopyFluxComposite:
         fig = plot_combined(reloaded)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
+
+
+@pytest.mark.parametrize("dims", [("flux_bias",), ("detuning",), ("flux_bias", "detuning")])
+def test_sweep_direction_cannot_change_the_answer(order_free, dims):
+    """Flux and/or readout frequency walked high -> low gives the identical dip
+    trace and arch - and the right one."""
+    ds, truth = _make_dataset(noise=0.01, seed=3)
+    results = order_free(ResonatorSpectroscopyFluxEstimator(), ds, dims)
+    disp = results["dispersion"]
+    assert disp["success"] is True
+    assert disp["sweet_spot_flux"] == pytest.approx(truth["phi_off"], abs=0.012)
+
+
+def test_sweep_direction_cannot_change_the_circle_fit(order_free):
+    """The circle dip method too: its notch fit used to raise on a descending
+    frequency axis (a reversed minimize_scalar bracket)."""
+    ds, truth = _make_complex_dataset()
+    results = order_free(ResonatorSpectroscopyFluxEstimator(), ds,
+                         ("flux_bias", "detuning"), dip_method="circle")
+    assert results["vs_flux"]["n_good"] >= 18

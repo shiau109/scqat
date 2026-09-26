@@ -137,3 +137,26 @@ def test_analyze_round_trips_artifacts(tmp_path):
     import matplotlib.pyplot as plt
 
     plt.close("all")
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The amplitude walked high -> low gives the identical zero crossing - IQ
+    input and the companion absolute axis included - and the right one."""
+    ds = _iq_ds()
+    ds = ds.assign_coords(digital_amp=("amp_prefactor", 0.3 * ds.amp_prefactor.values))
+    results = order_free(QubitDeterministicBenchmarkingEstimator(), ds, "amp_prefactor",
+                         twin_coord="digital_amp")
+    assert results["opt_factor"] == pytest.approx(A_IDEAL, abs=0.005)
+    assert results["opt_twin_value"] == pytest.approx(0.3 * results["opt_factor"])
+
+
+def test_an_explicit_out_of_order_point_list_gives_the_same_answer():
+    """An explicit amplitude LIST (the carrier's amp_prefactors) may arrive in any
+    order at all, not just reversed - the estimator sorts it like any sweep."""
+    ds = _signal_ds()
+    shuffled = ds.isel(amp_prefactor=[3, 0, 10, 7, 1, 5, 9, 2, 8, 4, 6])
+    est = QubitDeterministicBenchmarkingEstimator()
+    a = est.extract_parameters(ds)
+    b = est.extract_parameters(shuffled)
+    assert b["opt_factor"] == a["opt_factor"]
+    assert b["amp_prefactors"] == a["amp_prefactors"]

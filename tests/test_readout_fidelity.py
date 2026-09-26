@@ -413,3 +413,32 @@ class TestReadoutFreqDips:
                                    baseline_order=1)
 
 
+
+
+def test_power_sweep_direction_cannot_change_the_answer(order_free):
+    """The readout amplitude walked high -> low gives the identical per-point
+    curves and the same best point, in both frames."""
+    ds = _make_sweep_ds("amp_prefactor", best_idx=4)
+    ds = ds.assign_coords(digital_amp=("amp_prefactor", 0.1 * (ds.amp_prefactor.values + 3.0)))
+    # rtol: the GMM's per-slice norm_res / gaussian_norms already differ at ~1e-5
+    # between two calls on the SAME data - call-to-call noise, not the order
+    res = order_free(ReadoutPowerFidelityEstimator(), ds, "amp_prefactor", rtol=1e-3, atol=1e-6,
+                     outliers_threshold=0.9, twin_coord="digital_amp")
+    assert res["best_sweep_value"] == pytest.approx(ds.amp_prefactor.values[4])
+    assert res["best_twin_value"] == pytest.approx(ds.digital_amp.values[4])
+
+
+@pytest.mark.parametrize("dip_fit_method", ["lorentzian", "circle"])
+def test_freq_sweep_direction_cannot_change_the_answer(order_free, dip_fit_method):
+    """The readout frequency walked high -> low gives the identical dressed dips
+    and chi - the absolute axis read off the dataset stays paired with the
+    sweep the base class canonicalized."""
+    helper = TestReadoutFreqDips()
+    dip0, dip1 = -0.6e6, 0.4e6
+    ds = helper._make_dip_ds(dip0=dip0, dip1=dip1)
+    ds = ds.assign_coords(full_freq=("frequency", ds["frequency"].values + helper.F_CARRIER))
+    res = order_free(ReadoutFreqFidelityEstimator(), ds, "frequency",
+                     method="average", dip_fit_method=dip_fit_method)
+    assert res["dip_fit_success"] is True
+    assert res["chi"] == pytest.approx((dip0 - dip1) / 2.0, abs=1e3)
+    assert res["full_freq_dress0"] == pytest.approx(helper.F_CARRIER + dip0, abs=1e3)

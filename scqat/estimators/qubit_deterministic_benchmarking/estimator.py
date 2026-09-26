@@ -8,6 +8,7 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, reduced_signal
 from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
+from scqat.tools.sweep_order import ascending
 from scqat.estimators._twin_axis import twin_at, twin_values
 from scqat.estimators.qubit_deterministic_benchmarking.visualization import plot_deterministic_benchmarking
 
@@ -79,6 +80,9 @@ class QubitDeterministicBenchmarkingEstimator(BaseEstimator):
         twin_coord = kwargs.pop("twin_coord", self.twin_coord)
         twin_label = kwargs.pop("twin_label", self.twin_label)
         validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
+        # the amplitude sweep direction (or an explicit list's order) is
+        # provenance, never input (tools.sweep_order)
+        dataset = ascending(dataset, "amp_prefactor")
         reps = np.asarray(dataset["repetition"].values, dtype=float)
 
         # Raw I is NOT the signal: the readout blobs sit at an arbitrary rotation in

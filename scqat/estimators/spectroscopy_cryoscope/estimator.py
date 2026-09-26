@@ -8,6 +8,7 @@ from scqat.core.base_estimator import BaseEstimator
 from scqat.core.figures import render_figures
 from scqat.tools.peak_fit import PEAK_KNOBS, fit_peaks, validate_peak_kwargs
 from scqat.tools.step_response_fit import fit_step_response
+from scqat.tools.sweep_order import ascending
 from scqat.estimators.spectroscopy_cryoscope.visualization import (
     plot_step_response,
     plot_spectrogram,
@@ -114,6 +115,8 @@ class SpectroscopyCryoscopeEstimator(BaseEstimator):
         peak_knobs.pop("max_peaks", None)  # this estimator pins a single peak
         validate_peak_kwargs(peak_knobs)
 
+        # the detuning sweep direction is provenance, never input (tools.sweep_order)
+        dataset = ascending(dataset, "detuning")
         sig = self._signal_map(dataset)
         wait_s = np.asarray(sig.coords["wait_time"].values, dtype=float)
         detuning = np.asarray(sig.coords["detuning"].values, dtype=float)

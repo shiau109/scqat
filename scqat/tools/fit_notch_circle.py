@@ -60,6 +60,17 @@ def notch_s21(f, fr, Ql, absQc, phi0, a=1.0, alpha=0.0, delay=0.0):
     return a * np.exp(1j * alpha) * np.exp(-2j * np.pi * f * delay) * ideal
 
 
+def _span(f) -> float:
+    """The swept frequency span by VALUE (``max - min``, 1.0 when degenerate).
+
+    Never ``f[-1] - f[0]``: the sweep may run in either direction, and on a
+    descending one that positional span is negative - it inverted the delay
+    scan's ``minimize_scalar`` bracket (which raised) and the Lorentzian seed's
+    width bound (which silently degraded the ``Ql`` seed).
+    """
+    return float(np.max(f) - np.min(f)) or 1.0
+
+
 def _fit_circle_taubin(x, y):
     """Algebraic circle fit (Taubin SVD). Returns (xc, yc, r0)."""
     xm, ym = x.mean(), y.mean()
@@ -147,19 +158,20 @@ class FitNotchCircle(FunctionFitting):
         a naive magnitude FWHM)."""
         from xarray import DataArray
         power = np.abs(z) ** 2
+        # the span by VALUE: the sweep may run in either direction (see _span)
+        span = _span(f)
         try:
             res = FitLorentzianBG(
                 DataArray(power, coords={"x": f}, dims="x"),
                 inverted=True, background_order=1,
                 bounds={"x0": (float(f.min()), float(f.max())),
-                        "gamma": (0.0, float(f[-1] - f[0]) or 1.0)},
+                        "gamma": (0.0, span)},
             ).fit()
             fr0 = float(res.params["x0"].value)
             fwhm0 = 2.0 * abs(float(res.params["gamma"].value))
         except Exception:
             fr0 = float(f[np.argmin(power)])
             fwhm0 = 0.0
-        span = float(f[-1] - f[0]) or 1.0
         if not fwhm0 or not np.isfinite(fwhm0):
             fwhm0 = span / 10.0
         Ql0 = abs(fr0) / fwhm0 if fwhm0 else 1e4
@@ -182,7 +194,7 @@ class FitNotchCircle(FunctionFitting):
             xc, yc, r0 = _fit_circle_taubin(zc.real, zc.imag)
             return float(np.sum((np.hypot(zc.real - xc, zc.imag - yc) - r0) ** 2))
 
-        span = float(f[-1] - f[0]) or 1.0
+        span = _span(f)
         taus = delay0 + np.linspace(-0.6, 0.6, 13) / span
         tau_best = min(taus, key=cost)
         step = float(taus[1] - taus[0])

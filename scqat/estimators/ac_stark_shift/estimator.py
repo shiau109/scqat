@@ -80,6 +80,7 @@ from scqat.estimators.ac_stark_shift.visualization import (
 )
 from scqat.tools.iq_reduce import ground_ref, radial
 from scqat.tools.peak_fit import fit_peaks, validate_peak_kwargs
+from scqat.tools.sweep_order import ascending
 
 AMP = "amp_prefactor"
 DET = "detuning"
@@ -220,6 +221,11 @@ class AcStarkShiftEstimator(BaseEstimator):
                 f"{', '.join(OWN_KNOBS)}; max_peaks is pinned to 1)"
             ) from None
 
+        # Both swept axes in one canonical order: the direction the instrument
+        # walked them is provenance, never input (tools.sweep_order). The per-row
+        # arrays below are therefore ascending in amplitude, and low/high are the
+        # window edges by value.
+        dataset = ascending(dataset, AMP, DET)
         ds = with_iqdata(dataset)
         amp = np.asarray(ds.coords[AMP].values, dtype=float)
         detuning = np.asarray(ds.coords[DET].values, dtype=float)
@@ -228,13 +234,6 @@ class AcStarkShiftEstimator(BaseEstimator):
             np.asarray(ds.coords["full_freq"].values, dtype=float).ravel()
             if "full_freq" in ds.coords else None
         )
-        # An ascending frequency axis, always: fit_peaks builds its width bound as
-        # detuning[-1] - detuning[0], which a descending axis inverts silently.
-        order = np.argsort(detuning)
-        detuning = detuning[order]
-        iq_map = iq_map[:, order]
-        if full_freq is not None:
-            full_freq = full_freq[order]
 
         # the radial reference: supplied -> the stored ground blob -> per-row median
         ref = kwargs.pop("ref", None)

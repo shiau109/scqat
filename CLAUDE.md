@@ -101,6 +101,17 @@ scalars vs. plot arrays), so nothing is recomputed. Estimators transpose the
 input dataset **by coordinate name** (order-invariant), so callers may pass sweep
 axes in any order.
 
+**Nor may the DIRECTION a swept axis was walked change a result.** SCQO's
+`start_*`/`end_*` windows are a traversal order and the dataset keeps it, so a
+flux, detuning or amplitude axis can arrive descending. An estimator reading one
+calls `tools.sweep_order.ascending(dataset, <dims>)` on entry to BOTH
+`extract_parameters` and `build_plot_data` (or once in the shared stage function
+both read), and carries an `order_free` test (`tests/conftest.py`: the same data
+reversed must give identical metadata and plot data). A tool returns per-point
+arrays its caller pairs with its own axis, so it never reorders: it avoids the
+positional idioms instead (`x[-1] - x[0]` spans, a signed `x[1] - x[0]` step,
+`np.interp` / `searchsorted` over an unsorted table).
+
 From that, an estimator produces **one mandatory artifact and two optional ones**:
 
 1. **Metadata (mandatory)** — the *key physical parameters* (e.g. `T1`,
@@ -377,6 +388,7 @@ every family listed beside it; run those families' test files too.
 | `robust` | resonator_spectroscopy_flux |
 | `step_response_fit` | ramsey_cryoscope, spectroscopy_cryoscope |
 | `swap_lineshape` | pair_swap_flux_map, qc_n_stark_amp, qc_swap_flux_stark |
+| `sweep_order` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
 | `telegraph_psd` | parity_switch_continuous, parity_switch_discrete |
 | `timeseries_psd` | qubit_t1_bayesian |
 

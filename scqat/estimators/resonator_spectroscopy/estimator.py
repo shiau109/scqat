@@ -53,6 +53,7 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
 from scqat.estimators.resonator_spectroscopy.methods import METHODS
+from scqat.tools.sweep_order import ascending
 
 #: Tier-1 keys every method must return — the only keys orchestration may
 #: rely on. Same name => same meaning and unit across methods.
@@ -83,8 +84,11 @@ class ResonatorSpectroscopyEstimator(BaseEstimator):
 
     @classmethod
     def _arrays(cls, dataset: xr.Dataset) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-        """Extract (detuning, complex iq, full_freq-or-None) once, uniformly."""
-        ds = with_iqdata(dataset)
+        """Extract (detuning, complex iq, full_freq-or-None) once, uniformly -
+        ascending in detuning, the ONE place both extract_parameters and
+        build_plot_data read the sweep: its direction is provenance, never input
+        (tools.sweep_order)."""
+        ds = with_iqdata(ascending(dataset, "detuning"))
         detuning = ds.coords["detuning"].values.astype(float)
         iq = ds["IQdata"].values.ravel()
         full_freq = None

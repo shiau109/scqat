@@ -225,3 +225,12 @@ class TestPeakMerging:
         default = est.extract_parameters(ds)["peaks"]
         assert all(pk["fwhm"] >= 0.5 * step for pk in default)
         assert any(abs(pk["detuning"]) < 5e6 for pk in default)  # real line recovered
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The same spectrum walked high -> low gives the identical fit - and the
+    right one (the symmetry check alone would pass two equal wrong answers)."""
+    ds = _make_ds([(-60e6, 1.0, 1e6), (20e6, 0.8, 2e6)], n=401)
+    results = order_free(QubitSpectroscopyEstimator(), ds, "detuning")
+    centres = sorted(pk["detuning"] for pk in results["peaks"])
+    assert centres == pytest.approx([-60e6, 20e6], abs=0.5e6)

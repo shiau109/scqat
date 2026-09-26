@@ -39,6 +39,7 @@ import xarray as xr
 from scqat.core.base_estimator import with_iqdata
 from scqat.tools.dip_fit import DIP_KNOBS, fit_dip, validate_dip_kwargs
 from scqat.tools.robust import mad_outliers
+from scqat.tools.sweep_order import ascending
 
 
 def check_dataset(dataset: xr.Dataset) -> None:
@@ -182,9 +183,13 @@ def track_dips(
         fwhm, dip_amplitude, dip_depth, success, refined, in_window, outlier,
         good, dip_method, fwhm_median, fwhm_mad, dip_amplitude_median,
         dip_amplitude_mad, amplitude_map, n_flux, n_success, n_refined, n_good,
-        n_outlier}``
+        n_outlier}`` - every array in ASCENDING ``flux_bias`` / ``detuning``
+        order whatever order the map was swept in; pair them with the returned
+        axes, never with the caller's own.
     """
     check_dataset(dataset)
+    # the sweep direction is provenance, never input (tools.sweep_order)
+    dataset = ascending(dataset, "flux_bias", "detuning")
     # Fail loudly BEFORE any per-slice loop — a typo'd knob must never be
     # swallowed by the per-slice fallback.
     try:

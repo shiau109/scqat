@@ -43,6 +43,7 @@ from scqat.core.base_estimator import with_iqdata
 from scqat.tools.iq_reduce import ground_ref
 from scqat.tools.peak_fit import validate_peak_kwargs
 from scqat.tools.peak_map import track_peaks
+from scqat.tools.sweep_order import ascending
 
 #: valid reference scopes for the per-slice radial reduction
 REF_SCOPES = ("per_slice", "global")
@@ -106,9 +107,14 @@ def track_flux_peaks(
         peak_amplitude_median, peak_amplitude_mad, amplitude_map, reduced_map,
         n_flux, n_peaks, n_in_window, n_good, n_outlier, n_inverted}`` —
         ``peak_amplitude`` is polarity-normalized; pair it with
-        ``peak_inverted`` for dip-vs-peak (see the module docstring).
+        ``peak_inverted`` for dip-vs-peak (see the module docstring). Every
+        array is in ASCENDING ``flux_bias`` / ``detuning`` order whatever order
+        the map was swept in - pair them with the returned axes, never with the
+        caller's own.
     """
     check_flux_dataset(dataset)
+    # the sweep direction is provenance, never input (tools.sweep_order)
+    dataset = ascending(dataset, "flux_bias", "detuning")
     # Fail loudly BEFORE any per-slice fit — a typo'd knob must never be
     # swallowed by the per-slice fallback.
     if ref_scope not in REF_SCOPES:

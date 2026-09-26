@@ -137,3 +137,13 @@ class TestQubitFluxArchEstimator:
         meta = est.extract_metadata(results)
         for key in ("rms_residual_hz", "freq_window_lo_hz", "freq_window_hi_hz"):
             assert key in meta
+
+
+@pytest.mark.parametrize("dims", [("flux_bias",), ("detuning",), ("flux_bias", "detuning")])
+def test_sweep_direction_cannot_change_the_answer(order_free, dims):
+    """Flux and/or frequency walked high -> low gives the identical arch - and
+    the right one."""
+    results = order_free(QubitFluxArchEstimator(), _make_map(), dims)
+    arch = results["arch"]
+    assert arch["success"]
+    assert arch["sweet_spot_flux"] == pytest.approx(OFFSET, abs=0.02)

@@ -284,9 +284,14 @@ def fit_peaks(
         y_win = signal_corrected[lo:hi]
 
         da_win = xr.DataArray(y_win, coords={'x': x_win}, dims='x')
-        x_lo_b = float(detuning[lo])
-        x_hi_b = float(detuning[hi - 1])
-        gamma_max = float(detuning[-1] - detuning[0])
+        # Bounds by VALUE, never by position: the axis may be swept in either
+        # direction, and a positional span (``detuning[-1] - detuning[0]``) is
+        # negative on a descending one - lmfit then swaps it into gamma <= 0,
+        # seeds onto a zero-gradient corner and misfits a 4 MHz line as a
+        # ~180 MHz one with no failure flag.
+        x_lo_b = float(x_win.min())
+        x_hi_b = float(x_win.max())
+        gamma_max = float(detuning.max() - detuning.min())
         fitter = FitLorentzian(
             da_win,
             inverted=inverted,

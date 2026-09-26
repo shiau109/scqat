@@ -136,3 +136,23 @@ def test_validation_fails_loudly():
     detuning, iq = _trace([(0.0, 0.8, 3e6)])
     with pytest.raises(TypeError):
         fit_peaks(detuning, iq, prominance=0.2)
+
+
+def test_descending_axis_fits_the_same_line():
+    """Regression: the width bound was ``detuning[-1] - detuning[0]``, negative on
+    an axis swept high -> low, and a 4 MHz line came back ~180 MHz wide with no
+    flag. The same (x, y) pairs in either order must give the same peak."""
+    detuning, iq = _trace([(7e6, 0.8, 2e6)], n=201, noise=2e-2, seed=1,
+                          complex_signal=False)
+    up = fit_peaks(detuning, iq)["peaks"]
+    down = fit_peaks(detuning[::-1], iq[::-1])["peaks"]
+    assert len(up) == len(down) == 1
+    assert up[0]["fwhm"] == pytest.approx(4e6, rel=0.1)
+    for key in ("detuning", "fwhm", "amplitude"):
+        assert down[0][key] == pytest.approx(up[0][key], rel=1e-6)
+    # the absolute centre too - the interp post-step sorts its table
+    lo = 4.5e9
+    up_f = fit_peaks(detuning, iq, full_freq=detuning + lo)["peaks"][0]["full_freq"]
+    down_f = fit_peaks(detuning[::-1], iq[::-1],
+                       full_freq=(detuning + lo)[::-1])["peaks"][0]["full_freq"]
+    assert down_f == pytest.approx(up_f, abs=1.0)

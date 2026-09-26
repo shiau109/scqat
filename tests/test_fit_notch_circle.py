@@ -126,3 +126,16 @@ class TestFitNotchCircle:
         assert np.allclose(fitter.x, f)
         assert np.allclose(fitter.z, z)
         assert fitter.x.dtype == np.float64
+
+
+def test_descending_frequency_axis_fits_the_same_resonator():
+    """Regression: the delay scan's bracket and the Lorentzian seed's width bound
+    were built from ``f[-1] - f[0]``; an axis swept high -> low raised
+    ``The lower bound exceeds the upper bound``. The same points in the other
+    order must give the same resonator."""
+    da = _make_notch_data(noise_std=0.003)
+    up = FitNotchCircle(da).fit()
+    down = FitNotchCircle(da.isel(x=slice(None, None, -1))).fit()
+    assert up["success"] and down["success"]
+    for key in ("fr", "Ql", "absQc", "phi0", "delay"):
+        assert down[key] == pytest.approx(up[key], rel=1e-6)

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 from scqat.core.base_estimator import BaseEstimator
 from scqat.tools.dip_fit import fit_dip, validate_dip_kwargs
+from scqat.tools.sweep_order import ascending
 from scqat.estimators.state_discrimination import state_iq_arrays
 from scqat.estimators._twin_axis import TWIN_KNOBS, twin_values
 from scqat.estimators.readout_fidelity.methods import METHODS, ReadoutFidelityMethod
@@ -160,6 +161,9 @@ class ReadoutFidelityEstimator(BaseEstimator):
             )
         slice_knobs = {k: kwargs[k] for k in method.knobs if k in kwargs}
 
+        # the sweep direction is provenance, never input (tools.sweep_order): a
+        # tie in the best-point argmax would otherwise resolve by traversal order
+        dataset = ascending(dataset, coord)
         sweep_values = np.asarray(dataset.coords[coord].values)
 
         collected: Dict[str, List[Optional[np.ndarray]]] = {
@@ -571,6 +575,9 @@ class ReadoutFreqFidelityEstimator(ReadoutFidelityEstimator):
         if dip_fit_method != "none":
             validate_dip_kwargs(dip_fit_method, dip_knobs)
 
+        # Canonical BEFORE super(): _extract_dressed_dips reads full_freq off THIS
+        # dataset and pairs it with the base's (ascending) sweep_values.
+        dataset = ascending(dataset, self._resolve_coord(kwargs))
         results = super().extract_parameters(dataset, **kwargs)
         results["dip_fit_method"] = dip_fit_method
         if dip_fit_method != "none":

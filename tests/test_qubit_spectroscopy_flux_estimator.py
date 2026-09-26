@@ -17,6 +17,7 @@ import json
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 import xarray as xr
 
 from scqat.estimators import QubitSpectroscopyFluxEstimator
@@ -115,3 +116,14 @@ def test_polarity_survives_the_saved_artifacts(tmp_path):
     assert reloaded["peak_inverted"].values.astype(bool).all()
     assert int(reloaded.attrs["n_inverted"]) == int(reloaded.attrs["n_peaks"])
     plt.close("all")
+
+
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    """The point-cloud stage canonicalizes both axes, so the same map walked
+    high -> low yields the identical cloud, masks and plot data."""
+    results = order_free(QubitSpectroscopyFluxEstimator(), _flux_map_ds(),
+                         ("flux_bias", "detuning"), signal_var="state")
+    assert results["n_good"] == 7
+    np.testing.assert_array_equal(results["flux_bias"], np.linspace(-0.2, 0.2, 7))
+    assert results["peak_detuning"] == pytest.approx(
+        30e6 * np.sin(np.pi * results["peak_flux"] / 0.4), abs=0.5e6)

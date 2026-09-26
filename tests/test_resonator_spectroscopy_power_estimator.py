@@ -558,3 +558,16 @@ class TestAxisKindAndModeLabel:
         assert "chain-stepped (slow)" in fig.axes[0].get_title()
         assert any("absolute dBm" in a.get_xlabel() for a in fig.axes)  # bottom subplot label
         plt.close(fig)
+
+
+@pytest.mark.parametrize("dims", [("detuning",), ("power",), ("power", "detuning")])
+def test_sweep_direction_cannot_change_the_answer(order_free, dims):
+    """The readout window (and the power axis, whose optimal-power pick is
+    positional) walked high -> low gives the identical punchout - branches,
+    crossing, provenance coords and all - and the right one."""
+    ds, truth = _make_dataset(noise=0.005, seed=2)
+    ds = ds.assign_coords(digital_amp=("power", np.linspace(0.05, 0.9, ds.sizes["power"])))
+    r = order_free(ResonatorSpectroscopyPowerEstimator(), ds, dims)
+    assert r["branch_success"] is True
+    assert r["lamb_shift"] == pytest.approx(0.8e6, abs=100e3)
+    assert truth["power"].min() < r["crossing_power"] < truth["power"].max()

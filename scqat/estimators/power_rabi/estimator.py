@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from scqat.core.base_estimator import POS_ATTRS, BaseEstimator, reduced_signal, with_iqdata
 from scqat.tools.fit_cosine import FitCosine
 from scqat.tools.iq_reduce import AXIAL_KNOBS, validate_iq_reduce_kwargs
+from scqat.tools.sweep_order import ascending
 from scqat.estimators._iq_plane import has_iq_plane, plot_iq_plane
 from scqat.estimators._twin_axis import TWIN_KNOBS, twin_at, twin_values
 from scqat.estimators.power_rabi.visualization import plot_amplitude_fit
@@ -77,6 +78,10 @@ class PowerRabiEstimator(BaseEstimator):
         twin_coord = kwargs.pop("twin_coord", self.twin_coord)
         twin_label = kwargs.pop("twin_label", self.twin_label)
         validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
+        # The sweep direction is provenance, never input (tools.sweep_order): the
+        # pi-pulse pick below measures from best_fit[0], the LOWEST amplitude, which
+        # on an axis walked high -> low would be the highest one.
+        dataset = ascending(dataset, "amp_prefactor")
         # Prepare a DataArray with an 'x' coordinate for the FitCosine fitter.
         sig = reduced_signal(dataset, **kwargs)
         fit_data = sig.rename({"amp_prefactor": "x"})
@@ -171,6 +176,7 @@ class PowerRabiEstimator(BaseEstimator):
         the ``twin`` variable so the saved plotdata redraws the secondary axis with
         no access to the device.
         """
+        dataset = ascending(dataset, "amp_prefactor")  # the order extract_parameters saw
         amp_prefactor = np.asarray(dataset.coords["amp_prefactor"].values, dtype=float)
         signal = np.asarray(results["signal"], dtype=float)
         best_fit = np.asarray(results["best_fit"], dtype=float)

@@ -7,6 +7,7 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator
 from scqat.tools.fit_exp_decay import FitExponentialDecay
+from scqat.tools.sweep_order import ascending
 from scqat.tools.fit_damped_oscillation import FitDampedOscillation
 from scqat.estimators.qubit_echo_flux.visualization import plot_echo_flux
 
@@ -26,6 +27,9 @@ class QubitEchoFluxEstimator(BaseEstimator):
             raise ValueError("T2 echo vs flux estimator requires a 'flux_bias' coordinate (V)")
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
+        # the flux sweep direction is provenance, never input (tools.sweep_order):
+        # the per-flux lists below come out ascending whatever order was walked
+        dataset = ascending(dataset, "flux_bias")
         flux_biases = dataset["flux_bias"].values
         wait_times = dataset["wait_time"].values
         signal = dataset["signal"].values
@@ -102,6 +106,7 @@ class QubitEchoFluxEstimator(BaseEstimator):
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
+        dataset = ascending(dataset, "flux_bias")  # the order extract_parameters saw
         return xr.Dataset(
             {
                 "signal": (("flux_bias", "wait_time"), np.asarray(dataset["signal"].values, dtype=float)),

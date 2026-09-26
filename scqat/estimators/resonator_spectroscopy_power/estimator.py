@@ -93,6 +93,7 @@ import xarray as xr
 from scqat.core.base_estimator import BaseEstimator, with_iqdata
 from scqat.core.figures import render_figures
 from scqat.tools.dip_fit import fit_dip, validate_dip_kwargs
+from scqat.tools.sweep_order import ascending
 from scqat.estimators.resonator_spectroscopy_power.visualization import plot_power_map
 
 
@@ -429,6 +430,11 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         # swallowed by the per-slice fallback.
         validate_dip_kwargs(dip_method, kwargs)
 
+        # Both swept axes in one canonical order - the direction the instrument
+        # walked them is provenance, never input (tools.sweep_order). The power
+        # pick below is positional ("the FIRST power past the threshold", an
+        # np.interp over power), so it needs this as much as the dip fits do.
+        dataset = ascending(dataset, "power", "detuning")
         ds = with_iqdata(dataset)
         power = ds.coords["power"].values.astype(float)
         detuning = ds.coords["detuning"].values.astype(float)
@@ -595,6 +601,8 @@ class ResonatorSpectroscopyPowerEstimator(BaseEstimator):
         ``amplitude_db`` (``20*log10|IQ| - power``) the figure colors by: with
         both response and drive on a log scale, subtracting the input power
         removes the swept-drive brightness gradient across rows."""
+        # the provenance coords below are read off the dataset: same order as results
+        dataset = ascending(dataset, "power", "detuning")
         power = np.asarray(results["power"], dtype=float)
         detuning = np.asarray(results["detuning"], dtype=float)
         amplitude = np.asarray(results["amplitude_map"], dtype=float)

@@ -37,7 +37,9 @@ class FitCosine(FunctionFitting):
     def guess(self):
         y = self.y
         t = self.x
-        dt = float(t[1] - t[0])
+        # the sample SPACING, a magnitude: on an axis swept high -> low the signed
+        # step is negative, which turned the Nyquist bound below into f <= 0
+        dt = float(abs(t[1] - t[0]))
         max_val = float(max(y))
         min_val = float(min(y))
 
