@@ -388,7 +388,7 @@ every family listed beside it; run those families' test files too.
 | `robust` | resonator_spectroscopy_flux |
 | `step_response_fit` | ramsey_cryoscope, spectroscopy_cryoscope |
 | `swap_lineshape` | pair_swap_flux_map, qc_n_stark_amp, qc_swap_flux_stark |
-| `sweep_order` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
+| `sweep_order` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_ramsey_flux_pulse, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
 | `telegraph_psd` | parity_switch_continuous, parity_switch_discrete |
 | `timeseries_psd` | qubit_t1_bayesian |
 
