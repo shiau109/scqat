@@ -20,6 +20,7 @@ from scqat.estimators.readout_fidelity import (
 )
 from scqat.estimators.ac_stark_shift import AcStarkShiftEstimator
 from scqat.estimators.readout_pulse_photon import ReadoutPulsePhotonEstimator
+from scqat.estimators.readout_time_of_flight import ReadoutTimeOfFlightEstimator
 from scqat.estimators.parametric_drive_decoherence import ParametricDriveDecoherenceEstimator
 from scqat.estimators.parametric_drive_resonance import ParametricDriveResonanceEstimator
 from scqat.estimators.swap_oscillation import SwapOscillationEstimator
@@ -77,6 +78,7 @@ __all__ = [
     "ReadoutFreqFidelityEstimator",
     "AcStarkShiftEstimator",
     "ReadoutPulsePhotonEstimator",
+    "ReadoutTimeOfFlightEstimator",
     "ParametricDriveDecoherenceEstimator",
     "ParametricDriveResonanceEstimator",
     "SwapOscillationEstimator",

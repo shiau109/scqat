@@ -371,6 +371,7 @@ every family listed beside it; run those families' test files too.
 | `lockin` | ramsey_cryoscope, ramsey_phasor |
 | `peak_fit` | ac_stark_shift, broadband_qubit_spectroscopy, parametric_drive_resonance, qubit_spectroscopy, qubit_spectroscopy_flux, readout_pulse_photon, spectroscopy_cryoscope |
 | `peak_map` | parametric_drive_resonance, qubit_spectroscopy_flux |
+| `pulse_arrival` | readout_time_of_flight |
 | `ramsey_fit` | charge_gate_ramsey, ramsey |
 | `robust` | resonator_spectroscopy_flux |
 | `step_response_fit` | ramsey_cryoscope, spectroscopy_cryoscope |
@@ -389,7 +390,7 @@ when it is promoted in — SCQO's promotion checklist already requires "`simulat
 → offline end-to-end test in `tests/`". Do not open a campaign to backfill them.
 
 <!-- BEGIN generated: coverage-gap -->
-**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 47**
+**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 48**
 estimators are imported by NO test, by module path or exported class:
 
 - `broadband_qubit_spectroscopy`

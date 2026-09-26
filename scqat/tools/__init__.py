@@ -58,6 +58,11 @@ from .timeseries_psd import (
     validate_timeseries_psd_kwargs,
 )
 from .allan import overlapping_allan_deviation
+from .pulse_arrival import (
+    EDGE_FRACTION,
+    SATURATION_FRACTION,
+    find_pulse_arrival,
+)
 from .ade_decay import (
     ADE_BOOTSTRAP_MIN_FINITE,
     ade_bootstrap_sigma_t1,
