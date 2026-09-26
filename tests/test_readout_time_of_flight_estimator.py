@@ -115,6 +115,33 @@ def test_kwargs_override_the_dataset_attributes():
     assert res["time_of_flight_ns"] == pytest.approx(304.0, abs=GRID_NS)
 
 
+def test_the_rise_time_is_measured_outward_from_the_midpoint():
+    """Regression, from real 5Q4C q1 data (2026-09-26, SNR 27).
+
+    Searching for the 10 % level from the START of the trace is the obvious
+    implementation and it is wrong: 10 % of the step sits inside the noise
+    band, so an early fluctuation crosses it and the rise comes back as most
+    of the trace. That shipped, briefly, and reported 339 ns for an edge whose
+    true 10-90 % is 4 ns. The midpoint - well clear of the noise, and the
+    crossing the arrival is taken at - anchors both ends instead."""
+    rng = np.random.default_rng(7)
+    times = np.arange(0.0, 1000.0, 1.0)
+    # a genuinely sharp edge at 360 ns, with noise big enough that the 10 %
+    # level is crossed early by chance - as it was on the instrument
+    step = 1.0 / (1.0 + np.exp(-(times - 360.0) / 1.2))
+    iq = 1.1e-3 * step + rng.normal(0, 3.5e-4, times.size)         + 1j * rng.normal(0, 3.5e-4, times.size)
+    ds = xr.Dataset({"IQdata": (("readout_time_ns",), iq)},
+                    coords={"readout_time_ns": times},
+                    attrs={"window_start_ns": 28.0, "grid_ns": GRID_NS})
+
+    res = ReadoutTimeOfFlightEstimator().extract_parameters(ds)
+
+    assert res["arrival_ns"] == pytest.approx(360.0, abs=8.0)
+    # the edge is a handful of ns; anything approaching the trace length means
+    # the search anchored at the start again
+    assert res["rise_time_ns"] < 40.0
+
+
 def test_figures_render_on_a_failed_fit(tmp_path):
     """A run with no edge at all must still produce its trace figure - that
     figure is how an operator sees WHY (a washed-out step means the phase was

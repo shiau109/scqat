@@ -145,8 +145,34 @@ def find_pulse_arrival(
     out["arrival_at_edge"] = float(
         arrival <= times_ns[n_edge - 1] or arrival >= times_ns[-n_edge])
 
-    low = _first_crossing(times_ns, smooth, baseline + 0.1 * step)
-    high = _first_crossing(times_ns, smooth, baseline + 0.9 * step)
-    if np.isfinite(low) and np.isfinite(high) and high >= low:
-        out["rise_time_ns"] = float(high - low)
+    out["rise_time_ns"] = _rise_time(times_ns, smooth, baseline, step, arrival)
     return out
+
+
+def _rise_time(times_ns: np.ndarray, y: np.ndarray, baseline: float,
+               step: float, arrival_ns: float) -> float:
+    """10-90 % rise, measured OUTWARD FROM THE MIDPOINT.
+
+    Searching for the 10 % level from the start of the trace is what the
+    obvious implementation does and it is wrong: 10 % of the step sits INSIDE
+    the noise band, so any early fluctuation crosses it and the rise comes back
+    as most of the trace. Measured on 5Q4C q1 (2026-09-26, SNR 27): the true
+    10-90 % is 12 ns and the from-the-start search reported 339.
+
+    So the midpoint - which is well clear of the noise, and is the crossing the
+    arrival itself is taken at - anchors both ends: the LAST sample below 10 %
+    before it, and the FIRST above 90 % after it.
+    """
+    nan = float("nan")
+    if not np.isfinite(arrival_ns):
+        return nan
+    mid = int(np.searchsorted(times_ns, arrival_ns))
+    if mid <= 0 or mid >= y.size:
+        return nan
+
+    low_level, high_level = baseline + 0.1 * step, baseline + 0.9 * step
+    before = np.nonzero(y[:mid] <= low_level)[0]
+    after = np.nonzero(y[mid:] >= high_level)[0]
+    if before.size == 0 or after.size == 0:
+        return nan
+    return float(times_ns[mid + after[0]] - times_ns[before[-1]])
