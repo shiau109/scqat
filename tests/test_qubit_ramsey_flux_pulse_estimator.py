@@ -64,19 +64,21 @@ def test_negative_ramp_reads_the_same_physics():
     assert neg["apex_delta_f_hz"] == pytest.approx(pos["apex_delta_f_hz"], abs=5e3)
 
 
-def test_order_does_not_change_any_result():
+def test_sweep_direction_cannot_change_the_answer(order_free):
+    results = order_free(QubitRamseyFluxPulseEstimator(), _map(), ("flux_bias", "idle_time"),
+                         ramp_detuning_hz=4e6, drive_freq_hz=DRIVE)
+    assert results["apex_flux"] == pytest.approx(0.8e-3, abs=0.05e-3)
+
+
+def test_non_monotone_point_list_gives_the_same_answer():
+    """A ping-pong walk (centre, -1, +1, ...) is an explicit point list, not a reversal."""
     ds = _map()
     ref = _fit(ds)
     perm = np.random.default_rng(2).permutation(ds.sizes["flux_bias"])
-    for other in (ds.isel(flux_bias=slice(None, None, -1)),
-                  ds.isel(idle_time=slice(None, None, -1)),
-                  ds.isel(flux_bias=perm)):
-        r = _fit(other)
-        for key in ("apex_flux", "apex_flux_stderr", "apex_delta_f_hz", "curvature_hz_per_v2"):
-            assert r[key] == pytest.approx(ref[key], rel=1e-9, abs=1e-15), key
-    # the realized order is kept in the per-point outputs
     r = _fit(ds.isel(flux_bias=perm))
-    assert r["flux_bias"] == ds["flux_bias"].values[perm].tolist()
+    for key in ("apex_flux", "apex_flux_stderr", "apex_delta_f_hz", "curvature_hz_per_v2"):
+        assert r[key] == pytest.approx(ref[key], rel=1e-9, abs=1e-15), key
+    assert r["flux_bias"] == sorted(r["flux_bias"])
 
 
 def test_apex_outside_window_is_not_bracketed():

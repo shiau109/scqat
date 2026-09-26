@@ -3,7 +3,8 @@
 Dataset contract (one target; the acquisition layer splits targets off):
 
     coords   ``flux_bias`` (V)  - the swept flux value, in ANY order (the probe's
-                                  realized sweep order is kept, never re-sorted)
+                                  realized order; canonicalized on entry, so every
+                                  artifact is ascending and order-free)
              ``idle_time`` (s)  - the Ramsey idle, in any order
     vars     ``signal`` (flux_bias, idle_time)  - a real signal (e.g. an averaged
                                   population), OR complex ``IQdata`` / ``I`` + ``Q``,
@@ -47,6 +48,7 @@ from scqat.core.base_estimator import BaseEstimator, stored_positions, with_iqda
 from scqat.core.figures import render_figures
 from scqat.tools.fringe_frequency import fringe_frequency
 from scqat.tools.iq_reduce import AXIAL_KNOBS, axial, axis_angle, validate_iq_reduce_kwargs
+from scqat.tools.sweep_order import ascending
 from scqat.estimators.qubit_ramsey_flux_pulse.visualization import (
     plot_flux_curve,
     plot_fringe_map,
@@ -151,6 +153,8 @@ class QubitRamseyFluxPulseEstimator(BaseEstimator):
             raise ValueError("park_frequency_hz needs drive_freq_hz to turn the target "
                              "into a detuning from the drive")
         validate_iq_reduce_kwargs(kwargs, allowed=AXIAL_KNOBS)
+        # the realized sweep order is provenance, never input (tools.sweep_order)
+        dataset = ascending(dataset, "flux_bias", "idle_time")
 
         x = np.asarray(dataset["flux_bias"].values, dtype=float)
         t = np.asarray(dataset["idle_time"].values, dtype=float)
@@ -272,6 +276,7 @@ class QubitRamseyFluxPulseEstimator(BaseEstimator):
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
+        dataset = ascending(dataset, "flux_bias", "idle_time")
         x = np.asarray(results["flux_bias"], dtype=float)
         t = np.asarray(dataset["idle_time"].values, dtype=float)
         coef = np.asarray(results["poly_coeffs"], dtype=float)
