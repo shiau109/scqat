@@ -10,8 +10,8 @@ other.
 
 Pipeline (single method): distance signal -> polynomial baseline through the
 quietest quantile -> ``scipy.signal.find_peaks`` on both polarities (keep the
-stronger; a ``min_snr`` gate over :func:`robust_noise` rejects noise-only
-traces) -> windowed
+stronger, or the one ``polarity`` names; a ``min_snr`` gate over
+:func:`robust_noise` rejects noise-only traces) -> windowed
 Lorentzian fit per peak (:class:`scqat.tools.fit_lorentzian.FitLorentzian`) ->
 merge duplicate fits of one line -> ``max_peaks`` area cap.
 
@@ -53,8 +53,11 @@ from .iq_reduce import ground_ref, radial
 #: — the single source of truth dict-collecting callers validate against.
 PEAK_KNOBS = frozenset({
     "ref", "prominence", "min_snr", "max_peaks",
-    "merge_factor", "min_fwhm_factor", "fit_window_factor",
+    "merge_factor", "min_fwhm_factor", "fit_window_factor", "polarity",
 })
+
+#: the values of :func:`fit_peaks`' ``polarity`` knob
+POLARITIES = ("auto", "peak", "dip")
 
 
 def validate_peak_kwargs(knobs: Dict) -> None:
@@ -172,6 +175,7 @@ def fit_peaks(
     merge_factor: float = 1.0,
     min_fwhm_factor: float = 0.5,
     fit_window_factor: float = 5.0,
+    polarity: str = "auto",
 ) -> Dict[str, Any]:
     """Detect and fit every peak in one spectrum trace (see module docstring).
 
@@ -219,7 +223,16 @@ def fit_peaks(
         Each peak is fitted inside a window of
         ``fit_window_factor * estimated_width`` around the peak centre.
         Default 5.
+    polarity : {"auto", "peak", "dip"}, optional
+        Which way the lines point. ``"auto"`` (default) keeps the polarity whose
+        most prominent line is the larger. ``"peak"`` / ``"dip"`` fix it, for a
+        signal whose physics allows only one: with two strong lines of similar
+        height, a noise point BETWEEN them in the inverted trace has a prominence
+        of about the lower line's height (its bases are the two lines), so
+        ``"auto"`` can pick the wrong polarity and return no line at all.
     """
+    if polarity not in POLARITIES:
+        raise ValueError(f"polarity must be one of {POLARITIES}, got {polarity!r}")
     detuning = np.asarray(detuning, dtype=float)
 
     # --- Resolve the 1-D fitted signal ---
@@ -260,7 +273,7 @@ def fit_peaks(
     best_pos = props_pos["prominences"].max() if len(idx_pos) else 0
     best_neg = props_neg["prominences"].max() if len(idx_neg) else 0
 
-    if best_neg > best_pos:
+    if polarity == "dip" or (polarity == "auto" and best_neg > best_pos):
         peak_indices, properties = idx_neg, props_neg
         signal_corrected = -signal_corrected
         inverted = True

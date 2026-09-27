@@ -156,3 +156,19 @@ def test_descending_axis_fits_the_same_line():
     down_f = fit_peaks(detuning[::-1], iq[::-1],
                        full_freq=(detuning + lo)[::-1])["peaks"][0]["full_freq"]
     assert down_f == pytest.approx(up_f, abs=1.0)
+
+
+def test_polarity_can_be_fixed_where_auto_takes_two_lines_for_a_dip():
+    """Two lines of equal height: in the inverted trace a noise point between them
+    has both lines as its bases, so its prominence rivals theirs and ``"auto"``
+    picks the dip polarity and returns no line (seed 8: 8 of 60 seeds do)."""
+    detuning, sig = _trace([(-20e6, 0.3, 2e6), (20e6, 0.3, 2e6)], n=401, noise=1e-2,
+                           seed=8, complex_signal=False)
+    assert fit_peaks(detuning, sig)["inverted"]
+    fixed = fit_peaks(detuning, sig, polarity="peak")
+    assert not fixed["inverted"]
+    assert [p["detuning"] for p in fixed["peaks"]] == [
+        pytest.approx(-20e6, abs=0.2e6), pytest.approx(20e6, abs=0.2e6)]
+    assert fit_peaks(-detuning, -sig, polarity="dip")["inverted"]
+    with pytest.raises(ValueError, match="polarity"):
+        fit_peaks(detuning, sig, polarity="up")
