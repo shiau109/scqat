@@ -84,21 +84,18 @@ class TestParametricDriveResonanceEstimator:
         # slice's Lorentzian converged, so every point is flagged.
         assert res["peak_inverted"].all()
         assert res["n_inverted"] == res["n_peaks"]
-        # The sign of peak_amplitude can never mean "dip": a CONVERGED dip fit
-        # reports a POSITIVE amplitude and a negative one is a badly-conditioned
-        # fit — the exact trap that made SCQO's `best_peak_amplitude < 0`
-        # assertion pass on an artifact. Select converged fits by centre
-        # accuracy against the injected ridge, never by sign. (Not every slice
-        # converges: fit_peaks negates the trace for a dip and then still seeds
-        # FitLorentzian with inverted=True, so the guess starts from a noise
-        # trough. Tighten to `res["good"]` once that is fixed.)
+        # The sign of peak_amplitude can never mean "dip": a dip fit reports a
+        # POSITIVE amplitude — the trap that once made SCQO's
+        # `best_peak_amplitude < 0` assertion pass on an artifact (a mis-seeded
+        # dip fit). Every slice now fits the injected ridge; before the dip
+        # seeding was fixed only 4 of these 7 did.
         on_line = np.abs(res["peak_frequency"] - f0[res["peak_amp_index"]]) < 1e6
-        assert on_line.sum() >= 3
-        assert (res["peak_amplitude"][on_line] > 0).all()
+        assert res["good"].all() and on_line.all()
+        assert (res["peak_amplitude"] > 0).all()
         # With the flag, signed physics is recoverable: the dip is negative.
         signed = np.where(res["peak_inverted"], -res["peak_amplitude"],
                           res["peak_amplitude"])
-        assert (signed[on_line] < 0).all()
+        assert (signed < 0).all()
 
     def test_peak_map_is_not_flagged_inverted(self):
         ds, _, _ = _make_map()

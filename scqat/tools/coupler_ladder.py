@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .fit_lorentzian import lorentzian
-from .peak_fit import fit_peaks, robust_noise
+from .peak_fit import fit_peaks
 
 _NAN = float("nan")
 
@@ -43,31 +43,27 @@ def find_lines(freq: np.ndarray, signal: np.ndarray, *, min_snr: float = 6.0,
     """The positive lines of a real trace that are lines in their own right, in
     ascending frequency, and ``fit_peaks``' full result.
 
-    ``fit_peaks``' own merge keeps the larger-AREA fit of two overlapping ones, so a
-    broad sub-noise fit of a detected bump swallows a real narrow line beside it
-    (0.015 x 178 MHz beat 0.26 x 2.6 MHz on hardware). So the merge is off here and
-    every fit is gated on ITS height against the trace noise (``min_snr``) and on a
-    width between ``min_fwhm_steps`` sweep steps (the tool's ``min_fwhm_factor``) and
-    a quarter of the window, then duplicates are dropped strongest-first. A line one
-    or two steps wide is under-sampled: re-measure it with a finer step.
+    Every fit ``fit_peaks`` returns already clears ``min_snr`` on its own amplitude,
+    and is at least ``min_fwhm_steps`` sweep steps wide (the tool's
+    ``min_fwhm_factor``); here it must also be at most a quarter of the window wide.
+    The tool's merge is off: duplicates are dropped strongest-first instead, a line
+    within the larger FWHM of a stronger one being the same line - a stricter
+    overlap than the tool's summed half-widths. A line one or two steps wide is
+    under-sampled: re-measure it with a finer step.
 
-    Only peaks, fixed so: the tool's automatic polarity takes two similar lines for a
-    dip, and its dip path seeds each fit on the wrong side of the flipped trace - a
-    caller looking for dips negates its trace instead. Each fit sees two estimated
-    widths either side of its line, not the tool's five: a broadened f01 30 MHz wide
-    otherwise reaches the narrow, stronger f02/2 74 MHz away and fits that."""
+    Only peaks, because the coupler's lines here point one way - a caller looking
+    for dips negates its trace. Each fit sees two estimated widths either side of
+    its line, not the tool's five: a fit is seeded on the highest point of its
+    window, so a broadened f01 30 MHz wide otherwise reaches the narrow, stronger
+    f02/2 74 MHz away and fits that."""
     freq = np.asarray(freq, dtype=float)
     mid = 0.5 * (float(np.min(freq)) + float(np.max(freq)))
     res = fit_peaks(freq - mid, signal, full_freq=freq, min_snr=min_snr,
                     prominence=prominence, merge_factor=0.0,
                     min_fwhm_factor=min_fwhm_steps, fit_window_factor=2.0,
                     polarity="peak")
-    noise = robust_noise(res["signal_corrected"])
     span = float(np.max(freq) - np.min(freq))
-    good = [p for p in res["peaks"]
-            if np.isfinite(p["amplitude"]) and p["amplitude"] > 0
-            and (noise <= 0 or p["amplitude"] >= min_snr * noise)
-            and 0 < p["fwhm"] <= span / 4]
+    good = [p for p in res["peaks"] if 0 < p["fwhm"] <= span / 4]
     kept: List[Dict[str, Any]] = []
     for p in sorted(good, key=lambda p: p["amplitude"], reverse=True):
         if all(abs(p["full_freq"] - q["full_freq"]) >= max(p["fwhm"], q["fwhm"]) for q in kept):

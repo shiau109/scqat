@@ -61,20 +61,16 @@ def test_dip_slices_normalize_amplitude_and_flag_polarity():
     # Lorentzian converged, so every point is flagged.
     assert res["peak_inverted"].all()
     assert res["n_inverted"] == res["n_peaks"]
-    # A CONVERGED dip fit reports a POSITIVE amplitude — the sign carries no
-    # physics. Select converged fits by centre accuracy against the injected
-    # line, never by sign. (Not every slice converges: fit_peaks negates the
-    # trace for a dip and then still seeds FitLorentzian with inverted=True, so
-    # the guess starts from a noise trough. Tighten to `res["good"]` once that
-    # is fixed.)
+    # A dip fit reports a POSITIVE amplitude — the sign carries no physics — and
+    # every slice fits its line (fit_peaks fits the negated trace as a peak).
     flux = ds.coords["flux_bias"].values
     centers = 30e6 * np.sin(np.pi * flux / 0.4)
     on_line = np.abs(res["peak_detuning"] - centers[res["peak_flux_index"]]) < 2e6
-    assert on_line.sum() >= 3
-    assert (res["peak_amplitude"][on_line] > 0).all()
+    assert res["good"].all() and on_line.all()
+    assert (res["peak_amplitude"] > 0).all()
     # With the flag the signed physics is recoverable.
     signed = np.where(res["peak_inverted"], -res["peak_amplitude"], res["peak_amplitude"])
-    assert (signed[on_line] < 0).all()
+    assert (signed < 0).all()
 
 
 def test_peak_slices_are_not_flagged_inverted():

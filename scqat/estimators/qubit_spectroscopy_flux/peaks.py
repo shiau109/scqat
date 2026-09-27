@@ -9,9 +9,9 @@ kept (two or more transitions can coexist — e.g. the 0-1 line and the
 two-photon 0-2/2 line); assigning points to individual transition branches
 belongs to the downstream flux-dependence fit.
 
-``peak_amplitude`` is polarity-NORMALIZED by the per-trace fit (a well-fit
-absorption dip and a well-fit emission peak both report a POSITIVE amplitude —
-a negative one means a badly-conditioned fit); the per-peak ``peak_inverted``
+``peak_amplitude`` is polarity-NORMALIZED by the per-trace fit (an absorption
+dip and an emission peak both report a POSITIVE amplitude — the fit never
+reports a negative one); the per-peak ``peak_inverted``
 flag carries the slice's polarity choice, so signed physics is recovered as
 ``np.where(peak_inverted, -peak_amplitude, peak_amplitude)``.
 

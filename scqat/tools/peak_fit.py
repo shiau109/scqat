@@ -10,10 +10,16 @@ other.
 
 Pipeline (single method): distance signal -> polynomial baseline through the
 quietest quantile -> ``scipy.signal.find_peaks`` on both polarities (keep the
-stronger, or the one ``polarity`` names; a ``min_snr`` gate over
-:func:`robust_noise` rejects noise-only traces) -> windowed
-Lorentzian fit per peak (:class:`scqat.tools.fit_lorentzian.FitLorentzian`) ->
-merge duplicate fits of one line -> ``max_peaks`` area cap.
+one whose detected features reach further from the baseline, or the one
+``polarity`` names; a ``min_snr`` gate over :func:`robust_noise` rejects
+noise-only traces) -> windowed Lorentzian fit per peak
+(:class:`scqat.tools.fit_lorentzian.FitLorentzian`), seeded on the window's
+highest point -> the same ``min_snr`` gate on each fit's own amplitude -> merge
+duplicate fits of one line (the taller survives) -> ``max_peaks`` area cap.
+
+A dip trace is NEGATED before the fits, so every fit is a peak: a well-fit dip
+reports a POSITIVE ``amplitude`` and ``inverted`` is the only record of the
+polarity.
 
 Signal convention
 -----------------
@@ -27,13 +33,15 @@ Result contract
 ``{signal, baseline, signal_corrected, ref_iq, inverted, peaks}`` where
 ``peaks`` is a list (ascending ``detuning``) of::
 
-    {detuning, amplitude, fwhm, offset,
+    {detuning, amplitude, fwhm, offset, height,
      detuning_err, amplitude_err, fwhm_err,
      fit_x, fit_y, full_freq?}
 
 ``full_freq`` is present iff the ``full_freq`` axis was supplied. Callers may
 rely on ``detuning``/``amplitude``/``fwhm`` of each peak; the ``fit_x``/``fit_y``
-arrays are figure fodder.
+arrays are figure fodder. ``height`` is how far the fitted line rises inside
+its own fit window (see :func:`_window_height`) - the amplitude for a line
+resolved by its window, far less for a fit wider than it.
 
 Callers that loop over slices and collect tunables in a dict should call
 :func:`validate_peak_kwargs` ONCE before the loop, so a typo'd knob dies loudly
@@ -85,6 +93,22 @@ def _estimate_baseline(x: np.ndarray, y: np.ndarray, order: int = 1,
     return np.polyval(coeffs, x)
 
 
+def _window_height(x0: float, amplitude: float, gamma: float,
+                   x_lo: float, x_hi: float) -> float:
+    """How far a fitted Lorentzian rises inside the window it was fitted on.
+
+    ``amplitude * r**2 / (1 + r**2)`` with ``r`` = the distance from the centre to
+    the FARTHER window edge over the half-width: the centre's value minus the
+    lowest value the fit takes in its window. For a line the window resolves this
+    is the amplitude; for a fit wider than its window the amplitude trades against
+    the offset and only this rise is data. Signed with the amplitude.
+    """
+    if not gamma > 0:
+        return float(amplitude)
+    r2 = (max(abs(x0 - x_lo), abs(x_hi - x0)) / gamma) ** 2
+    return float(amplitude * r2 / (1.0 + r2))
+
+
 def _merge_overlapping_peaks(peaks: List[Dict[str, Any]],
                              merge_factor: float) -> List[Dict[str, Any]]:
     """Collapse peaks whose Lorentzians overlap within their summed half-widths.
@@ -94,26 +118,37 @@ def _merge_overlapping_peaks(peaks: List[Dict[str, Any]],
 
         |x0_i - x0_j| < merge_factor * (fwhm_i + fwhm_j) / 2
 
-    Within each overlapping group only the peak of largest Lorentzian **area**
-    (``|amplitude| * fwhm``) is kept; the rest are discarded.  This removes the
-    duplicate fits that arise when one transition is detected as two adjacent
-    ``find_peaks`` maxima whose overlapping fit windows both converge onto it,
-    while leaving genuinely separated transitions untouched.
+    Within each overlapping group only the TALLEST peak (largest ``height``, the
+    rise of the fit inside its own window) is kept; the rest are discarded, and
+    a tie goes to the larger Lorentzian area (``|amplitude| * fwhm``). This
+    removes the duplicate fits that arise when one transition is detected as two
+    adjacent ``find_peaks`` maxima whose overlapping fit windows both converge
+    onto it, while leaving genuinely separated transitions untouched.
+
+    Why height and not area: a broad fit's area is large whatever its height, so
+    under an area rule a broad, barely-there fit swallowed the real lines beside
+    it. Why not ``amplitude`` either: a fit wider than its window trades amplitude
+    against offset freely, so its amplitude says nothing (see
+    :func:`_window_height`). Both on 5Q4C coupler swap spectroscopy, 2026-09-27:
+    a 0.015 x 178 MHz fit beat a 0.26 x 2.6 MHz line, and in run
+    ``20260927-191908`` a 0.92 x 401 MHz fit rising 0.22 inside its 206 MHz
+    window swallowed a 0.43 x 9.8 MHz and a 0.30 x 12.9 MHz line - the whole
+    result at default knobs.
 
     A falsy ``merge_factor`` (``0`` / ``None``) disables merging and returns the
     input unchanged.  Operates on the peak dicts, which already carry
-    ``detuning``, ``amplitude`` and ``fwhm`` — no extra fields required.
+    ``detuning``, ``amplitude``, ``fwhm`` and ``height``.
     """
     if not merge_factor or len(peaks) < 2:
         return peaks
 
-    def _area(p: Dict[str, Any]) -> float:
-        return abs(p["amplitude"]) * p["fwhm"]
+    def _rank(p: Dict[str, Any]):
+        return (p["height"], abs(p["amplitude"]) * p["fwhm"])
 
     kept = list(peaks)
     while True:
         # Find the closest still-overlapping pair (smallest centre gap relative
-        # to its overlap threshold), drop its smaller-area member, and repeat.
+        # to its overlap threshold), drop its lower member, and repeat.
         drop_idx = None
         best_gap = np.inf
         for a in range(len(kept)):
@@ -122,7 +157,7 @@ def _merge_overlapping_peaks(peaks: List[Dict[str, Any]],
                 threshold = merge_factor * (kept[a]["fwhm"] + kept[b]["fwhm"]) / 2.0
                 if gap < threshold and gap < best_gap:
                     best_gap = gap
-                    drop_idx = a if _area(kept[a]) < _area(kept[b]) else b
+                    drop_idx = a if _rank(kept[a]) < _rank(kept[b]) else b
         if drop_idx is None:
             return kept
         kept.pop(drop_idx)
@@ -199,8 +234,9 @@ def fit_peaks(
     min_snr : float, optional
         Significance gate: a peak's prominence must also exceed
         ``min_snr * robust_noise(signal_corrected)`` — a point-to-point noise
-        estimate that a wide line cannot inflate (see :func:`robust_noise`).
-        Rejects noise-only sweeps (returns no peaks) and keeps all genuine lines
+        estimate that a wide line cannot inflate (see :func:`robust_noise`) —
+        and so must its FITTED amplitude, or the fit is not reported. Rejects
+        noise-only sweeps (returns no peaks) and keeps all genuine lines
         regardless of count or WIDTH. Default 6.0.
     max_peaks : int or None, optional
         Maximum number of peaks to return.  Applied *after* merging, so a
@@ -211,9 +247,10 @@ def fit_peaks(
         Default ``None`` (keep all).
     merge_factor : float, optional
         De-duplication strength.  Two fitted peaks are merged into one
-        (keeping the larger-area fit) when their centres are closer than
-        ``merge_factor * (fwhm_i + fwhm_j) / 2`` — i.e. they overlap within
-        their summed half-widths.  Default ``1.0``; set ``0`` to disable.
+        (keeping the taller fit, see :func:`_merge_overlapping_peaks`) when
+        their centres are closer than ``merge_factor * (fwhm_i + fwhm_j) / 2``
+        — i.e. they overlap within their summed half-widths.  Default ``1.0``;
+        set ``0`` to disable.
     min_fwhm_factor : float, optional
         Sub-resolution spike guard.  A fitted peak is dropped when its
         ``fwhm`` is below ``min_fwhm_factor * median(diff(detuning))``,
@@ -225,11 +262,8 @@ def fit_peaks(
         Default 5.
     polarity : {"auto", "peak", "dip"}, optional
         Which way the lines point. ``"auto"`` (default) keeps the polarity whose
-        most prominent line is the larger. ``"peak"`` / ``"dip"`` fix it, for a
-        signal whose physics allows only one: with two strong lines of similar
-        height, a noise point BETWEEN them in the inverted trace has a prominence
-        of about the lower line's height (its bases are the two lines), so
-        ``"auto"`` can pick the wrong polarity and return no line at all.
+        detected features reach further from the baseline. ``"peak"`` /
+        ``"dip"`` fix it, for a signal whose physics allows only one.
     """
     if polarity not in POLARITIES:
         raise ValueError(f"polarity must be one of {POLARITIES}, got {polarity!r}")
@@ -251,8 +285,8 @@ def fit_peaks(
     signal_corrected = signal - baseline
 
     # --- Peak detection ---
-    # Try both polarities; keep the one whose most prominent
-    # peak is larger (handles both absorption dips and emission peaks).
+    # Try both polarities (absorption dips and emission peaks); keep the one
+    # whose detected features reach further from the baseline.
     span = signal_corrected.max() - signal_corrected.min()
     # Significance gate: a peak must rise above the noise, not merely be the most
     # prominent bump within the span. The sigma is POINT-TO-POINT (robust_noise), not
@@ -270,8 +304,13 @@ def fit_peaks(
         -signal_corrected, prominence=abs_prom, width=1,
     )
 
-    best_pos = props_pos["prominences"].max() if len(idx_pos) else 0
-    best_neg = props_neg["prominences"].max() if len(idx_neg) else 0
+    # By EXCURSION from the baseline, not by prominence: with two strong lines of
+    # similar height, a noise point BETWEEN them in the inverted trace has both
+    # lines as its bases, so its prominence rivals theirs (8 of 60 seeds of two
+    # equal lines went to the dip side and returned no line). Its excursion is
+    # the noise. For one clear line the two rules agree.
+    best_pos = float(signal_corrected[idx_pos].max()) if len(idx_pos) else 0.0
+    best_neg = float(-signal_corrected[idx_neg].min()) if len(idx_neg) else 0.0
 
     if polarity == "dip" or (polarity == "auto" and best_neg > best_pos):
         peak_indices, properties = idx_neg, props_neg
@@ -307,9 +346,21 @@ def fit_peaks(
         gamma_max = float(detuning.max() - detuning.min())
         fitter = FitLorentzian(
             da_win,
-            inverted=inverted,
             bounds={'x0': (x_lo_b, x_hi_b), 'gamma': (0.0, gamma_max)},
         )
+        # The trace is already oriented (a dip trace was negated above), so every
+        # fit is a PEAK fit. The dip path used to pass inverted=True as well,
+        # which seeds x0 at the window's MINIMUM - on the negated trace a noise
+        # point on the shoulder (x0 24.5 MHz off; 27 of 40 seeds wrong or empty).
+        # guess() seeds on the largest |deviation|; when that is a trough of the
+        # oriented trace it would fit the trough as a negative "line", so re-seed
+        # on the window's highest point.
+        params = fitter.guess()
+        if params['amplitude'].value < 0:
+            dev = y_win - params['offset'].value
+            k = int(np.argmax(dev))
+            params['x0'].set(value=float(x_win[k]))
+            params['amplitude'].set(value=float(dev[k]))
         try:
             result = fitter.fit()
             p = result.params
@@ -324,7 +375,7 @@ def fit_peaks(
         except Exception:
             # Fall back to initial guess
             center_guess = detuning[idx]
-            amp_guess = signal_corrected[idx] if not inverted else -signal_corrected[idx]
+            amp_guess = signal_corrected[idx]
             gamma_guess = abs(detuning[min(idx + max(int(est_width_pts // 2), 1), len(detuning) - 1)]
                               - detuning[idx])
             if gamma_guess == 0:
@@ -339,12 +390,19 @@ def fit_peaks(
         # the sampling step is a single noise sample, not a real line.
         if min_fwhm > 0 and fwhm < min_fwhm:
             continue
+        # The detection gate, again on the FIT: its own amplitude must clear
+        # min_snr sigma too, or it is not a line. A detected bump can fit as a
+        # broad, sub-noise Lorentzian (and a negative amplitude is a trough of
+        # the oriented trace); neither may be reported, nor win a merge.
+        if not popt[1] >= min_snr * robust_sigma:
+            continue
 
         peak_entry: Dict[str, Any] = {
             "detuning": float(det_fit),
             "amplitude": float(popt[1]),
             "fwhm": float(fwhm),
             "offset": float(popt[3]),
+            "height": _window_height(det_fit, popt[1], abs(popt[2]), x_lo_b, x_hi_b),
             "detuning_err": float(perr[0]),
             "amplitude_err": float(perr[1]),
             "fwhm_err": float(2 * perr[2]),
@@ -362,9 +420,9 @@ def fit_peaks(
 
         peaks_info.append(peak_entry)
 
-    # Merge duplicate fits of the same line (keep the larger-area one), then
-    # cap to the strongest ``max_peaks`` by area so a duplicate can't crowd
-    # out a genuine transition.
+    # Merge duplicate fits of the same line (keep the taller one), then cap to
+    # the strongest ``max_peaks`` by area so a duplicate can't crowd out a
+    # genuine transition.
     peaks_info = _merge_overlapping_peaks(peaks_info, merge_factor)
     if max_peaks is not None and len(peaks_info) > max_peaks:
         peaks_info = sorted(

@@ -174,12 +174,32 @@ class TestPeakMerging:
     """De-duplication of near-coincident Lorentzian fits (the duplicate-peak fix)."""
 
     @staticmethod
-    def _pk(detuning, amplitude, fwhm):
-        return {"detuning": float(detuning), "amplitude": float(amplitude), "fwhm": float(fwhm)}
+    def _pk(detuning, amplitude, fwhm, height=None):
+        return {"detuning": float(detuning), "amplitude": float(amplitude), "fwhm": float(fwhm),
+                "height": float(amplitude if height is None else height)}
 
-    def test_merge_helper_collapses_overlapping_keeps_larger_area(self):
-        # Mimics run #66 q5: a broad central line (large area) and a narrow
-        # shoulder bump 4.4 MHz away (centres within the summed half-widths).
+    def test_merge_helper_keeps_the_taller_fit(self):
+        # The overlap group keeps the TALLER fit, never the larger area: a broad,
+        # barely-there fit of a weak bump has the larger area and used to swallow
+        # the line beside it (5Q4C coupler swap, 2026-09-27: 0.015 x 178 MHz beat
+        # 0.26 x 2.6 MHz).
+        broad = self._pk(20e6, 0.015, 178e6)    # area ~2.7e6
+        narrow = self._pk(0.0, 0.26, 2.6e6)     # area ~0.7e6
+        merged = _merge_overlapping_peaks([broad, narrow], merge_factor=1.0)
+        assert [p["detuning"] for p in merged] == [0.0]
+
+    def test_merge_helper_ranks_by_height_not_amplitude(self):
+        # A fit wider than its window trades amplitude against offset freely, so
+        # its height inside the window - not its amplitude - is what it showed
+        # (5Q4C run 20260927-191908: 0.92 x 401 MHz, rising 0.22 in its window).
+        wide = self._pk(-45e6, 0.92, 401e6, height=0.22)
+        line = self._pk(0.0, 0.43, 9.8e6, height=0.42)
+        merged = _merge_overlapping_peaks([wide, line], merge_factor=1.0)
+        assert [p["detuning"] for p in merged] == [0.0]
+
+    def test_merge_helper_breaks_a_height_tie_by_area(self):
+        # Mimics run #66 q5: a broad central line and a narrow shoulder bump 4.4
+        # MHz away (centres within the summed half-widths), equally tall.
         broad = self._pk(-0.5e6, 1.0, 8.56e6)   # area ~8.6e6
         narrow = self._pk(3.87e6, 1.0, 2.43e6)  # area ~2.4e6
         merged = _merge_overlapping_peaks([broad, narrow], merge_factor=1.0)

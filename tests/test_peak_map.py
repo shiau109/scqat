@@ -95,19 +95,15 @@ def test_dip_rows_are_flagged_inverted():
     assert r["n_inverted"] == r["n_peaks"]
 
     # Amplitudes are polarity-NORMALIZED, so the sign says nothing about
-    # dip-vs-peak: a dip fit that CONVERGED reports a POSITIVE amplitude, and a
-    # negative one is a badly-conditioned fit. Select the converged ones by
-    # centre accuracy against the injected line rather than by sign — the sign
-    # is exactly the signal this flag exists to replace. (Not every row
-    # converges here: fit_peaks negates the trace for a dip and then still
-    # seeds FitLorentzian with inverted=True, so the guess starts from a noise
-    # trough. Tighten this selection to `r["good"]` once that is fixed.)
+    # dip-vs-peak: every dip row fits its line (fit_peaks fits the negated
+    # trace as a peak) and reports a POSITIVE amplitude. Before that was fixed
+    # only 3 of these 6 rows landed on the line.
     on_line = np.abs(r["peak_y"] - centres[r["peak_x_index"]]) < 2e6
-    assert on_line.sum() >= 3
-    assert (r["peak_amplitude"][on_line] > 0).all()
+    assert r["good"].all() and on_line.all()
+    assert (r["peak_amplitude"] > 0).all()
     # With the flag, the signed physics is recoverable: these are dips.
     signed = np.where(r["peak_inverted"], -r["peak_amplitude"], r["peak_amplitude"])
-    assert (signed[on_line] < 0).all()
+    assert (signed < 0).all()
 
 
 def test_peak_rows_are_not_flagged_inverted():

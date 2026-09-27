@@ -25,8 +25,8 @@ def _line(f, fwhm=5e6, amplitude=0.3, err=0.2e6):
 
 
 def test_two_equal_lines_are_both_found():
-    """The tool's automatic polarity takes two equal lines for a dip; fixed to peaks
-    here, both come back (seed 8 is one where auto would have lost them)."""
+    """Two equal lines both come back (seed 8 is one where the tool's automatic
+    polarity, when it compared prominences, took them for a dip)."""
     lines, fit = find_lines(FREQ, _trace([(7.0e9, 5e6, 0.3), (7.2e9, 5e6, 0.3)], seed=8))
     assert [p["full_freq"] for p in lines] == [pytest.approx(7.0e9, abs=0.5e6),
                                                pytest.approx(7.2e9, abs=0.5e6)]

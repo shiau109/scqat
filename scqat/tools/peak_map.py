@@ -16,10 +16,10 @@ swept ``y`` window and its ``fwhm`` / ``|amplitude|`` are not robust
 Polarity
 --------
 :func:`~scqat.tools.peak_fit.fit_peaks` picks the stronger polarity per row and,
-when the dip wins, fits POSITIVE Lorentzians on the negated trace. So
-``peak_amplitude`` is polarity-NORMALIZED: a well-fit population dip and a
-well-fit emission peak BOTH report a positive amplitude, and a negative one
-means a badly-conditioned fit, not a dip. ``peak_inverted`` carries that row's
+when the dip wins, fits POSITIVE Lorentzians on the negated trace (a fit below
+its ``min_snr`` gate, a negative one included, is not reported). So
+``peak_amplitude`` is polarity-NORMALIZED: a population dip and an emission
+peak BOTH report a positive amplitude. ``peak_inverted`` carries that row's
 polarity choice onto each of its peaks (``True`` = the row was fitted as a dip),
 which is the only place the dip-vs-peak distinction survives the pooling. A
 consumer that wants signed physics recovers it as::

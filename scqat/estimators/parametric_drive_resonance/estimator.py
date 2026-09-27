@@ -19,9 +19,9 @@ Cleaning: a peak is kept (``good``) when its centre lies strictly inside the
 swept frequency window and its ``fwhm`` / ``|amplitude|`` are not robust
 (median/MAD) outliers across the pooled set of detected peaks.
 
-Polarity: ``peak_amplitude`` is polarity-NORMALIZED (a well-fit dip and a
-well-fit peak both report a POSITIVE amplitude — a negative one means a
-badly-conditioned fit). The per-peak ``peak_inverted`` flag carries the slice's
+Polarity: ``peak_amplitude`` is polarity-NORMALIZED (a dip and a peak both
+report a POSITIVE amplitude — the per-trace fit never reports a negative
+one). The per-peak ``peak_inverted`` flag carries the slice's
 polarity choice, so a consumer that wants signed physics — here a population
 DIP is the prepared-excited signature — recovers it as
 ``np.where(peak_inverted, -peak_amplitude, peak_amplitude)``.

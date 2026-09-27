@@ -14,6 +14,7 @@ import pytest
 from scqat.tools.fit_lorentzian import lorentzian
 from scqat.tools.peak_fit import (
     PEAK_KNOBS,
+    _window_height,
     fit_peaks,
     robust_noise,
     validate_peak_kwargs,
@@ -158,17 +159,107 @@ def test_descending_axis_fits_the_same_line():
     assert down_f == pytest.approx(up_f, abs=1.0)
 
 
-def test_polarity_can_be_fixed_where_auto_takes_two_lines_for_a_dip():
-    """Two lines of equal height: in the inverted trace a noise point between them
-    has both lines as its bases, so its prominence rivals theirs and ``"auto"``
-    picks the dip polarity and returns no line (seed 8: 8 of 60 seeds do)."""
+def test_auto_polarity_keeps_two_equal_lines_as_peaks():
+    """Regression: two lines of equal height. In the inverted trace a noise point
+    between them has both lines as its bases, so its PROMINENCE rivals theirs, and
+    the old rule picked the dip side and returned no line (seed 8; 8 of 60 seeds).
+    Compared by excursion from the baseline, that point is noise."""
     detuning, sig = _trace([(-20e6, 0.3, 2e6), (20e6, 0.3, 2e6)], n=401, noise=1e-2,
                            seed=8, complex_signal=False)
-    assert fit_peaks(detuning, sig)["inverted"]
-    fixed = fit_peaks(detuning, sig, polarity="peak")
-    assert not fixed["inverted"]
-    assert [p["detuning"] for p in fixed["peaks"]] == [
-        pytest.approx(-20e6, abs=0.2e6), pytest.approx(20e6, abs=0.2e6)]
+    for polarity in ("auto", "peak"):
+        r = fit_peaks(detuning, sig, polarity=polarity)
+        assert not r["inverted"]
+        assert [p["detuning"] for p in r["peaks"]] == [
+            pytest.approx(-20e6, abs=0.2e6), pytest.approx(20e6, abs=0.2e6)]
+    for seed in range(60):
+        detuning, sig = _trace([(-20e6, 0.3, 2e6), (20e6, 0.3, 2e6)], n=401,
+                               noise=1e-2, seed=seed, complex_signal=False)
+        assert not fit_peaks(detuning, sig)["inverted"], seed
     assert fit_peaks(-detuning, -sig, polarity="dip")["inverted"]
     with pytest.raises(ValueError, match="polarity"):
         fit_peaks(detuning, sig, polarity="up")
+
+
+def _dip_trace(dips, seed, n=201, span=100e6, noise=0.01, level=0.85):
+    """A real trace of ``dips`` = (x0, depth, gamma) below ``level``."""
+    rng = np.random.default_rng(seed)
+    x = np.linspace(-span / 2, span / 2, n)
+    y = level + noise * rng.standard_normal(n)
+    for x0, depth, gamma in dips:
+        y = y - lorentzian(x, x0, depth, gamma, 0.0)
+    return x, y
+
+
+@pytest.mark.parametrize("fit_window_factor", [5.0, 2.0])
+def test_a_dip_is_fitted_on_its_own_centre(fit_window_factor):
+    """Regression: the dip trace was negated and THEN fitted with inverted=True,
+    whose guess seeds x0 at the window's minimum - on the negated trace a noise
+    point on the shoulder. Seed 0 came back at +24.5 MHz with amplitude -0.049 and
+    24 of 40 seeds were wrong, 3 empty. A dip is fitted as a peak of the negated
+    trace and reports a POSITIVE amplitude."""
+    for seed in range(40):
+        x, y = _dip_trace([(5e6, 0.25, 2.5e6)], seed)
+        r = fit_peaks(x, y, fit_window_factor=fit_window_factor)
+        assert r["inverted"], seed
+        assert len(r["peaks"]) == 1, seed
+        pk = r["peaks"][0]
+        assert pk["detuning"] == pytest.approx(5e6, abs=0.3e6), seed
+        assert pk["amplitude"] == pytest.approx(0.25, abs=0.04), seed
+        assert pk["fwhm"] == pytest.approx(5e6, rel=0.25), seed
+
+
+def test_two_equal_dips_are_both_fitted():
+    """The mirror of the two-equal-lines case, through the dip path (the old
+    seeding got both dips right in 17 of 100 seeds)."""
+    for seed in range(40):
+        x, y = _dip_trace([(-20e6, 0.3, 2e6), (20e6, 0.3, 2e6)], seed, n=401,
+                          level=0.9)
+        r = fit_peaks(x, y)
+        assert r["inverted"], seed
+        assert [p["detuning"] for p in r["peaks"]] == [
+            pytest.approx(-20e6, abs=0.3e6), pytest.approx(20e6, abs=0.3e6)], seed
+        assert all(p["amplitude"] > 0 for p in r["peaks"]), seed
+
+
+def test_every_reported_fit_clears_the_noise_gate():
+    """A fit whose own amplitude is below min_snr sigma is not a line. A weak hump
+    passes the prominence gate on the noise riding it and then fits broad and
+    sub-noise: with the merge off, the old code reported such a fit in 6 of these
+    30 seeds (seed 17: 0.016 x 24 MHz against a 0.061 gate)."""
+    for seed in range(30):
+        detuning, sig = _trace([(20e6, 0.26, 1.3e6), (-60e6, 0.02, 25e6)], n=501,
+                               span=500e6, noise=0.01, seed=seed,
+                               complex_signal=False)
+        r = fit_peaks(detuning, sig, merge_factor=0)
+        sigma = robust_noise(r["signal_corrected"])
+        assert any(abs(p["detuning"] - 20e6) < 1e6 for p in r["peaks"]), seed
+        assert all(p["amplitude"] >= 6.0 * sigma for p in r["peaks"]), seed
+
+
+def test_a_broad_weak_fit_never_swallows_a_narrow_line():
+    """Regression: the merge kept the larger-AREA of two overlapping fits, so a
+    broad fit of a weak hump - or one wider than its own window, whose amplitude
+    trades freely against its offset - swallowed a narrow line beside it (5Q4C
+    coupler swap, 2026-09-27: 0.015 x 178 MHz beat 0.26 x 2.6 MHz; a 0.92 x 401 MHz
+    fit took two real lines). Here the old merge lost the line in 2 of 40 seeds
+    (seeds 25 and 30); the taller fit now survives."""
+    for seed in range(40):
+        detuning, sig = _trace([(20e6, 0.26, 1.3e6), (-40e6, 0.03, 75e6)], n=501,
+                               span=500e6, noise=0.01, seed=seed,
+                               complex_signal=False)
+        peaks = fit_peaks(detuning, sig)["peaks"]
+        assert any(abs(p["detuning"] - 20e6) < 1e6 and p["fwhm"] < 6e6
+                   for p in peaks), seed
+
+
+def test_window_height_is_the_rise_inside_the_window():
+    """``height`` = the fit's rise inside its own window: the amplitude for a line
+    the window resolves, a sliver of it for a fit far wider than the window."""
+    assert _window_height(0.0, 0.3, 1e6, -50e6, 50e6) == pytest.approx(0.3, rel=1e-3)
+    wide = _window_height(0.0, 16.0, 500e6, -15e6, 15e6)
+    assert wide == pytest.approx(16.0 * 0.0009 / 1.0009)
+    assert _window_height(0.0, -0.2, 1e6, -50e6, 50e6) < 0
+    # a fit reports it
+    detuning, iq = _trace([(10e6, 0.8, 3e6)])
+    pk = fit_peaks(detuning, iq)["peaks"][0]
+    assert pk["height"] == pytest.approx(pk["amplitude"], rel=0.02)
