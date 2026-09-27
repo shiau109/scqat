@@ -16,19 +16,22 @@ A tone on one member's drive line excites the coupler when it hits a coupler
 transition; after the tone the OTHER member (the pi member) gets a pi. With the
 coupler excited, the qubit-coupler ZZ pulls the pi member off its drive frequency and
 a pi narrower than the ZZ misses, so the pi member's excited population DIPS at the
-coupler's lines. The reference arm is the same shot without the pi; its difference
-``D = P_pi - P_reference`` cancels what the pi member's readout sees of the coupler
-directly (a neighbour's readout can, 5Q4C q1 sees q1_q2_c) and slow drift.
+coupler's lines. The reference arm is the same shot without the pi.
 
-* **Lines** are the dips of ``D`` (``tools.coupler_ladder.find_lines`` on ``-D``),
-  each at least ``min_fwhm_steps`` sweep steps wide. The tone is off before the pi,
-  so only what the tone LEFT BEHIND can spoil it - every dip is the coupler's (or,
-  rarely, a TLS's).
+* **Lines** are the dips of the PI ARM alone (``tools.coupler_ladder.find_lines`` on
+  ``-P_pi``), each at least ``min_fwhm_steps`` sweep steps wide. The tone is off
+  before the pi, so only what the tone LEFT BEHIND can spoil it - every dip is the
+  coupler's (or, rarely, a TLS's).
+* The reference arm is NOT subtracted. What the pi member's readout sees of the
+  coupler directly depends on the member's state (5Q4C, 2026-09-27: q1 in 0 shows
+  q1_q2_c's f01 and f02/2 as 0.1 bumps, q1 in 1 does not), so ``pi - reference``
+  would dig false dips at exactly the coupler's lines. Its peaks are listed as
+  ``readout_lines_hz`` - a diagnostic, never a line.
 * **f01 is the highest line** and every other must sit on its multi-photon ladder
   (``tools.coupler_ladder.read_ladder``); a line off it is ``unexplained_lines``.
-* ``pi_contrast`` = the median of ``D`` - the pi's efficiency times the readout
-  contrast (about 0.85 for a good pi). Reported only: a poor pi makes the dips
-  shallower, not displaced.
+* ``pi_contrast`` = median(pi arm) - median(reference) - the pi's efficiency times
+  the readout contrast (about 0.85 for a good pi). Reported only: a poor pi makes the
+  dips shallower, not displaced.
 
 The result does not depend on the order of either axis.
 """
@@ -87,7 +90,7 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
                              f"{sorted(missing)}")
 
     def extract_parameters(self, dataset: xr.Dataset, **kwargs) -> Dict[str, Any]:
-        """Pi member's pi-minus-reference population -> dips -> the ladder's top.
+        """Pi member's pi-arm population -> dips -> the ladder's top.
 
         Kwargs - flat and fully owned; unknown names raise:
             pi_member (str): ``'high'`` (default) / ``'low'`` - the member that got
@@ -123,7 +126,6 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
         marg = {role: _marginal(joint, role) for role in ROLES}
         p_pi = np.asarray(marg[pi_member].sel({ARM: 1}).values, dtype=float)
         p_ref = np.asarray(marg[pi_member].sel({ARM: 0}).values, dtype=float)
-        diff = p_pi - p_ref
 
         res: Dict[str, Any] = {
             "pi_member": pi_member,
@@ -135,13 +137,14 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
             "high_name": names["high"], "low_name": names["low"],
             "n_points": int(freq.size),
             "step_hz": float(np.median(np.diff(freq))) if freq.size > 1 else _NAN,
-            "pi_contrast": float(np.median(diff)) if freq.size else _NAN,
+            "pi_contrast": (float(np.median(p_pi) - np.median(p_ref)) if freq.size
+                            else _NAN),
             "f_c_hz": _NAN, "f_c_stderr_hz": _NAN, "fwhm_hz": _NAN,
             "dip_depth": _NAN, "snr": _NAN,
             "alpha_hz": _NAN, "alpha_stderr_hz": _NAN,
             "f02_half_hz": _NAN, "f03_third_hz": _NAN,
             "n_lines": 0, "n_ladder_lines": 0,
-            "lines_hz": [], "unexplained_lines_hz": [],
+            "lines_hz": [], "unexplained_lines_hz": [], "readout_lines_hz": [],
             "no_line": 1, "unexplained_lines": 0, "peak_at_edge": 0,
             "success": False,
             # plot fodder (dropped from the metadata)
@@ -149,14 +152,17 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
             "joint_state": [str(v) for v in joint["joint_state"].values],
             "joint_population": np.asarray(joint.values, dtype=float),
             "marginal": np.stack([np.asarray(marg[r].values, dtype=float) for r in ROLES]),
-            "difference": diff,
             "fit_curve": np.full(freq.size, _NAN),
         }
         if freq.size < 5:
             return res
 
-        # the dips of D are the peaks of -D (tools.coupler_ladder.find_lines)
-        lines, fit = find_lines(freq, -diff, min_snr=min_snr, prominence=prominence,
+        # the reference arm's own lines: the readout seeing the coupler (diagnostic)
+        seen, _ = find_lines(freq, p_ref, min_snr=min_snr, prominence=prominence,
+                             min_fwhm_steps=min_fwhm_steps)
+        res["readout_lines_hz"] = [float(p["full_freq"]) for p in seen]
+        # the dips of the pi arm are the peaks of its negative
+        lines, fit = find_lines(freq, -p_pi, min_snr=min_snr, prominence=prominence,
                                 min_fwhm_steps=min_fwhm_steps)
         res["n_lines"] = len(lines)
         res["lines_hz"] = [float(p["full_freq"]) for p in lines]
@@ -186,7 +192,7 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
         return res
 
     def extract_metadata(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        bulky = ("tone_freq_hz", "joint_population", "marginal", "difference", "fit_curve")
+        bulky = ("tone_freq_hz", "joint_population", "marginal", "fit_curve")
         return {k: v for k, v in results.items() if k not in bulky}
 
     def build_plot_data(
@@ -197,7 +203,7 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
                   and k != "success"]
         attrs = {k: results[k] for k in scalar}
         attrs["success"] = int(bool(results["success"]))
-        for key in ("lines_hz", "unexplained_lines_hz"):
+        for key in ("lines_hz", "unexplained_lines_hz", "readout_lines_hz"):
             attrs[key] = np.asarray(results[key], dtype=float)
         return xr.Dataset(
             {
@@ -205,7 +211,6 @@ class PairCouplerSpectroscopyZZEstimator(BaseEstimator):
                                      np.asarray(results["joint_population"], dtype=float)),
                 "marginal": (("member", ARM, AXIS),
                              np.asarray(results["marginal"], dtype=float)),
-                "difference": (AXIS, np.asarray(results["difference"], dtype=float)),
                 "fit_curve": (AXIS, np.asarray(results["fit_curve"], dtype=float)),
             },
             coords={AXIS: np.asarray(results["tone_freq_hz"], dtype=float),

@@ -3,7 +3,9 @@
 Two arms per frequency: the pi arm, where the pi member gets a pi after the tone
 (spoiled by the ZZ while the coupler is excited, so its population DIPS on the
 coupler's lines), and the reference arm, where it waits instead. The pi member's
-readout may also see the coupler directly, in both arms. Numbers are 5Q4C q1_q2's:
+readout may also see the coupler directly - only while the member is in 0, as 5Q4C q1
+saw q1_q2_c on 2026-09-27 - so the reference arm shows it fully and the pi arm only
+in the part the ZZ spoiled. Numbers are 5Q4C q1_q2's:
 f01 = 7.058 GHz, alpha = -135 MHz, a 500 MHz window at 1 MHz steps, 300 shots. The pi
 member sits near 0.9, where the shot noise (~0.02 on the difference) is larger than
 experiment 3's, so the planted occupations are 0.45 and 0.3.
@@ -30,14 +32,16 @@ def _dataset(*, coupler=LADDER, contrast=0.88, spoil=0.9, seen=0.0, pi_member="h
     """``coupler`` = ``(center, fwhm, occupation)`` lines of the coupler population the
     tone leaves; the pi arm loses ``spoil`` of its ``contrast`` wherever the coupler
     is excited. ``seen`` of the coupler population shows on the pi member's readout
-    in BOTH arms."""
+    while the member is in 0: all of the reference arm, the spoiled part of the pi
+    arm."""
     rng = np.random.default_rng(seed)
     p_c = np.zeros(freq.size)
     for center, fwhm, height in coupler:
         p_c = p_c + _line(freq, center, height, fwhm)
     arms = {}
     for arm in (1, 0):
-        mine = 0.02 + seen * p_c + (contrast * (1 - spoil * p_c) if arm else 0.0)
+        mine = (0.02 + contrast * (1 - spoil * p_c) + seen * spoil * p_c if arm
+                else 0.02 + seen * p_c)
         other = np.full(freq.size, 0.02)
         ph, pl = (mine, other) if pi_member == "high" else (other, mine)
         ph, pl = np.clip(ph, 0, 1), np.clip(pl, 0, 1)
@@ -73,11 +77,22 @@ def test_a_single_dip_is_f01_without_alpha():
     assert np.isnan(r["alpha_hz"]) and r["n_ladder_lines"] == 1
 
 
-def test_the_readout_seeing_the_coupler_cancels_between_the_arms():
-    """5Q4C q1's readout sees q1_q2_c: a bump in both arms, gone from the difference."""
-    r = _fit(_dataset(seen=0.4))
+def test_the_readout_seeing_the_coupler_is_listed_not_read():
+    """5Q4C q1's readout sees q1_q2_c: bumps in the reference arm, listed as its own
+    lines; the pi arm's dips - shallower, the spoiled part reads as 1 - still give f01
+    (f02/2 may drop under the gate, 3 of 25 seeds)."""
+    r = _fit(_dataset(seen=0.3))
     assert r["success"] and r["f_c_hz"] == pytest.approx(F01, abs=0.5e6)
-    assert r["alpha_hz"] == pytest.approx(ALPHA, abs=2e6)
+    assert r["dip_depth"] == pytest.approx((0.88 - 0.3) * 0.9 * 0.45, rel=0.25)
+    assert any(abs(f - F01) < 1e6 for f in r["readout_lines_hz"])
+
+
+def test_a_reference_bump_is_no_dip_when_the_pi_is_not_spoiled():
+    """The 2026-09-27 x180 run: the reference arm shows the coupler, the pi arm is flat.
+    Subtracting the arms would have dug dips at the coupler's lines."""
+    r = _fit(_dataset(spoil=0.001, seen=0.3))
+    assert r["no_line"] == 1 and not r["success"]
+    assert any(abs(f - F01) < 1e6 for f in r["readout_lines_hz"])
 
 
 def test_the_low_member_can_get_the_pi():
@@ -148,7 +163,8 @@ def test_no_line_fails_and_the_figure_still_renders(tmp_path):
     assert set(figures) == {"spectrum"}
     plot = xr.open_dataset(tmp_path / "pair_coupler_spectroscopy_zz_plotdata.nc")
     assert plot.attrs["high_name"] == "q1" and plot.attrs["lo_hz"] == 7.1e9
-    assert plot["difference"].dims == ("tone_freq_hz",)
+    assert plot["fit_curve"].dims == ("tone_freq_hz",)
+    assert plot["marginal"].dims == ("member", "pi_played", "tone_freq_hz")
     plot.close()
     assert (tmp_path / "pair_coupler_spectroscopy_zz_metadata.json").exists()
 
