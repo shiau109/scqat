@@ -35,6 +35,7 @@ from scqat.estimators.qubit_drag_alternating import QubitDragAlternatingEstimato
 from scqat.estimators.qubit_deterministic_benchmarking import QubitDeterministicBenchmarkingEstimator
 from scqat.estimators.parity_switch_continuous import ParitySwitchContinuousEstimator
 from scqat.estimators.parity_switch_discrete import ParitySwitchDiscreteEstimator
+from scqat.estimators.pair_coupler_crossing import PairCouplerCrossingEstimator
 from scqat.estimators.pair_swap_chevron import PairSwapChevronEstimator
 from scqat.estimators.pair_swap_flux_map import PairSwapFluxMapEstimator
 from scqat.estimators.pair_swap_angle import PairSwapAngleEstimator
@@ -97,6 +98,7 @@ __all__ = [
     "ParitySwitchDiscreteEstimator",
     "PairSwapChevronEstimator",
     "PairSwapFluxMapEstimator",
+    "PairCouplerCrossingEstimator",
     "PairSwapAngleEstimator",
     "QcNSwapAmpEstimator",
     "QcNStarkAmpEstimator",
