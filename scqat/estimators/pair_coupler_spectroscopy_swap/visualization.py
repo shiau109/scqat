@@ -13,9 +13,9 @@ vars   : ``joint_population`` (joint_state, ramp_played, tone_freq_hz);
          tone_freq_hz) = 1 - P00; ``difference`` (tone_freq_hz) = ramp - reference
          total; ``fit_curve`` (tone_freq_hz; the fitted lines on the ramp total,
          all-NaN without a line)
-attrs  : every scalar of the results (``probe``, ``f_c_hz``, ``alpha_hz``,
+attrs  : every scalar of the results (``tone_on``, ``f_c_hz``, ``alpha_hz``,
          ``f02_half_hz``, ``f03_third_hz``, the flags, ``high_name``/``low_name``)
-         plus ``coupler_lines_hz``, ``probe_lines_hz`` and ``unexplained_lines_hz``
+         plus ``coupler_lines_hz``, ``member_lines_hz`` and ``unexplained_lines_hz``
 
 The raw populations are drawn UNCONDITIONALLY; the fit overlay and markers are
 guarded, so a run with no line still renders.
@@ -49,7 +49,7 @@ def _marks(ax, attrs: dict) -> None:
             ax.axvline(float(f) / 1e9, color="tab:cyan", ls="--", lw=0.9,
                        label=f"{label} = {float(f) / 1e9:.4f} GHz")
     for key, color, label in (("unexplained_lines_hz", "tab:red", "off the ladder"),
-                              ("probe_lines_hz", "tab:gray", "not changed by the ramp")):
+                              ("member_lines_hz", "tab:gray", "not changed by the ramp")):
         values = [f for f in np.atleast_1d(attrs.get(key, [])) if _finite(f)]
         for i, f in enumerate(values):
             ax.axvline(float(f) / 1e9, color=color, ls=":", lw=1.0,
@@ -63,7 +63,7 @@ def plot_spectrum(plot_data: xr.Dataset) -> plt.Figure:
     difference, which decides what is a coupler line."""
     attrs = dict(plot_data.attrs)
     f_ghz = np.asarray(plot_data[AXIS].values, dtype=float) / 1e9
-    probe = str(attrs.get("probe", ""))
+    tone_on = str(attrs.get("tone_on", ""))
     fig, (top, middle, bottom) = plt.subplots(
         3, 1, figsize=(9, 9), sharex=True, gridspec_kw={"height_ratios": [2, 1, 1]})
 
@@ -75,8 +75,8 @@ def plot_spectrum(plot_data: xr.Dataset) -> plt.Figure:
         top.plot(f_ghz, fit, color="tab:blue", lw=1.0, alpha=0.8, label="fitted lines")
     _marks(top, attrs)
     title = "coupler spectroscopy by swap"
-    if probe:
-        title += f" (tone on {attrs.get(f'{probe}_name', probe)}'s line)"
+    if tone_on:
+        title += f" (tone on {attrs.get(f'{tone_on}_name', tone_on)}'s line)"
     top.set_title(title)
     top.set_ylabel("total excitation")
     top.legend(loc="best", fontsize=7)

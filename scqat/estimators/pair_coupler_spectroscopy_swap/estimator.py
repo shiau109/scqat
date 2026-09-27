@@ -26,7 +26,7 @@ the same shot without the ramp.
   with a finer step, the estimator does not chase it.
 * **Coupler lines** are the lines the ramp CHANGES: ``D = T_r - T_0`` projected on
   the line's own Lorentzian differs from zero by ``min_snr`` of its noise, either
-  sign. The rest are the members' own features (``probe_lines_hz``). A line the
+  sign. The rest are the members' own features (``member_lines_hz``). A line the
   reference arm shows too is NOT disqualified - a neighbour's readout can see the
   coupler state directly (5Q4C q1 sees q1_q2_c).
 * **f01 is the HIGHEST coupler line.** Driven hard, the coupler shows its
@@ -119,8 +119,8 @@ class PairCouplerSpectroscopySwapEstimator(BaseEstimator):
             min_fwhm_steps (float): narrowest line kept, in sweep steps (default 2).
             alpha_range_hz (tuple): allowed anharmonicity (default (-400e6, -50e6)).
             ladder_tol_hz (float): smallest rung tolerance (default 15e6).
-            probe (str, optional): ``'high'``/``'low'``, the member whose line carried
-                the tone - reported, not used.
+            tone_on (str, optional): ``'high'``/``'low'``, the member whose line
+                carried the tone - reported, not used.
             lo_hz (float, optional): the LO the tone rode on - reported, not used.
             ramp_duration_ns (float, optional): the played ramp length - reported.
             high_name, low_name (str): member names for the figure labels.
@@ -130,15 +130,15 @@ class PairCouplerSpectroscopySwapEstimator(BaseEstimator):
         min_fwhm_steps = float(kwargs.pop("min_fwhm_steps", 2.0))
         alpha_range = tuple(float(a) for a in kwargs.pop("alpha_range_hz", (-400e6, -50e6)))
         ladder_tol = float(kwargs.pop("ladder_tol_hz", 15e6))
-        probe = kwargs.pop("probe", None)
+        tone_on = kwargs.pop("tone_on", None)
         lo_hz = kwargs.pop("lo_hz", None)
         ramp_ns = kwargs.pop("ramp_duration_ns", None)
         names = {"high": str(kwargs.pop("high_name", "high")),
                  "low": str(kwargs.pop("low_name", "low"))}
         if kwargs:
             raise ValueError(f"pair_coupler_spectroscopy_swap: unknown kwargs {sorted(kwargs)}")
-        if probe is not None and probe not in ROLES:
-            raise ValueError(f"probe must be one of {ROLES}, got {probe!r}")
+        if tone_on is not None and tone_on not in ROLES:
+            raise ValueError(f"tone_on must be one of {ROLES}, got {tone_on!r}")
         if len(alpha_range) != 2:
             raise ValueError(f"alpha_range_hz must be (low, high), got {alpha_range}")
         # the realized sweep order is provenance, never input (tools.sweep_order)
@@ -153,7 +153,7 @@ class PairCouplerSpectroscopySwapEstimator(BaseEstimator):
         marg = {role: _marginal(joint, role) for role in ROLES}
 
         res: Dict[str, Any] = {
-            "probe": "" if probe is None else str(probe),
+            "tone_on": "" if tone_on is None else str(tone_on),
             "min_snr": min_snr, "prominence": prominence,
             "min_fwhm_steps": min_fwhm_steps,
             "alpha_min_hz": min(alpha_range), "alpha_max_hz": max(alpha_range),
@@ -169,7 +169,7 @@ class PairCouplerSpectroscopySwapEstimator(BaseEstimator):
             "f02_half_hz": _NAN, "f03_third_hz": _NAN,
             "landing_high": _NAN, "landing_low": _NAN,
             "n_lines": 0, "n_coupler_lines": 0, "n_ladder_lines": 0,
-            "coupler_lines_hz": [], "probe_lines_hz": [], "unexplained_lines_hz": [],
+            "coupler_lines_hz": [], "member_lines_hz": [], "unexplained_lines_hz": [],
             "no_line": 1, "unexplained_lines": 0, "peak_at_edge": 0,
             "success": False,
             # plot fodder (dropped from the metadata)
@@ -199,7 +199,7 @@ class PairCouplerSpectroscopySwapEstimator(BaseEstimator):
             (coupler if ok else member).append(p)
         res["n_coupler_lines"] = len(coupler)
         res["coupler_lines_hz"] = [float(p["full_freq"]) for p in coupler]
-        res["probe_lines_hz"] = [float(p["full_freq"]) for p in member]
+        res["member_lines_hz"] = [float(p["full_freq"]) for p in member]
         if not coupler:
             return res
 
@@ -241,7 +241,7 @@ class PairCouplerSpectroscopySwapEstimator(BaseEstimator):
                   and k != "success"]
         attrs = {k: results[k] for k in scalar}
         attrs["success"] = int(bool(results["success"]))
-        for key in ("coupler_lines_hz", "probe_lines_hz", "unexplained_lines_hz"):
+        for key in ("coupler_lines_hz", "member_lines_hz", "unexplained_lines_hz"):
             attrs[key] = np.asarray(results[key], dtype=float)
         return xr.Dataset(
             {

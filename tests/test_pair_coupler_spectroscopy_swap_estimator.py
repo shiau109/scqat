@@ -96,7 +96,7 @@ def test_a_single_coupler_line_is_f01_without_alpha():
 
 def test_the_excitation_landing_on_either_member_counts():
     for to_high in (0.0, 1.0):
-        r = _fit(_dataset(to_high=to_high), probe="high")
+        r = _fit(_dataset(to_high=to_high), tone_on="high")
         assert r["success"] and r["f_c_hz"] == pytest.approx(F01, abs=0.5e6)
         landed, missed = ((r["landing_high"], r["landing_low"]) if to_high
                           else (r["landing_low"], r["landing_high"]))
@@ -114,7 +114,7 @@ def test_a_member_line_in_both_arms_is_not_the_coupler():
     """Equal in both arms and ABOVE f01: taken for a coupler line it would be f01."""
     r = _fit(_dataset(member_lines=[(7.25e9, 6e6, 0.3)]))
     assert r["success"] and r["f_c_hz"] == pytest.approx(F01, abs=0.5e6)
-    assert any(abs(f - 7.25e9) < 1e6 for f in r["probe_lines_hz"])
+    assert any(abs(f - 7.25e9) < 1e6 for f in r["member_lines_hz"])
     assert r["n_coupler_lines"] == 2
 
 
@@ -135,7 +135,7 @@ def test_a_line_one_or_two_points_wide_is_ignored():
     point wide it always drops out. Two points wide its fitted FWHM sits at the
     two-step gate, so now and then one survives - it then fits no rung and the run
     FAILS; it never passes as f01."""
-    listed = lambda r: r["coupler_lines_hz"] + r["probe_lines_hz"] + r["unexplained_lines_hz"]
+    listed = lambda r: r["coupler_lines_hz"] + r["member_lines_hz"] + r["unexplained_lines_hz"]
     for seed in range(4):
         r = _fit(_dataset(coupler=LADDER + [(7.2e9, 0.5e6, 0.5)], seed=seed))
         assert r["success"] and r["f_c_hz"] == pytest.approx(F01, abs=0.5e6)
@@ -164,8 +164,8 @@ def test_unknown_kwargs_and_a_missing_arm_raise():
     ds = _dataset()
     with pytest.raises(ValueError, match="unknown kwargs"):
         _fit(ds, min_snrr=3)
-    with pytest.raises(ValueError, match="probe must be"):
-        _fit(ds, probe="middle")
+    with pytest.raises(ValueError, match="tone_on must be"):
+        _fit(ds, tone_on="middle")
     est = PairCouplerSpectroscopySwapEstimator()
     with pytest.raises(ValueError, match="both arms"):
         est.analyze(ds.sel(ramp_played=[1]))
@@ -174,7 +174,7 @@ def test_unknown_kwargs_and_a_missing_arm_raise():
 def test_no_line_fails_and_the_figure_still_renders(tmp_path):
     est = PairCouplerSpectroscopySwapEstimator()
     results, figures = est.analyze(_dataset(coupler=[]), output_dir=str(tmp_path),
-                                   probe="low", lo_hz=7.1e9, ramp_duration_ns=936.0,
+                                   tone_on="low", lo_hz=7.1e9, ramp_duration_ns=936.0,
                                    high_name="q1", low_name="q2")
     assert results["no_line"] == 1 and not results["success"]
     assert set(figures) == {"spectrum"}
@@ -189,6 +189,6 @@ def test_figures_render_with_every_marker(tmp_path):
     est = PairCouplerSpectroscopySwapEstimator()
     results, figures = est.analyze(
         _dataset(coupler=LADDER + [(6.88e9, 4e6, 0.15)], member_lines=[(7.25e9, 6e6, 0.3)]),
-        output_dir=str(tmp_path), probe="low")
-    assert results["unexplained_lines"] and results["probe_lines_hz"]
+        output_dir=str(tmp_path), tone_on="low")
+    assert results["unexplained_lines"] and results["member_lines_hz"]
     assert set(figures) == {"spectrum"}
