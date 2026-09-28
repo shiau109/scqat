@@ -192,6 +192,21 @@ def test_a_bracketed_optimum_off_the_old_hardcoded_range_still_succeeds():
     assert results["success"] is True
 
 
+def test_the_pi_pulse_is_the_first_extremum_when_the_window_holds_several_periods():
+    """Every odd extremum of a non-decaying cosine deviates from the zero-amplitude
+    value by the same 2a, so a plain argmax over the swept samples picks whichever
+    of pi, 3pi, 5pi happens to land nearest a sample - and still reports success.
+    An uncalibrated drive (a coupler driven through a neighbour's line) puts
+    several periods in the default window. Here the grid (0.03 steps) holds 3pi
+    = 0.93 exactly while pi = 0.31 falls between samples: the answer must still be
+    the FIRST extremum."""
+    ds = _make_ds(factor_pi=0.31, n=67, amp_min=0.0, amp_max=1.98)
+    results = PowerRabiEstimator().extract_parameters(ds)
+    assert results["success"] is True
+    assert results["f"] == pytest.approx(1.0 / (2 * 0.31), rel=0.05)
+    assert results["opt_amp_prefactor"] == pytest.approx(0.31, abs=0.02)
+
+
 def test_sweep_direction_cannot_change_the_answer(order_free):
     """The pi pick measures from the LOWEST amplitude's fit value; walked high ->
     low that used to be ``best_fit[0]`` at the TOP of the window. The same sweep

@@ -101,14 +101,20 @@ class PowerRabiEstimator(BaseEstimator):
         p = {k: v.value for k, v in fit_result.params.items()}  # a, f, phi, c
 
         # pi pulse = the amplitude where the fitted readout deviates most from its
-        # zero-amplitude (ground-state) value. The excited-state population rises
-        # monotonically from 0 at x=0 to 1 at the pi pulse, so |signal - signal(0)| peaks
-        # there — sign-independent (works for either readout sign) and correct even though
-        # the sweep starts at an extremum.
+        # zero-amplitude (ground-state) value WITHIN THE FIRST FITTED PERIOD. The excited-state
+        # population rises monotonically from 0 at x=0 to 1 at the pi pulse, so
+        # |signal - signal(0)| peaks there — sign-independent (works for either readout sign)
+        # and correct even though the sweep starts at an extremum. The first period only:
+        # every odd extremum (pi, 3pi, 5pi) deviates by the same 2a, so over a window holding
+        # several periods a plain argmax took whichever landed nearest a sample and still
+        # reported success (an uncalibrated drive - a coupler driven through a neighbour's
+        # line - puts several periods in the default window).
         best_fit = np.asarray(fit_result.best_fit, dtype=float)
         amp = np.asarray(dataset.coords["amp_prefactor"].values, dtype=float)
         if p["f"] > 0 and best_fit.size == amp.size:
-            opt_amp_prefactor = float(amp[int(np.argmax(np.abs(best_fit - best_fit[0])))])
+            first_period = amp <= amp[0] + 1.0 / p["f"]
+            deviation = np.where(first_period, np.abs(best_fit - best_fit[0]), -np.inf)
+            opt_amp_prefactor = float(amp[int(np.argmax(deviation))])
         else:
             opt_amp_prefactor = float("nan")
 
