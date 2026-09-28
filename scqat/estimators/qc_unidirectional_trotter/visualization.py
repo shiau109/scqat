@@ -1,8 +1,11 @@
 """Figures for the unidirectional-coupling Trotter chain.
 
 Both plotters draw from ``plot_data`` ONLY (the estimator-output-contract rule)
-and both are pure RAW views — there is no fit to overlay, so neither may assume
-a finite value anywhere: the population axis is pinned to 0..1 rather than taken
+and neither fits anything. The one overlay is the IDEAL curve of a perfect round,
+computed from the swap angles and dashed in its qubit's colour; it is drawn only
+where finite, so a run without angles (or a plot_data.nc written before the
+overlay existed) shows the measured traces alone. Neither plotter may assume a
+finite value anywhere: the population axis is pinned to 0..1 rather than taken
 from the data, and an all-NaN acquisition renders an annotated empty panel
 instead of raising (which would cost the run every other figure).
 """
@@ -42,11 +45,20 @@ def plot_chain_populations(plot_data: xr.Dataset) -> plt.Figure:
     """P(|1>) against the Trotter-step count N, one trace per chain qubit.
 
     The transport picture: the source decays, the sink grows, and the relay
-    stays small because it is reset every round."""
+    stays small because it is reset every round. The source and sink carry
+    their ideal curve dashed beside them when the swap angles are known."""
     rounds = np.asarray(plot_data["round_count"].values, dtype=float)
     qubits = _names(plot_data, "qubit")
     pop = np.asarray(
         plot_data["population"].transpose("qubit", "round_count").values, dtype=float
+    )
+    ideal = (
+        np.asarray(
+            plot_data["ideal_population"].transpose("qubit", "round_count").values,
+            dtype=float,
+        )
+        if "ideal_population" in plot_data.data_vars
+        else np.full(pop.shape, np.nan)
     )
     role_of = _role_of(plot_data)
 
@@ -55,7 +67,12 @@ def plot_chain_populations(plot_data: xr.Dataset) -> plt.Figure:
     for k, qubit in enumerate(qubits):
         role = role_of.get(qubit, "")
         label = f"{qubit} ({role})" if role else qubit
-        ax.plot(rounds, pop[k], marker="o", markersize=4, linewidth=1.5, label=label)
+        (line,) = ax.plot(
+            rounds, pop[k], marker="o", markersize=4, linewidth=1.5, label=label
+        )
+        if np.isfinite(ideal[k]).any():
+            ax.plot(rounds, ideal[k], linestyle="--", linewidth=1.2,
+                    color=line.get_color(), label=f"{qubit} ideal")
         drawn = drawn or bool(np.isfinite(pop[k]).any())
     ax.set_xlabel("Trotter steps N")
     ax.set_ylabel("P(|1>)")
@@ -65,7 +82,13 @@ def plot_chain_populations(plot_data: xr.Dataset) -> plt.Figure:
         ax.legend()
     else:
         _annotate_empty(ax, "no finite population data")
-    ax.set_title("unidirectional Trotter chain — excitation transport vs N")
+    title = "unidirectional Trotter chain — excitation transport vs N"
+    angles = [float(plot_data.attrs.get(key, np.nan))
+              for key in ("theta_first_rad", "theta_second_rad")]
+    if any(np.isfinite(angles)):
+        shown = ", ".join("?" if not np.isfinite(a) else f"{a:.3f}" for a in angles)
+        title += f"\nideal: perfect round at swap angles ({shown}) rad"
+    ax.set_title(title)
     return fig
 
 

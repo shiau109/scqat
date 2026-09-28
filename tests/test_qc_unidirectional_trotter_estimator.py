@@ -5,6 +5,8 @@ pin both projections: the per-qubit transport curves that are always present,
 and the joint distribution that only a shot-mode run carries.
 """
 
+import json
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -13,6 +15,7 @@ from scqat.estimators.qc_unidirectional_trotter import QcUnidirectionalTrotterEs
 from scqat.estimators.qc_unidirectional_trotter.estimator import (
     FIG_JOINT,
     FIG_POPULATIONS,
+    ideal_transport,
 )
 
 QUBITS = ["q1", "q2", "q3"]
@@ -71,7 +74,9 @@ def test_axis_order_is_irrelevant():
     est = QcUnidirectionalTrotterEstimator()
     ds = _chain_ds()
     flipped = ds.transpose("round_count", "qubit")
-    assert est.extract_parameters(flipped, **ROLES) == est.extract_parameters(ds, **ROLES)
+    # compared as JSON: the results carry NaN (no angles given), and NaN != NaN
+    assert json.dumps(est.extract_parameters(flipped, **ROLES), sort_keys=True) == (
+        json.dumps(est.extract_parameters(ds, **ROLES), sort_keys=True))
 
 
 def test_joint_is_summarized_and_plotted_only_when_present():
@@ -155,6 +160,96 @@ def test_check_data_names_what_is_missing(mangle, message):
     est = QcUnidirectionalTrotterEstimator()
     with pytest.raises(ValueError, match=message):
         est._check_data(mangle(_chain_ds(joint=True)))
+
+
+#: the 5Q4C 040/060 chain of 2026-09-28: period angles of the two swaps.
+ANGLES = {"theta_first_rad": 0.408, "theta_second_rad": 0.597}
+
+
+def test_ideal_transport_is_the_closed_form():
+    """Unequal angles have a geometric closed form; the term-by-term sum the
+    estimator uses must reproduce it, and equal angles must not divide by zero."""
+    n = np.arange(0, 31)
+    t1, t2 = ANGLES.values()
+    curves = ideal_transport(n, t1, t2)
+    c1, c2 = np.cos(t1), np.cos(t2)
+    closed = (np.sin(t1) * np.sin(t2) * (c2**n - c1**n) / (c2 - c1)) ** 2
+    np.testing.assert_allclose(curves["sink"], closed, atol=1e-12)
+    np.testing.assert_allclose(curves["source"], c1 ** (2 * n))
+    # N = 0 is the bare prep: everything on the source
+    assert curves["source"][0] == 1.0 and curves["sink"][0] == 0.0
+
+    equal = ideal_transport(n, 0.3, 0.3)["sink"]
+    limit = (np.sin(0.3) ** 2 * n * np.cos(0.3) ** (n - 1)) ** 2
+    np.testing.assert_allclose(equal, limit, atol=1e-12)
+    # the textbook cascaded ceiling 4/e^2 at N = 2/theta^2 for small equal angles
+    small = ideal_transport(np.arange(0, 400), 0.1, 0.1)["sink"]
+    assert small.max() == pytest.approx(4 / np.e**2, rel=0.02)
+
+
+def test_ideal_transport_of_an_idle_step():
+    """An idle step is angle 0: idling the second swap keeps the sink empty
+    while the source still drains; idling the first keeps the source full."""
+    n = np.arange(0, 11)
+    second_idle = ideal_transport(n, 0.4, 0.0)
+    assert np.all(second_idle["sink"] == 0.0)
+    assert second_idle["source"][-1] < 0.2
+    first_idle = ideal_transport(n, 0.0, 0.4)
+    assert np.all(first_idle["source"] == 1.0)
+    assert np.all(first_idle["sink"] == 0.0)
+
+
+def test_unknown_angles_leave_the_ideal_curves_nan():
+    """The sink needs both angles, the source only the first."""
+    n = np.arange(0, 5)
+    only_first = ideal_transport(n, 0.4, float("nan"))
+    assert np.all(np.isfinite(only_first["source"]))
+    assert np.all(np.isnan(only_first["sink"]))
+    assert np.all(np.isnan(ideal_transport(n, float("nan"), 0.4)["source"]))
+
+
+def test_angles_add_the_ideal_curves_and_their_peak():
+    est = QcUnidirectionalTrotterEstimator()
+    ds = _chain_ds(n_max=30)
+    res = est.extract_parameters(ds, **ROLES, **ANGLES)
+    expected = ideal_transport(ds["round_count"].values, *ANGLES.values())["sink"]
+    assert res["theta_first_rad"] == ANGLES["theta_first_rad"]
+    assert res["ideal_sink_p_max"] == pytest.approx(expected.max())
+    assert res["ideal_sink_n_at_max"] == float(np.argmax(expected))
+
+    plot_data = est.build_plot_data(ds, res, **ROLES, **ANGLES)
+    ideal = plot_data["ideal_population"]
+    np.testing.assert_allclose(ideal.sel(qubit="q3").values, expected)
+    assert np.all(np.isfinite(ideal.sel(qubit="q1").values))
+    assert np.all(np.isnan(ideal.sel(qubit="q2").values)), "no curve on the relay"
+    assert plot_data.attrs["theta_second_rad"] == ANGLES["theta_second_rad"]
+    assert set(est.generate_figures(None, None, plot_data=plot_data)) == {
+        FIG_POPULATIONS
+    }
+
+
+def test_no_angles_means_no_ideal_curves():
+    """The default path: nothing supplied, every ideal value NaN, figure intact."""
+    est = QcUnidirectionalTrotterEstimator()
+    ds = _chain_ds()
+    res = est.extract_parameters(ds, **ROLES)
+    assert np.isnan(res["theta_first_rad"]) and np.isnan(res["ideal_sink_p_max"])
+    plot_data = est.build_plot_data(ds, res, **ROLES)
+    assert np.all(np.isnan(plot_data["ideal_population"].values))
+    assert set(est.generate_figures(None, None, plot_data=plot_data)) == {
+        FIG_POPULATIONS
+    }
+
+
+def test_plot_data_written_before_the_overlay_still_replots():
+    """A saved plotdata.nc from before the ideal curves has no ideal variable
+    and no angle attrs; replotting it must still work."""
+    est = QcUnidirectionalTrotterEstimator()
+    ds = _chain_ds()
+    old = est.build_plot_data(ds, {}, **ROLES).drop_vars("ideal_population")
+    for key in ANGLES:
+        del old.attrs[key]
+    assert set(est.generate_figures(None, None, plot_data=old)) == {FIG_POPULATIONS}
 
 
 def test_analyze_writes_the_artifacts(tmp_path):

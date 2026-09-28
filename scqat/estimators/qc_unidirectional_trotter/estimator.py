@@ -11,6 +11,20 @@ self-describing summary of where each qubit's excitation peaks. The SUCCESS /
 The relay reset is what makes the coupling one-way, so the picture to read off
 the figure is: the source decays, the sink grows, and the relay stays small.
 
+IDEAL CURVES, computed and never fitted. Given the two swaps' per-application
+angles (``theta_first_rad`` source->relay, ``theta_second_rad`` relay->sink) the
+estimator overlays the closed form of a perfect round — exact exchanges, a
+perfect relay reset, the source-sink phase compensated to zero, no decay and
+perfect readout:
+
+    P_source(N) = cos(theta1)^(2N)
+    P_sink(N)   = [sin(theta1) sin(theta2) sum_{j<N} cos(theta2)^(N-1-j) cos(theta1)^j]^2
+
+The source curve needs only ``theta1``; the sink needs both. A missing angle
+(``None``/NaN) leaves that curve NaN — the measured traces are drawn either way.
+The gap between a measured trace and its ideal is the data: decay and readout
+contrast pull both down, a wrong compensation pulls the sink alone.
+
 Unlike the pair estimators (``qc_n_swap_amp``, ``pair_swap_chevron``) this one
 consumes the WHOLE multi-qubit dataset rather than a per-target slice: the joint
 panel is a cross-qubit quantity, and a per-target split cannot draw it.
@@ -26,6 +40,9 @@ Dataset contract:
            level digits, leftmost digit = the first ``qubit``) when joint.
   kwargs : ``source`` / ``relay`` / ``sink`` — chain role names used to label
            the figure and to pick the transport summary; all optional.
+           ``theta_first_rad`` / ``theta_second_rad`` — the two swaps'
+           per-application angles (rad) for the ideal curves; optional, 0 for
+           a step that plays no swap.
 """
 
 from typing import Any, Dict, List, Optional
@@ -56,9 +73,49 @@ FIG_POPULATIONS = "qc_unidirectional_trotter"
 FIG_JOINT = "joint"
 
 
+#: the swap-angle kwargs, in chain order (source->relay, relay->sink).
+THETA_KEYS = ("theta_first_rad", "theta_second_rad")
+
+
 def _roles(kwargs: Dict[str, Any]) -> Dict[str, str]:
     """The chain role names supplied by the caller, blank when unknown."""
     return {role: str(kwargs.get(role) or "") for role in ROLES}
+
+
+def _thetas(kwargs: Dict[str, Any]) -> Dict[str, float]:
+    """The two swap angles supplied by the caller, NaN when unknown."""
+    out = {}
+    for key in THETA_KEYS:
+        value = kwargs.get(key)
+        try:
+            out[key] = float(value) if value is not None else float("nan")
+        except (TypeError, ValueError):
+            out[key] = float("nan")
+    return out
+
+
+def ideal_transport(
+    rounds: np.ndarray, theta_first: float, theta_second: float
+) -> Dict[str, np.ndarray]:
+    """``{"source": ..., "sink": ...}`` of a perfect round, per round count.
+
+    The closed form in the module docstring. The sink amplitude is summed
+    term by term rather than through the geometric closed form, so equal
+    angles (whose closed form divides by zero) need no special case. A NaN
+    angle gives a NaN curve: the source needs ``theta_first``, the sink both.
+    """
+    n = np.rint(np.asarray(rounds, dtype=float))
+    c1, s1 = np.cos(theta_first), np.sin(theta_first)
+    c2, s2 = np.cos(theta_second), np.sin(theta_second)
+    # explicit, because nan ** 0 is 1: an unknown angle must not claim N=0
+    source = c1 ** (2.0 * n) if np.isfinite(theta_first) else np.full(n.shape, np.nan)
+    sink = np.full(n.shape, np.nan)
+    if np.isfinite(theta_first) and np.isfinite(theta_second):
+        for i, m in enumerate(n.astype(int)):
+            j = np.arange(max(m, 0))
+            amp = s1 * s2 * np.sum(c2 ** (m - 1 - j) * c1 ** j)
+            sink[i] = amp ** 2
+    return {"source": source, "sink": sink}
 
 
 def _qubit_names(dataset: xr.Dataset) -> List[str]:
@@ -130,6 +187,15 @@ class QcUnidirectionalTrotterEstimator(BaseEstimator):
             results["sink_n_at_max"] = per_qubit[sink]["n_at_max"]
             results["sink_p_final"] = per_qubit[sink]["p_final"]
 
+        # The ideal curves' inputs and the ideal sink's own peak — what the
+        # measured sink_p_max is to be read against.
+        thetas = _thetas(kwargs)
+        results.update(thetas)
+        ideal = ideal_transport(rounds, *thetas.values())
+        peak = _trace_summary(rounds, ideal["sink"])
+        results["ideal_sink_p_max"] = peak["p_max"]
+        results["ideal_sink_n_at_max"] = peak["n_at_max"]
+
         has_joint = "joint_population" in dataset.data_vars
         results["has_joint"] = bool(has_joint)
         if has_joint:
@@ -145,15 +211,25 @@ class QcUnidirectionalTrotterEstimator(BaseEstimator):
     def build_plot_data(
         self, dataset: xr.Dataset, results: Dict[str, Any], **kwargs
     ) -> Optional[xr.Dataset]:
-        """The measured arrays, carried unconditionally (there is no fit to fail)."""
+        """The measured arrays, carried unconditionally (there is no fit to
+        fail), plus the ideal curves on the source and sink rows — NaN where an
+        angle or a role is unknown, and always NaN on the relay (a perfect
+        reset leaves it empty, which the figure does not need a line for)."""
         roles = _roles(kwargs)
+        thetas = _thetas(kwargs)
         qubits = _qubit_names(dataset)
         rounds = np.asarray(dataset[AXIS].values, dtype=float)
         pop = np.asarray(
             dataset["population"].transpose(QUBIT_DIM, AXIS).values, dtype=float
         )
+        ideal = np.full(pop.shape, np.nan)
+        curves = ideal_transport(rounds, *thetas.values())
+        for role in ("source", "sink"):
+            if roles[role] in qubits:
+                ideal[qubits.index(roles[role])] = curves[role]
         out = xr.Dataset(
-            {"population": ((QUBIT_DIM, AXIS), pop)},
+            {"population": ((QUBIT_DIM, AXIS), pop),
+             "ideal_population": ((QUBIT_DIM, AXIS), ideal)},
             coords={QUBIT_DIM: qubits, AXIS: rounds},
         )
         has_joint = "joint_population" in dataset.data_vars
@@ -166,8 +242,9 @@ class QcUnidirectionalTrotterEstimator(BaseEstimator):
             out = out.assign_coords(
                 {JOINT_DIM: [str(v) for v in np.atleast_1d(joint[JOINT_DIM].values)]}
             )
-        # netCDF-safe attrs only: the bool as int, absent roles as empty strings.
-        out.attrs.update({"has_joint": int(has_joint), **roles})
+        # netCDF-safe attrs only: the bool as int, absent roles as empty
+        # strings, absent angles as NaN floats.
+        out.attrs.update({"has_joint": int(has_joint), **roles, **thetas})
         return out
 
     def generate_figures(
