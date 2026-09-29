@@ -16,6 +16,9 @@ from scqat.estimators.qc_unidirectional_trotter.estimator import (
     FIG_JOINT,
     FIG_POPULATIONS,
     ideal_transport,
+    master_transport,
+    per_round_decay,
+    trotter_transport,
 )
 
 QUBITS = ["q1", "q2", "q3"]
@@ -246,10 +249,98 @@ def test_plot_data_written_before_the_overlay_still_replots():
     and no angle attrs; replotting it must still work."""
     est = QcUnidirectionalTrotterEstimator()
     ds = _chain_ds()
-    old = est.build_plot_data(ds, {}, **ROLES).drop_vars("ideal_population")
-    for key in ANGLES:
+    old = est.build_plot_data(ds, {}, **ROLES).drop_vars(
+        ["ideal_population", "trotter_population", "master_population",
+         "master_ideal_population", "model_round"])
+    for key in [*ANGLES, *DECAY, "decoherence_applied"]:
         del old.attrs[key]
     assert set(est.generate_figures(None, None, plot_data=old)) == {FIG_POPULATIONS}
+
+
+#: 5Q4C 2026-09-28/29: a 360 ns round, q1 (source) and q3 (sink) T1 / T2*.
+DECAY = {"round_duration_ns": 360.0, "source_t1_s": 15.8e-6,
+         "source_t2_star_s": 8.3e-6, "sink_t1_s": 22.9e-6, "sink_t2_star_s": 9.8e-6}
+
+
+def test_the_discrete_model_without_decay_is_the_closed_form():
+    n = np.arange(0, 31)
+    ideal = ideal_transport(n, *ANGLES.values())
+    model = trotter_transport(n, *ANGLES.values())
+    np.testing.assert_allclose(model["source"], ideal["source"], atol=1e-12)
+    np.testing.assert_allclose(model["sink"], ideal["sink"], atol=1e-12)
+
+
+def test_the_master_equation_is_the_cascaded_closed_form():
+    """Ideal, the 3x3 system must reproduce the textbook cascaded solution
+    P_T = 4 g1 g2 / (g2 - g1)^2 (e^(-g1 t/2) - e^(-g2 t/2))^2 with g = theta^2."""
+    t = np.linspace(0, 30, 61)
+    t1, t2 = ANGLES.values()
+    g1, g2 = t1**2, t2**2
+    closed = 4 * g1 * g2 / (g2 - g1) ** 2 * (np.exp(-g1 * t / 2) - np.exp(-g2 * t / 2)) ** 2
+    model = master_transport(t, t1, t2)
+    np.testing.assert_allclose(model["sink"], closed, atol=1e-10)
+    np.testing.assert_allclose(model["source"], np.exp(-g1 * t), atol=1e-12)
+    # small equal angles: the discrete sequence approaches its continuum limit
+    n = np.arange(0, 400)
+    assert trotter_transport(n, 0.1, 0.1)["sink"].max() == pytest.approx(
+        master_transport(np.linspace(0, 399, 4000), 0.1, 0.1)["sink"].max(), rel=0.01)
+
+
+def test_per_round_decay_needs_all_five_inputs():
+    assert per_round_decay({**DECAY, "sink_t2_star_s": float("nan")}) is None
+    d = per_round_decay(DECAY)
+    assert d["g1_source"] == pytest.approx(360e-9 / 15.8e-6)
+    assert d["gphi_sink"] == pytest.approx(360e-9 * (1 / 9.8e-6 - 0.5 / 22.9e-6))
+    # a T2* longer than 2 T1 (inside its error bar) is no NEGATIVE dephasing
+    assert per_round_decay({**DECAY, "sink_t2_star_s": 60e-6})["gphi_sink"] == 0.0
+
+
+def test_decay_pulls_both_models_down():
+    n = np.arange(0, 31)
+    d = per_round_decay(DECAY)
+    ideal, model = trotter_transport(n, *ANGLES.values()), trotter_transport(
+        n, *ANGLES.values(), d)
+    # the source feels only its own T1 on top of the swap
+    np.testing.assert_allclose(
+        model["source"], np.cos(ANGLES["theta_first_rad"]) ** (2 * n)
+        * np.exp(-n * d["g1_source"]))
+    assert model["sink"].max() < ideal["sink"].max()
+    t = np.linspace(0, 30, 121)
+    assert (master_transport(t, *ANGLES.values(), d)["sink"].max()
+            < master_transport(t, *ANGLES.values())["sink"].max())
+
+
+def test_decay_inputs_add_the_model_and_its_peak():
+    est = QcUnidirectionalTrotterEstimator()
+    ds = _chain_ds(n_max=30)
+    res = est.extract_parameters(ds, **ROLES, **ANGLES, **DECAY)
+    assert res["decoherence_applied"] is True
+    assert res["model_sink_p_max"] < res["ideal_sink_p_max"]
+    plot_data = est.build_plot_data(ds, res, **ROLES, **ANGLES, **DECAY)
+    assert plot_data.attrs["decoherence_applied"] == 1
+    for name in ("trotter_population", "master_population", "master_ideal_population"):
+        assert np.isfinite(plot_data[name].sel(qubit="q3").values).all(), name
+        assert np.isnan(plot_data[name].sel(qubit="q2").values).all(), name
+    assert plot_data.sizes["model_round"] == 301
+    assert (plot_data["master_population"].sel(qubit="q3").max()
+            < plot_data["master_ideal_population"].sel(qubit="q3").max())
+    assert set(est.generate_figures(None, None, plot_data=plot_data)) == {
+        FIG_POPULATIONS
+    }
+
+
+def test_a_missing_decay_input_keeps_both_models_ideal():
+    est = QcUnidirectionalTrotterEstimator()
+    ds = _chain_ds(n_max=30)
+    partial = {**DECAY, "source_t1_s": None}
+    res = est.extract_parameters(ds, **ROLES, **ANGLES, **partial)
+    assert res["decoherence_applied"] is False and np.isnan(res["model_sink_p_max"])
+    plot_data = est.build_plot_data(ds, res, **ROLES, **ANGLES, **partial)
+    np.testing.assert_allclose(plot_data["trotter_population"].values,
+                               plot_data["ideal_population"].values, equal_nan=True)
+    np.testing.assert_allclose(plot_data["master_population"].values,
+                               plot_data["master_ideal_population"].values,
+                               equal_nan=True)
 
 
 def test_analyze_writes_the_artifacts(tmp_path):
