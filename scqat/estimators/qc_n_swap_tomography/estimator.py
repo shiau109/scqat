@@ -86,7 +86,8 @@ _COLUMNS = {
 #: the scalar metadata keys and their failed-fit defaults
 _SCALARS = {
     "theta_rad": float("nan"), "theta_rad_err": float("nan"),
-    "theta_spread_rad": float("nan"), "theta_stark_amp": float("nan"),
+    "theta_spread_rad": float("nan"), "theta_consistency_sigma": float("nan"),
+    "theta_stark_amp": float("nan"),
     "phase_at_theta_amp_rad": float("nan"),
     "compensating_stark_amp": float("nan"), "compensation_extrapolated": 0,
     "t1_loss_per_step_high": float("nan"), "t1_loss_per_step_low": float("nan"),
@@ -226,6 +227,19 @@ class QcNSwapTomographyEstimator(BaseEstimator):
                 "fit_rms": float(columns["fit_rms_per_amp"][i_best]),
                 "success": 1,
             })
+            # The angle must not depend on the stark amplitude; judge that in
+            # units of each fit's own error, since far from compensation the
+            # angle is much less well determined than near it.
+            others = ok.copy()
+            others[i_best] = False
+            if others.any():
+                err = np.hypot(columns["theta_err_per_amp"][others],
+                               columns["theta_err_per_amp"][i_best])
+                dev = np.abs(columns["theta_per_amp"][others] - results["theta_rad"])
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    results["theta_consistency_sigma"] = float(np.nanmax(dev / err))
+            else:
+                results["theta_consistency_sigma"] = 0.0
             root, extrapolated = phase_root(amps[ok], phis[ok])
             results["compensating_stark_amp"] = float(root)
             results["compensation_extrapolated"] = int(extrapolated)

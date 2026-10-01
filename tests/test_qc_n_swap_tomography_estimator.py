@@ -70,6 +70,7 @@ def test_angle_and_compensation_are_recovered(results):
     assert results["compensating_stark_amp"] == pytest.approx(A_COMP, abs=0.005)
     assert results["compensation_extrapolated"] == 0
     assert results["theta_spread_rad"] < 0.02
+    assert results["theta_consistency_sigma"] < 3.0
     planted = [2 * np.pi * (a ** 2 - A_COMP ** 2) for a in AMPS]
     np.testing.assert_allclose(results["phase_per_step_rad"], planted, atol=0.03)
 
