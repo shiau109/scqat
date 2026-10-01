@@ -9,10 +9,17 @@ first). One step is
 4. dephasing: a phase flip on member 0 with probability ``lam/2``, i.e. the
    single-excitation coherence shrinks by ``1 - lam`` per step.
 
-The state after ``N`` steps is recorded through a fixed final Z rotation
-``a_off`` (the share of the per-step phase that falls after the last exchange -
-a frame offset, not a property of the swap). The prepared state is the excited
-member's ``|1>`` with probability ``1 - eps`` and ``|00>`` otherwise.
+The state after ``N`` steps is recorded through a Z rotation
+``a_off + N * frame_step``. ``a_off`` is the share of the phase that falls after
+the last exchange; ``frame_step`` is how far the two members' MEASUREMENT frames
+turn against each other per round - (f_high - f_low) x the round length, on a
+drive-frame readout (5Q4C q2_q3 at 368 ns: -100 deg). It is not part of the
+swap: populations never see it, and the per-round phase ``phi`` (what a
+compensation zeroes) is measured in the frame where every round is the same
+exchange. Without it a drive-frame trajectory is no circle and the fit fails
+(the first hardware runs, 2026-10-01: rms 0.17-0.26 without, 0.02-0.04 with).
+The prepared state is the excited member's ``|1>`` with probability ``1 - eps``
+and ``|00>`` otherwise.
 
 In the single-excitation subspace (up = ``|10>``) one step is
 ``Rz(phi) Rx(2 theta)``, a rotation by ``omega`` about ``n`` with
@@ -45,9 +52,10 @@ import numpy as np
 from scipy.optimize import least_squares
 
 #: names of the fitted parameters, in vector order.
-PARAM_NAMES: tuple[str, ...] = ("theta", "phi", "a_off", "p_high", "p_low", "lam", "eps")
-_LOWER = np.array([0.0, -np.pi, -np.pi, 0.0, 0.0, 0.0, 0.0])
-_UPPER = np.array([np.pi / 2, np.pi, np.pi, 0.5, 0.5, 0.9, 0.5])
+PARAM_NAMES: tuple[str, ...] = ("theta", "phi", "a_off", "p_high", "p_low", "lam", "eps",
+                                 "frame_step")
+_LOWER = np.array([0.0, -np.pi, -np.pi, 0.0, 0.0, 0.0, 0.0, -np.pi])
+_UPPER = np.array([np.pi / 2, np.pi, np.pi, 0.5, 0.5, 0.9, 0.5, np.pi])
 
 _SM = np.array([[0.0, 1.0], [0.0, 0.0]])
 _I2 = np.eye(2)
@@ -89,8 +97,12 @@ def features_of(rho: np.ndarray) -> np.ndarray:
 
 
 def channel_states(params, n_max: int, excite_high: bool = True) -> np.ndarray:
-    """Density matrices after 0..n_max steps, shape ``(n_max + 1, 4, 4)``."""
-    theta, phi, a_off, p_high, p_low, lam, eps = (float(v) for v in params)
+    """Density matrices after 0..n_max steps, shape ``(n_max + 1, 4, 4)``.
+
+    ``params`` follow ``PARAM_NAMES``; a 7-long vector means ``frame_step = 0``."""
+    values = [float(v) for v in params]
+    theta, phi, a_off, p_high, p_low, lam, eps = values[:7]
+    frame_step = values[7] if len(values) > 7 else 0.0
     rho = np.zeros((4, 4), dtype=complex)
     rho[2 if excite_high else 1, 2 if excite_high else 1] = 1.0 - eps
     rho[0, 0] = eps
@@ -98,13 +110,13 @@ def channel_states(params, n_max: int, excite_high: bool = True) -> np.ndarray:
     step = (_superop(_dephase_high(lam)) @ _superop(_damping(p_low, False))
             @ _superop(_damping(p_high, True))
             @ _superop([_phase_high(phi) @ _exchange(theta)]))
-    record = _superop([_phase_high(a_off)])
     vec = rho.reshape(16)
-    out = np.empty((n_max + 1, 16), dtype=complex)
+    out = np.empty((n_max + 1, 4, 4), dtype=complex)
     for n in range(n_max + 1):
-        out[n] = vec
+        record = _phase_high(a_off + n * frame_step)
+        out[n] = record @ vec.reshape(4, 4) @ record.conj().T
         vec = step @ vec
-    return (out @ record.T).reshape(n_max + 1, 4, 4)
+    return out
 
 
 def channel_features(params, counts: np.ndarray, excite_high: bool = True) -> np.ndarray:
@@ -156,6 +168,54 @@ def _rotation_seed(features: np.ndarray, counts: np.ndarray) -> tuple[float, flo
     return theta, phi, a_off
 
 
+def _azimuth_step(features: np.ndarray, counts: np.ndarray) -> float | None:
+    """Median azimuth increment of the transverse vector between consecutive
+    counts (where it is long enough to have an azimuth); None without two."""
+    p_sub = features[:, 2] + features[:, 3]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        az = np.arctan2(features[:, 1], features[:, 0])
+        perp = np.hypot(features[:, 0], features[:, 1]) / p_sub
+    index = {int(c): i for i, c in enumerate(counts)}
+    steps = [np.angle(np.exp(1j * (az[index[c + 1]] - az[index[c]])))
+             for c in index if c + 1 in index
+             and perp[index[c]] > 0.3 and perp[index[c + 1]] > 0.3]
+    return float(np.median(steps)) if len(steps) >= 2 else None
+
+
+def _frame_step_seed(features: np.ndarray, counts: np.ndarray) -> list[float]:
+    """frame_step candidates from geometry: undo a trial step (turn each point back
+    by -N * step about z) and keep the steps that put the points closest to ONE
+    plane - a constant rotation's circle. The three best local minima of the
+    plane residual over a 1-degree scan; empty with fewer than four points."""
+    p_sub = features[:, 2] + features[:, 3]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        v = np.stack([features[:, 0], features[:, 1],
+                      features[:, 2] - features[:, 3]], axis=1) / p_sub[:, None]
+    ok = np.all(np.isfinite(v), axis=1) & (p_sub > 0.2)
+    if ok.sum() < 4:
+        return []
+    v, n = v[ok], np.asarray(counts, dtype=float)[ok]
+    steps = np.radians(np.arange(-180, 180))
+    resid = np.empty(steps.size)
+    for k, b in enumerate(steps):
+        c, s_ = np.cos(-n * b), np.sin(-n * b)
+        u = np.stack([c * v[:, 0] - s_ * v[:, 1], s_ * v[:, 0] + c * v[:, 1], v[:, 2]], axis=1)
+        resid[k] = np.linalg.svd(u - u.mean(0), compute_uv=False)[-1]
+    is_min = (resid <= np.roll(resid, 1)) & (resid <= np.roll(resid, -1))
+    order = np.argsort(np.where(is_min, resid, np.inf))
+    return [float(steps[i]) for i in order[:3] if np.isfinite(resid[i]) and is_min[i]]
+
+
+def _unturned(features: np.ndarray, counts: np.ndarray, step: float) -> np.ndarray:
+    """``features`` with the transverse part turned back by -N * step."""
+    out = np.array(features, dtype=float)
+    ang = -np.asarray(counts, dtype=float) * step
+    c, s = np.cos(ang), np.sin(ang)
+    x, y = out[:, 0].copy(), out[:, 1].copy()
+    out[:, 0], out[:, 1] = c * x - s * y, s * x + c * y
+    return out
+
+
 def _wrap(angle: float) -> float:
     return float(np.angle(np.exp(1j * angle)))
 
@@ -195,19 +255,29 @@ def fit_swap_channel(counts, features, excite_high: bool = True) -> dict[str, An
         sub = data[one[0], 2] + data[one[0], 3]
         if sub > 0.2:
             theta0 = float(np.arcsin(np.sqrt(np.clip(partner / sub, 0.0, 1.0))))
-    def start(theta_s, phi_s, a_s):
-        return np.clip([max(theta_s, 1e-3), _wrap(phi_s), _wrap(a_s), 0.02, 0.02, 0.05, eps0],
-                       _LOWER + 1e-9, _UPPER - 1e-9)
+    def start(theta_s, phi_s, a_s, beta_s=0.0):
+        return np.clip([max(theta_s, 1e-3), _wrap(phi_s), _wrap(a_s), 0.02, 0.02, 0.05, eps0,
+                        _wrap(beta_s)], _LOWER + 1e-9, _UPPER - 1e-9)
 
-    # The rotation seed is usually right; a coarse phi x a_off grid, screened by
-    # its starting cost, guards the rest. Only the seed and the two best grid
-    # points are optimized.
-    grid = [start(theta0, phi0, a0)
+    # The measurement frames turn by frame_step per round. Seeds: the step that
+    # makes the trajectory one circle (geometry, see _frame_step_seed), each with
+    # the rotation seed of the trajectory turned back by it; plus a coarse
+    # phi x a_off x frame_step grid screened by its starting cost (two best).
+    betas = list(np.linspace(-np.pi, np.pi, 12, endpoint=False))
+    beta_med = _azimuth_step(data, counts)
+    if beta_med is not None:
+        betas += [beta_med, beta_med + np.pi]
+    grid = [start(theta0, phi0, a0, b0)
             for phi0 in np.linspace(-np.pi, np.pi, 8, endpoint=False)
-            for a0 in (0.0, np.pi / 2, np.pi, -np.pi / 2)]
+            for a0 in (0.0, np.pi / 2, np.pi, -np.pi / 2)
+            for b0 in betas]
     grid.sort(key=lambda x0: float(np.sum(residual(x0) ** 2)))
-    seed = _rotation_seed(data, counts)
-    starts = ([start(*seed)] if seed is not None else []) + grid[:2]
+    starts = []
+    for b0 in [0.0] + _frame_step_seed(data, counts):
+        seed = _rotation_seed(_unturned(data, counts, b0), counts)
+        if seed is not None:
+            starts.append(start(*seed, b0))
+    starts += grid[:2]
     best = None
     for x0 in starts:
         try:
@@ -220,7 +290,7 @@ def fit_swap_channel(counts, features, excite_high: bool = True) -> dict[str, An
         return failed
 
     x = best.x.copy()
-    x[1], x[2] = _wrap(x[1]), _wrap(x[2])
+    x[1], x[2], x[7] = _wrap(x[1]), _wrap(x[2]), _wrap(x[7])
     dof = max(best.fun.size - x.size, 1)
     sigma2 = 2.0 * best.cost / dof
     try:

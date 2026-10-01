@@ -149,6 +149,13 @@ def plot_compensation(pd: xr.Dataset) -> plt.Figure:
     ax_theta.set_xlabel("stark amplitude")
     ax_theta.set_ylabel("exchange angle per step (rad)")
     ax_theta.set_title("exchange angle (must not depend on the stark amplitude)")
-    fig.suptitle(_title(pd), fontsize=11)
+    beta = float(pd.attrs.get("frame_step_rad", np.nan))
+    beta_pred = float(pd.attrs.get("predicted_frame_step_rad", np.nan))
+    frame = ""
+    if np.isfinite(beta):
+        frame = f"\nframe step {np.degrees(beta):+.1f} deg per round"
+        if np.isfinite(beta_pred):
+            frame += f" (predicted {np.degrees(beta_pred):+.1f})"
+    fig.suptitle(_title(pd) + frame, fontsize=11)
     fig.tight_layout()
     return fig

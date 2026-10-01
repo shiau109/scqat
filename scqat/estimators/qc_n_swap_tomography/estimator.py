@@ -11,7 +11,12 @@ CHANNEL (``scqat.tools.swap_channel``) to the trajectory:
   cancel (stark + frame + any detuning + pulse-edge phases, inseparable);
 * ``p_high`` / ``p_low`` - each member's T1 loss per step, ``lam`` - the
   dephasing of the single-excitation coherence per step, ``eps`` - the prep
-  error, and the |11> population's growth per step.
+  error, and the |11> population's growth per step;
+* ``frame_step`` - how far the two members' measurement (drive) frames turn
+  against each other per round, (f_high - f_low) x the round length: not
+  physics of the swap, but it must be fitted for a drive-frame readout to be a
+  circle at all (``scqat.tools.swap_channel``). With the drive frequencies and
+  the round length it is also PREDICTED, a check that the round length is right.
 
 Population data alone only see ``cos(theta_eff) = cos(phi/2) cos(theta)``; the
 3D trajectory separates the two, at ANY stark amplitude. Across amplitudes the
@@ -33,8 +38,10 @@ Dataset contract (one pair; dims in any order)
 
 kwargs: ``drive_side`` ("high" | "low": the member excited at N=0),
 ``high_name`` / ``low_name`` (figure labels), ``fid_high`` / ``fid_low``
-(``(P(0|0), P(1|1))``), and for the T1/T2* comparison ``round_duration_ns``,
-``t1_high_s``, ``t1_low_s``, ``t2_star_high_s``, ``t2_star_low_s``.
+(``(P(0|0), P(1|1))``), for the T1/T2* comparison ``round_duration_ns``,
+``t1_high_s``, ``t1_low_s``, ``t2_star_high_s``, ``t2_star_low_s``, and for the
+frame-step prediction ``round_duration_ns``, ``drive_freq_high_hz``,
+``drive_freq_low_hz``.
 """
 
 from __future__ import annotations
@@ -80,7 +87,7 @@ _COLUMNS = {
     "frame_offset_rad": "a_off",
     "t1_loss_high_per_amp": "p_high", "t1_loss_low_per_amp": "p_low",
     "dephasing_per_amp": "lam", "prep_error_per_amp": "eps",
-    "fit_rms_per_amp": "rms",
+    "frame_step_per_amp": "frame_step", "fit_rms_per_amp": "rms",
 }
 
 #: the scalar metadata keys and their failed-fit defaults
@@ -95,6 +102,7 @@ _SCALARS = {
     "leak_to_11_per_step": float("nan"),
     "predicted_t1_loss_high": float("nan"), "predicted_t1_loss_low": float("nan"),
     "predicted_dephasing": float("nan"), "excess_dephasing_per_step": float("nan"),
+    "frame_step_rad": float("nan"), "predicted_frame_step_rad": float("nan"),
     "fit_rms": float("nan"), "n_fit_ok": 0, "success": 0,
 }
 
@@ -129,6 +137,15 @@ def _reconstruct(dataset: xr.Dataset, confusion: np.ndarray) -> Dict[str, np.nda
     out["purity"] = purity(rho)
     out["features"] = features_of(rho)
     return out
+
+
+def _predicted_frame_step(round_ns, f_high, f_low) -> float:
+    """wrap(2 pi (f_high - f_low) T_round): how far the drive frames turn per round."""
+    try:
+        turns = (float(f_high) - float(f_low)) * float(round_ns) * 1e-9
+    except (TypeError, ValueError):
+        return float("nan")
+    return float(np.angle(np.exp(2j * np.pi * turns)))
 
 
 def _predicted(round_ns, t1_high, t1_low, t2_high, t2_low) -> Dict[str, float]:
@@ -171,7 +188,7 @@ class QcNSwapTomographyEstimator(BaseEstimator):
         high_name: Optional[str] = None, low_name: Optional[str] = None,
         fid_high=None, fid_low=None, round_duration_ns=None,
         t1_high_s=None, t1_low_s=None, t2_star_high_s=None, t2_star_low_s=None,
-        **kwargs,
+        drive_freq_high_hz=None, drive_freq_low_hz=None, **kwargs,
     ) -> Dict[str, Any]:
         ds = _ordered(dataset)
         confusion, how = _confusion(ds, fid_high, fid_low)
@@ -207,6 +224,8 @@ class QcNSwapTomographyEstimator(BaseEstimator):
         results["leak_to_11_per_amp"] = [float(v) for v in leak]
         results.update(_predicted(round_duration_ns, t1_high_s, t1_low_s,
                                   t2_star_high_s, t2_star_low_s))
+        results["predicted_frame_step_rad"] = _predicted_frame_step(
+            round_duration_ns, drive_freq_high_hz, drive_freq_low_hz)
         results["n_fit_ok"] = int(ok.sum())
 
         if ok.any():
@@ -224,6 +243,7 @@ class QcNSwapTomographyEstimator(BaseEstimator):
                 "dephasing_per_step": float(columns["dephasing_per_amp"][i_best]),
                 "prep_error": float(columns["prep_error_per_amp"][i_best]),
                 "leak_to_11_per_step": float(leak[i_best]),
+                "frame_step_rad": float(columns["frame_step_per_amp"][i_best]),
                 "fit_rms": float(columns["fit_rms_per_amp"][i_best]),
                 "success": 1,
             })

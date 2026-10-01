@@ -22,6 +22,8 @@ A_COMP = 0.45
 AMPS = np.array([0.40, 0.45, 0.50])
 COUNTS = np.arange(0, 13)
 DECAY = dict(p_high=0.0166, p_low=0.0182, lam=0.049, eps=0.03)
+#: the measurement frames' turn per round: wrap(2 pi x 349.786 MHz x 368 ns), 5Q4C q2_q3
+FRAME_STEP = float(np.angle(np.exp(2j * np.pi * 349.786e6 * 368e-9)))
 FID_HIGH, FID_LOW = (0.952, 0.9235), (0.954, 0.929)
 LABELS = ["00", "01", "10", "11"]
 
@@ -39,7 +41,8 @@ def _dataset(shots=2000, calibrate=True, theta=THETA, seed=11, drive_high=True):
     jp = np.zeros((4, AMPS.size, COUNTS.size, len(tq.BASIS_LABELS)))
     for i, a in enumerate(AMPS):
         phi = 2 * np.pi * (a ** 2 - A_COMP ** 2)
-        params = [theta, phi, 0.3, DECAY["p_high"], DECAY["p_low"], DECAY["lam"], DECAY["eps"]]
+        params = [theta, phi, 0.3, DECAY["p_high"], DECAY["p_low"], DECAY["lam"], DECAY["eps"],
+                  FRAME_STEP]
         states = sc.channel_states(params, COUNTS.max(), excite_high=drive_high)
         for k, label in enumerate(tq.BASIS_LABELS):
             u = np.kron(PRE[label[0]], PRE[label[1]])
@@ -73,6 +76,15 @@ def test_angle_and_compensation_are_recovered(results):
     assert results["theta_consistency_sigma"] < 3.0
     planted = [2 * np.pi * (a ** 2 - A_COMP ** 2) for a in AMPS]
     np.testing.assert_allclose(results["phase_per_step_rad"], planted, atol=0.03)
+
+
+def test_frame_step_is_fitted_and_predicted(results):
+    assert results["frame_step_rad"] == pytest.approx(FRAME_STEP, abs=0.02)
+    res = QcNSwapTomographyEstimator().extract_parameters(
+        _dataset(shots=400), drive_side="high", round_duration_ns=368.0,
+        drive_freq_high_hz=5191.925e6, drive_freq_low_hz=4842.139e6)
+    assert res["predicted_frame_step_rad"] == pytest.approx(FRAME_STEP, abs=0.01)
+    assert res["frame_step_rad"] == pytest.approx(res["predicted_frame_step_rad"], abs=0.03)
 
 
 def test_decay_is_recovered(results):

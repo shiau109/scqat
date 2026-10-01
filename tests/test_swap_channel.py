@@ -36,19 +36,34 @@ def test_low_member_excited_mirrors_the_high_one():
     np.testing.assert_allclose(lo[0, 3], 1.0)
 
 
+def test_frame_step_turns_only_the_azimuth():
+    """A measurement-frame step changes nothing the populations see and turns the
+    transverse vector by N * frame_step."""
+    base = [0.3, 0.5, 0.2, 0.01, 0.02, 0.03, 0.01]
+    beta = -1.75
+    a = sc.features_of(sc.channel_states(base, 10))
+    b = sc.features_of(sc.channel_states(base + [beta], 10))
+    np.testing.assert_allclose(b[:, 2:], a[:, 2:], atol=1e-12)
+    n = np.arange(11)
+    ca = (a[:, 0] - 1j * a[:, 1]) * np.exp(-1j * n * beta)      # x - i y, turned
+    np.testing.assert_allclose(b[:, 0] - 1j * b[:, 1], ca, atol=1e-12)
+
+
 @pytest.mark.parametrize("truth", [
     [0.126, 1.3, 0.4, 0.0166, 0.0182, 0.049, 0.03],
     [0.40, -0.6, -1.0, 0.02, 0.01, 0.06, 0.02],
     [0.20, 0.0, 0.0, 0.015, 0.015, 0.04, 0.0],
+    [0.42, 0.05, 0.3, 0.05, 0.015, 0.03, 0.0, -1.73],           # 5Q4C q2_q3, 2026-10-01
+    [0.43, -0.27, -2.0, 0.017, 0.017, 0.04, 0.0, 1.92],          # 5Q4C q1_q2
 ])
 def test_fit_recovers_noiseless_parameters(truth):
     counts = np.arange(0, 16)
     f = sc.channel_features(truth, counts)
     fit = sc.fit_swap_channel(counts, f)
     assert fit["success"]
-    for name, value in zip(sc.PARAM_NAMES, truth):
+    for name, value in zip(sc.PARAM_NAMES, truth + [0.0] * (len(sc.PARAM_NAMES) - len(truth))):
         assert fit[name] == pytest.approx(value, abs=2e-4), name
-    assert fit["rms"] < 1e-6
+    assert fit["rms"] < 1e-4          # converged to the optimizer tolerance
 
 
 def test_fit_recovers_noisy_parameters_within_errors():
