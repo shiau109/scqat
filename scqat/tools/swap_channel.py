@@ -206,13 +206,25 @@ def _frame_step_seed(features: np.ndarray, counts: np.ndarray) -> list[float]:
     return [float(steps[i]) for i in order[:3] if np.isfinite(resid[i]) and is_min[i]]
 
 
+def to_swap_frame(x, y, counts, a_off: float, frame_step: float) -> tuple[np.ndarray, np.ndarray]:
+    """A recorded transverse vector ``(x, y)`` turned back into the swap frame.
+
+    The recorded state is the swap-frame state turned by ``a_off + N * frame_step``
+    about z; this undoes that turn. In the swap frame every round is the same
+    ``Rz(phi) Rx(2 theta)``, so from the pole a compensated swap (``phi = 0``)
+    traces a circle in the y-z plane, and ``phi`` tilts that circle out of it.
+    Works on the subspace Bloch components and on the first two fit features alike
+    (both are ``x - i y = 2 rho_{10,01}``, either normalization)."""
+    ang = -(a_off + np.asarray(counts, dtype=float) * frame_step)
+    c, s = np.cos(ang), np.sin(ang)
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    return c * x - s * y, s * x + c * y
+
+
 def _unturned(features: np.ndarray, counts: np.ndarray, step: float) -> np.ndarray:
     """``features`` with the transverse part turned back by -N * step."""
     out = np.array(features, dtype=float)
-    ang = -np.asarray(counts, dtype=float) * step
-    c, s = np.cos(ang), np.sin(ang)
-    x, y = out[:, 0].copy(), out[:, 1].copy()
-    out[:, 0], out[:, 1] = c * x - s * y, s * x + c * y
+    out[:, 0], out[:, 1] = to_swap_frame(out[:, 0], out[:, 1], counts, 0.0, step)
     return out
 
 

@@ -133,7 +133,27 @@ def test_metadata_is_json_and_artifacts_are_written(tmp_path):
     meta = json.loads((tmp_path / "qc_n_swap_tomography_metadata.json").read_text())
     assert meta["estimator_name"] == "qc_n_swap_tomography"
     assert (tmp_path / "qc_n_swap_tomography_plotdata.nc").exists()
-    assert set(figures) == {"bloch", "components", "compensation"}
+    assert set(figures) == {"bloch_swap_frame", "bloch_drive_frame", "components",
+                            "compensation"}
+
+
+def test_the_swap_frame_undoes_the_frame_turn(results):
+    """With the fitted frame turn undone, every round is the same Rz(phi) Rx(2 theta):
+    at the compensating amplitude the trajectory stays in the y-z plane (x = 0, a
+    vertical line edge on) and the first swap moves along -y; off compensation the
+    per-step phase tilts it out of that plane."""
+    pd = QcNSwapTomographyEstimator().build_plot_data(_dataset(), results)
+    x = pd["x_swap_frame"] / pd["p_sub"]
+    fit_x = pd["fit_x_swap_frame"] / pd["fit_p_sub"]
+    on = int(np.argmin(np.abs(AMPS - A_COMP)))
+    assert float(np.abs(fit_x[on]).max()) < 0.03
+    assert float(np.abs(x[on]).max()) < 0.08
+    assert float(pd["y_swap_frame"][on, 1] / pd["p_sub"][on, 1]) < -0.3
+    for off in (0, AMPS.size - 1):
+        assert float(np.abs(fit_x[off]).max()) > 0.2
+    # the frame turn is the only difference from the recorded vectors
+    np.testing.assert_allclose(np.hypot(pd["x_swap_frame"], pd["y_swap_frame"]),
+                               np.hypot(pd["x"], pd["y"]), atol=1e-12)
 
 
 def test_figures_render_on_a_failed_fit():
@@ -143,7 +163,7 @@ def test_figures_render_on_a_failed_fit():
     res = est.extract_parameters(ds, drive_side="high")
     plot_data = est.build_plot_data(ds, res)
     figures = est.generate_figures(ds, res, plot_data=plot_data)
-    assert len(figures) == 3
+    assert len(figures) == 4
 
 
 def test_check_data_refuses_missing_bases():

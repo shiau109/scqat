@@ -55,7 +55,7 @@ import xarray as xr
 from scqat.core.base_estimator import BaseEstimator
 from scqat.core.figures import render_figures
 from scqat.tools.sweep_order import ascending
-from scqat.tools.swap_channel import features_of, fit_swap_channel, phase_root
+from scqat.tools.swap_channel import features_of, fit_swap_channel, phase_root, to_swap_frame
 from scqat.tools.two_qubit_tomography import (
     BASIS_LABELS,
     confusion_from_calibration,
@@ -68,10 +68,12 @@ from scqat.tools.two_qubit_tomography import (
 )
 
 from .visualization import (
-    FIG_BLOCH,
+    FIG_BLOCH_DRIVE,
+    FIG_BLOCH_SWAP,
     FIG_COMPENSATION,
     FIG_COMPONENTS,
-    plot_bloch,
+    plot_bloch_drive_frame,
+    plot_bloch_swap_frame,
     plot_compensation,
     plot_components,
 )
@@ -301,6 +303,17 @@ class QcNSwapTomographyEstimator(BaseEstimator):
             out[key] = ((AMP,), column)
         out["fit_success_per_amp"] = ((AMP,), np.asarray(
             results.get("fit_success_per_amp", [0] * amps.size), dtype=int))
+        # the same vectors with each amplitude's fitted frame turn undone (NaN
+        # where that fit has no frame): the swap frame, where every round is
+        # the same exchange
+        for prefix in ("", "fit_"):
+            turned = np.full((2, amps.size, counts.size), np.nan)
+            for i in range(amps.size):
+                turned[:, i] = to_swap_frame(
+                    out[f"{prefix}x"].values[i], out[f"{prefix}y"].values[i], counts,
+                    out["frame_offset_rad"].values[i], out["frame_step_per_amp"].values[i])
+            out[f"{prefix}x_swap_frame"] = (dims, turned[0])
+            out[f"{prefix}y_swap_frame"] = (dims, turned[1])
         out.attrs.update({key: type(default)(results.get(key, default))
                           for key, default in _SCALARS.items()})
         out.attrs["readout_correction"] = str(results.get("readout_correction", "none"))
@@ -315,7 +328,8 @@ class QcNSwapTomographyEstimator(BaseEstimator):
             plot_data = self.build_plot_data(dataset, results, **kwargs)
         return render_figures(
             {
-                FIG_BLOCH: lambda: plot_bloch(plot_data),
+                FIG_BLOCH_SWAP: lambda: plot_bloch_swap_frame(plot_data),
+                FIG_BLOCH_DRIVE: lambda: plot_bloch_drive_frame(plot_data),
                 FIG_COMPONENTS: lambda: plot_components(plot_data),
                 FIG_COMPENSATION: lambda: plot_compensation(plot_data),
             },
