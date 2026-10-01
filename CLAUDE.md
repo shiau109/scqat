@@ -389,10 +389,12 @@ every family listed beside it; run those families' test files too.
 | `ramsey_fit` | charge_gate_ramsey, ramsey |
 | `robust` | resonator_spectroscopy_flux |
 | `step_response_fit` | ramsey_cryoscope, spectroscopy_cryoscope |
+| `swap_channel` | qc_n_swap_tomography |
 | `swap_lineshape` | pair_swap_flux_map, qc_n_stark_amp, qc_swap_flux_stark |
-| `sweep_order` | ac_stark_shift, pair_coupler_crossing, pair_coupler_spectroscopy_swap, pair_coupler_spectroscopy_zz, power_rabi, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_ramsey_flux_pulse, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
+| `sweep_order` | ac_stark_shift, pair_coupler_crossing, pair_coupler_spectroscopy_swap, pair_coupler_spectroscopy_zz, power_rabi, qc_n_swap_tomography, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_ramsey_flux_pulse, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
 | `telegraph_psd` | parity_switch_continuous, parity_switch_discrete |
 | `timeseries_psd` | qubit_t1_bayesian |
+| `two_qubit_tomography` | qc_n_swap_tomography |
 
 No estimator imports these (shared machinery, workflow-only, or a fitter reached through
 the `get_fitter()` factory): `fit_damping_beat`, `fit_multi_damped_oscillation`, `flux_predistortion`, `function_fitting`, `ge_discriminator`, `hankel`.
@@ -405,7 +407,7 @@ when it is promoted in — SCQO's promotion checklist already requires "`simulat
 → offline end-to-end test in `tests/`". Do not open a campaign to backfill them.
 
 <!-- BEGIN generated: coverage-gap -->
-**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 52**
+**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 53**
 estimators are imported by NO test, by module path or exported class:
 
 - `broadband_qubit_spectroscopy`
