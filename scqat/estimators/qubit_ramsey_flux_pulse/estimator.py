@@ -26,7 +26,8 @@ it afterwards)::
     delta_f(x) = f_q(x) - f_drive = sign(D) * F(x) - D
 
 The valid ``delta_f(x)`` points are fitted with a weighted quadratic (the transmon
-arch is quadratic to 1e-4 over +-12 mV of a sweet spot). Two questions:
+arch is quadratic to 1e-4 over +-12 mV of a sweet spot). Both steps are the shared
+reductions of :mod:`scqat.tools.local_arch`. Two questions:
 
 * **apex** (``park_frequency_hz`` None): the vertex ``x0`` and its height.
 * **park** (``park_frequency_hz`` given, needs ``drive_freq_hz``): the root of
@@ -46,8 +47,8 @@ import xarray as xr
 
 from scqat.core.base_estimator import BaseEstimator, stored_positions, with_iqdata
 from scqat.core.figures import render_figures
-from scqat.tools.fringe_frequency import fringe_frequency
 from scqat.tools.iq_reduce import AXIAL_KNOBS, axial, axis_angle, validate_iq_reduce_kwargs
+from scqat.tools.local_arch import fit_local_arch, fringe_deltas
 from scqat.tools.sweep_order import ascending
 from scqat.estimators.qubit_ramsey_flux_pulse.visualization import (
     plot_flux_curve,
@@ -56,8 +57,6 @@ from scqat.estimators.qubit_ramsey_flux_pulse.visualization import (
 
 #: valid ``flux_side`` values
 FLUX_SIDES = ("nearest", "lower", "upper")
-#: minimum valid slices for the quadratic
-MIN_VALID = 5
 
 _NAN = float("nan")
 
@@ -79,18 +78,6 @@ def _global_signal(dataset: xr.Dataset, axial_kwargs: dict) -> tuple[np.ndarray,
               else "positions" if kwargs.get("positions") is not None else "pca")
     angle = float(axis_angle(I, Q, angle=kwargs.get("angle"), positions=kwargs.get("positions")))
     return sig, method, angle
-
-
-def _vertex(coef: np.ndarray, cov: np.ndarray) -> tuple[float, float, float, float]:
-    """Vertex (u0, stderr_u0, h0, stderr_h0) of a*u^2 + b*u + c."""
-    a, b, c = coef
-    u0 = -b / (2 * a)
-    h0 = c - b * b / (4 * a)
-    g_u = np.array([b / (2 * a * a), -1.0 / (2 * a), 0.0])
-    g_h = np.array([b * b / (4 * a * a), -b / (2 * a), 1.0])
-    su = float(np.sqrt(max(g_u @ cov @ g_u, 0.0)))
-    sh = float(np.sqrt(max(g_h @ cov @ g_h, 0.0)))
-    return float(u0), su, float(h0), sh
 
 
 def _roots(coef: np.ndarray, level: float) -> list[float]:
@@ -159,29 +146,12 @@ class QubitRamseyFluxPulseEstimator(BaseEstimator):
         x = np.asarray(dataset["flux_bias"].values, dtype=float)
         t = np.asarray(dataset["idle_time"].values, dtype=float)
         sig, red_method, red_angle = _global_signal(dataset, kwargs)
-        span = float(np.nanmax(t) - np.nanmin(t)) if t.size else _NAN
 
         n = x.size
-        fringe = np.full(n, _NAN)
-        fringe_err = np.full(n, _NAN)
-        snr = np.full(n, _NAN)
-        amp = np.full(n, _NAN)
-        valid = np.zeros(n, dtype=bool)
-        for i in range(n):
-            r = fringe_frequency(t, sig[i])
-            fringe[i], snr[i], amp[i] = r["frequency_hz"], r["snr"], r["amplitude"]
-            err = r["frequency_stderr_hz"]
-            if not np.isfinite(err) and np.isfinite(r["snr"]) and r["snr"] > 0 and span > 0:
-                err = 1.0 / (span * np.sqrt(r["snr"]))  # periodogram-only fallback
-            fringe_err[i] = err
-            edge = 2.0 / span if span > 0 else _NAN
-            valid[i] = bool(r["success"] and r["snr"] >= min_snr
-                            and r["frequency_hz"] >= r["f_min_hz"] + edge
-                            and r["frequency_hz"] <= r["f_max_hz"] - edge)
-
-        sgn = 1.0 if ramp > 0 else -1.0
-        delta = sgn * fringe - ramp
-        delta_err = fringe_err.copy()
+        deltas = fringe_deltas(t, sig, ramp, min_snr=min_snr)
+        fringe, fringe_err = deltas["fringe_hz"], deltas["fringe_stderr_hz"]
+        snr, amp, valid = deltas["snr"], deltas["amplitude"], deltas["valid"]
+        delta, delta_err = deltas["delta_f_hz"], deltas["delta_f_stderr_hz"]
 
         res: Dict[str, Any] = {
             "question": "apex" if park is None else "park",
@@ -213,42 +183,21 @@ class QubitRamseyFluxPulseEstimator(BaseEstimator):
             "success": False,
             "signal": sig,
         }
-        if valid.sum() < MIN_VALID:
+        arch = fit_local_arch(x, delta, delta_err, valid,
+                              ramp_detuning_hz=ramp, span_s=deltas["span_s"])
+        if not arch["fitted"]:
             return res
-
-        xv, dv, ev = x[valid], delta[valid], delta_err[valid]
-        order = np.argsort(xv, kind="stable")  # order-agnostic fit input
-        xv, dv, ev = xv[order], dv[order], ev[order]
-        x_c = float(np.mean(xv))
-        u = xv - x_c
-        floor = np.nanmedian(ev[np.isfinite(ev)]) if np.isfinite(ev).any() else 1.0
-        w = 1.0 / np.where(np.isfinite(ev) & (ev > 0), ev, floor)
-        try:
-            coef, cov = np.polyfit(u, dv, 2, w=w, cov=True)
-        except (np.linalg.LinAlgError, ValueError):
-            return res
-        res["poly_center"] = x_c
-        res["poly_coeffs"] = [float(v) for v in coef]
-        res["curvature_hz_per_v2"] = float(coef[0])
-        res["curvature_stderr"] = float(np.sqrt(max(cov[0, 0], 0.0)))
-
-        lo, hi = float(xv[0]), float(xv[-1])
-        u0, su0, h0, sh0 = _vertex(coef, cov)
-        apex_ok = (coef[0] < 0 and coef[0] + 2 * res["curvature_stderr"] < 0
-                   and lo <= x_c + u0 <= hi)
-        if coef[0] != 0:
-            res.update(apex_flux=x_c + u0, apex_flux_stderr=su0,
-                       apex_delta_f_hz=h0, apex_delta_f_stderr_hz=sh0,
-                       apex_f01_hz=_NAN if drive is None else drive + h0)
-        res["apex_not_bracketed"] = 0 if apex_ok else 1
-
-        # the fitted fringe must stay on one side of zero across the window
-        grid = np.linspace(lo - x_c, hi - x_c, 201)
-        fitted = sgn * (ramp + np.polyval(coef, grid))
-        res["fold_suspected"] = int(np.min(fitted) < 2.0 / span)
+        coef, cov, x_c = arch["coef"], arch["cov"], arch["poly_center"]
+        lo, hi = arch["window"]
+        res.update({key: arch[key] for key in (
+            "poly_center", "poly_coeffs", "curvature_hz_per_v2", "curvature_stderr",
+            "apex_flux", "apex_flux_stderr", "apex_delta_f_hz", "apex_delta_f_stderr_hz",
+            "apex_not_bracketed", "fold_suspected")})
+        if drive is not None:
+            res["apex_f01_hz"] = drive + arch["apex_delta_f_hz"]
 
         if park is None:
-            res["success"] = bool(apex_ok)
+            res["success"] = arch["apex_not_bracketed"] == 0
             return res
 
         roots = [r for r in _roots(coef, park - drive) if lo - x_c <= r <= hi - x_c]

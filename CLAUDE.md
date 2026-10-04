@@ -380,8 +380,10 @@ every family listed beside it; run those families' test files too.
 | `fit_stretched_exp` | ramsey_phasor |
 | `fit_transmon_freq_flux` | qubit_flux_arch |
 | `fit_triangle` | xyz_delay |
+| `flux_crosstalk` | qubit_ramsey_flux_crosstalk |
 | `fringe_frequency` | qubit_ramsey_flux_pulse |
-| `iq_reduce` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo, qubit_ramsey_flux_pulse, qubit_relaxation, qubit_spectroscopy_flux, qubit_stark_phase_echo, ramsey, xyz_delay |
+| `iq_reduce` | ac_stark_shift, power_rabi, qubit_deterministic_benchmarking, qubit_echo, qubit_ramsey_flux_crosstalk, qubit_ramsey_flux_pulse, qubit_relaxation, qubit_spectroscopy_flux, qubit_stark_phase_echo, ramsey, xyz_delay |
+| `local_arch` | qubit_ramsey_flux_crosstalk, qubit_ramsey_flux_pulse |
 | `lockin` | ramsey_cryoscope, ramsey_phasor |
 | `peak_fit` | ac_stark_shift, broadband_qubit_spectroscopy, pair_coupler_spectroscopy_swap, pair_coupler_spectroscopy_zz, parametric_drive_resonance, qubit_spectroscopy, qubit_spectroscopy_flux, readout_pulse_photon, spectroscopy_cryoscope |
 | `peak_map` | parametric_drive_resonance, qubit_spectroscopy_flux |
@@ -391,7 +393,7 @@ every family listed beside it; run those families' test files too.
 | `step_response_fit` | ramsey_cryoscope, spectroscopy_cryoscope |
 | `swap_channel` | qc_n_swap_tomography |
 | `swap_lineshape` | pair_swap_flux_map, qc_n_stark_amp, qc_swap_flux_stark |
-| `sweep_order` | ac_stark_shift, pair_coupler_crossing, pair_coupler_spectroscopy_swap, pair_coupler_spectroscopy_zz, power_rabi, qc_n_swap_tomography, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_ramsey_flux_pulse, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
+| `sweep_order` | ac_stark_shift, pair_coupler_crossing, pair_coupler_spectroscopy_swap, pair_coupler_spectroscopy_zz, power_rabi, qc_n_swap_tomography, qubit_deterministic_benchmarking, qubit_echo_flux, qubit_ramsey_flux_crosstalk, qubit_ramsey_flux_pulse, qubit_relaxation_flux, qubit_spectroscopy, qubit_spectroscopy_flux, readout_fidelity, resonator_spectroscopy, resonator_spectroscopy_flux, resonator_spectroscopy_power, spectroscopy_cryoscope |
 | `telegraph_psd` | parity_switch_continuous, parity_switch_discrete |
 | `timeseries_psd` | qubit_t1_bayesian |
 | `two_qubit_tomography` | qc_n_swap_tomography |
@@ -407,7 +409,7 @@ when it is promoted in — SCQO's promotion checklist already requires "`simulat
 → offline end-to-end test in `tests/`". Do not open a campaign to backfill them.
 
 <!-- BEGIN generated: coverage-gap -->
-**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 53**
+**GENERATED** - refresh with `python scripts/update_docs.py`. **9 of 54**
 estimators are imported by NO test, by module path or exported class:
 
 - `broadband_qubit_spectroscopy`
